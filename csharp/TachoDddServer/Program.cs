@@ -19,6 +19,12 @@ string outputDir = config["OutputDir"]!;
 string? trafficLogDir = config["TrafficLogDir"];
 bool logTraffic = config.GetValue<bool>("LogTraffic");
 
+// WebReport config
+var webReportSection = config.GetSection("WebReport");
+bool webReportEnabled = webReportSection.GetValue<bool>("Enabled");
+string? webReportUrl = webReportSection["Url"];
+string? webReportApiKey = webReportSection["ApiKey"];
+
 // ─── Startup configuration log ──────────────────────────────────
 logger.LogInformation("╔══════════════════════════════════════════════════════════╗");
 logger.LogInformation("║           TachoDDD Server — Starting                    ║");
@@ -58,7 +64,7 @@ while (true)
             await bridge.ConnectAsync();
 
             var session = new DddSession(client, bridge, outputDir, loggerFactory.CreateLogger<DddSession>(),
-                trafficLogDir, logTraffic);
+                trafficLogDir, logTraffic, webReportUrl, webReportApiKey, webReportEnabled);
             await session.RunAsync();
         }
         catch (Exception ex)

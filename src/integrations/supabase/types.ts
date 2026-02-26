@@ -14,7 +14,107 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      session_events: {
+        Row: {
+          context: string | null
+          created_at: string | null
+          id: string
+          imei: string
+          message: string
+          session_id: string | null
+          type: string
+        }
+        Insert: {
+          context?: string | null
+          created_at?: string | null
+          id?: string
+          imei: string
+          message: string
+          session_id?: string | null
+          type?: string
+        }
+        Update: {
+          context?: string | null
+          created_at?: string | null
+          id?: string
+          imei?: string
+          message?: string
+          session_id?: string | null
+          type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "session_events_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sessions: {
+        Row: {
+          apdu_exchanges: number | null
+          bytes_downloaded: number | null
+          completed_at: string | null
+          crc_errors: number | null
+          created_at: string | null
+          current_file: string | null
+          error_code: string | null
+          error_message: string | null
+          files_downloaded: number | null
+          generation: string | null
+          id: string
+          imei: string
+          last_activity: string | null
+          progress: number | null
+          started_at: string | null
+          status: string
+          total_files: number | null
+          vehicle_plate: string | null
+        }
+        Insert: {
+          apdu_exchanges?: number | null
+          bytes_downloaded?: number | null
+          completed_at?: string | null
+          crc_errors?: number | null
+          created_at?: string | null
+          current_file?: string | null
+          error_code?: string | null
+          error_message?: string | null
+          files_downloaded?: number | null
+          generation?: string | null
+          id?: string
+          imei: string
+          last_activity?: string | null
+          progress?: number | null
+          started_at?: string | null
+          status?: string
+          total_files?: number | null
+          vehicle_plate?: string | null
+        }
+        Update: {
+          apdu_exchanges?: number | null
+          bytes_downloaded?: number | null
+          completed_at?: string | null
+          crc_errors?: number | null
+          created_at?: string | null
+          current_file?: string | null
+          error_code?: string | null
+          error_message?: string | null
+          files_downloaded?: number | null
+          generation?: string | null
+          id?: string
+          imei?: string
+          last_activity?: string | null
+          progress?: number | null
+          started_at?: string | null
+          status?: string
+          total_files?: number | null
+          vehicle_plate?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
