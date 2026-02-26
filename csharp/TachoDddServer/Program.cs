@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using TachoDddServer.Session;
 using TachoDddServer.CardBridge;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 
@@ -18,25 +19,39 @@ string outputDir = config["OutputDir"]!;
 string? trafficLogDir = config["TrafficLogDir"];
 bool logTraffic = config.GetValue<bool>("LogTraffic");
 
+// ─── Startup configuration log ──────────────────────────────────
+logger.LogInformation("╔══════════════════════════════════════════════════════════╗");
+logger.LogInformation("║           TachoDDD Server — Starting                    ║");
+logger.LogInformation("╚══════════════════════════════════════════════════════════╝");
+logger.LogInformation("  TCP Port:        {Port}", port);
+logger.LogInformation("  CardBridge URL:  {Url}", cardBridgeUrl);
+logger.LogInformation("  Output Dir:      {Dir}", outputDir);
+logger.LogInformation("  Traffic Logging: {Enabled}", logTraffic ? "ENABLED" : "disabled");
+if (logTraffic && trafficLogDir != null)
+    logger.LogInformation("  Traffic Log Dir: {Dir}", trafficLogDir);
+logger.LogInformation("  Started at:      {Time:yyyy-MM-dd HH:mm:ss} UTC", DateTime.UtcNow);
+
 Directory.CreateDirectory(outputDir);
 if (logTraffic && trafficLogDir != null)
 {
     Directory.CreateDirectory(trafficLogDir);
-    logger.LogInformation("📝 Logowanie ruchu włączone, folder: {Dir}", trafficLogDir);
 }
 
 var listener = new TcpListener(IPAddress.Any, port);
 listener.Start();
-logger.LogInformation("🚀 TachoDDD Server nasłuchuje na porcie {Port}", port);
+logger.LogInformation("🚀 Listening on port {Port}", port);
 
 while (true)
 {
     var client = await listener.AcceptTcpClientAsync();
     var ep = client.Client.RemoteEndPoint as IPEndPoint;
-    logger.LogInformation("📡 Nowe połączenie od {IP}", ep?.Address);
+    var connectTime = DateTime.UtcNow;
+    logger.LogInformation("📡 New connection from {IP}:{Port} at {Time:HH:mm:ss.fff}",
+        ep?.Address, ep?.Port, connectTime);
 
     _ = Task.Run(async () =>
     {
+        var sessionSw = Stopwatch.StartNew();
         try
         {
             using var bridge = new CardBridgeClient(cardBridgeUrl, loggerFactory.CreateLogger<CardBridgeClient>());
@@ -48,11 +63,21 @@ while (true)
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Błąd sesji z {IP}", ep?.Address);
+            logger.LogError(ex, "❌ Session error from {IP}:{Port}", ep?.Address, ep?.Port);
         }
         finally
         {
+            sessionSw.Stop();
+            logger.LogInformation("📡 Disconnected {IP}:{Port} — session duration: {Duration}",
+                ep?.Address, ep?.Port, FormatDuration(sessionSw.Elapsed));
             client.Dispose();
         }
     });
+}
+
+static string FormatDuration(TimeSpan ts)
+{
+    if (ts.TotalMinutes >= 1)
+        return $"{(int)ts.TotalMinutes}m {ts.Seconds}s";
+    return $"{ts.TotalSeconds:F1}s";
 }

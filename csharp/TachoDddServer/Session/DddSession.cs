@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Net.Sockets;
+using System.Net.WebSockets;
 using Microsoft.Extensions.Logging;
 using TachoDddServer.Protocol;
 using TachoDddServer.CardBridge;
@@ -14,15 +16,17 @@ public class DddSession
     private readonly string _outputDir;
     private readonly ILogger _logger;
     private readonly TrafficLogger? _trafficLogger;
+    private readonly SessionDiagnostics _diagnostics;
+    private readonly string? _logDir;
 
     private SessionState _state = SessionState.WaitingForImei;
     private string _imei = "";
     private VuGeneration _vuGeneration = VuGeneration.Unknown;
     private byte _features = 0;
     private byte _resumeState = 0;
-    private uint _lastSequenceNumber = 0; // from STATUS packet, for resume
+    private uint _lastSequenceNumber = 0;
 
-    // SID/TREP tracking (dynamic, read from first file data packet)
+    // SID/TREP tracking
     private byte _lastSid = 0;
     private byte _lastTrep = 0;
 
@@ -41,6 +45,9 @@ public class DddSession
     private int _crcRetryCount = 0;
     private const int MaxCrcRetries = 3;
 
+    // CardBridge timeout
+    private static readonly TimeSpan BridgeTimeout = TimeSpan.FromSeconds(30);
+
     // Keep alive
     private DateTime _lastActivity = DateTime.UtcNow;
     private static readonly TimeSpan KeepAliveInterval = TimeSpan.FromSeconds(80);
@@ -52,14 +59,33 @@ public class DddSession
         _bridge = bridge;
         _outputDir = outputDir;
         _logger = logger;
+        _logDir = trafficLogDir;
+
+        var endpoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
+        _diagnostics = new SessionDiagnostics(endpoint);
 
         if (logTraffic && trafficLogDir != null)
         {
-            var endpoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
-            var sessionId = endpoint.Replace(":", "_").Replace(".", "-");
+            var sessionId = _diagnostics.SessionId;
             _trafficLogger = new TrafficLogger(trafficLogDir, sessionId);
         }
+
+        _logger.LogInformation("📋 Session created: id={SessionId}, endpoint={Endpoint}",
+            _diagnostics.SessionId, endpoint);
     }
+
+    // ─── State management ────────────────────────────────────────────
+
+    private void TransitionTo(SessionState newState, string reason)
+    {
+        var oldState = _state;
+        _state = newState;
+        _diagnostics.LogStateTransition(oldState, newState, reason);
+        _trafficLogger?.LogStateChange(oldState, newState, reason);
+        _logger.LogInformation("STATE {From} -> {To} [{Reason}]", oldState, newState, reason);
+    }
+
+    // ─── Main loop ───────────────────────────────────────────────────
 
     public async Task RunAsync()
     {
@@ -67,7 +93,7 @@ public class DddSession
         var buffer = new byte[8192];
         var recvBuffer = new List<byte>();
 
-        _logger.LogInformation("Sesja DDD rozpoczęta, stan: {State}", _state);
+        _logger.LogInformation("🚀 Session {Id} started, state: {State}", _diagnostics.SessionId, _state);
 
         try
         {
@@ -90,6 +116,7 @@ public class DddSession
                 if (bytesRead == 0) break;
 
                 _trafficLogger?.Log("RX", buffer, bytesRead);
+                _diagnostics.BytesReceived += bytesRead;
                 _lastActivity = DateTime.UtcNow;
 
                 recvBuffer.AddRange(buffer.AsSpan(0, bytesRead).ToArray());
@@ -116,9 +143,11 @@ public class DddSession
 
                     if (result.CrcError)
                     {
-                        // CRC mismatch — send RepeatRequest
                         _crcRetryCount++;
+                        _diagnostics.CrcErrors++;
                         _logger.LogWarning("⚠️ CRC error (attempt {Count}/{Max})", _crcRetryCount, MaxCrcRetries);
+                        _trafficLogger?.LogWarning($"CRC error (attempt {_crcRetryCount}/{MaxCrcRetries})");
+                        _diagnostics.LogWarning($"CRC error (attempt {_crcRetryCount}/{MaxCrcRetries})");
 
                         if (_crcRetryCount <= MaxCrcRetries)
                         {
@@ -127,6 +156,8 @@ public class DddSession
                         else
                         {
                             _logger.LogError("❌ Max CRC retries exceeded, dropping frame");
+                            _trafficLogger?.LogError("CRC", "Max retries exceeded, dropping frame");
+                            _diagnostics.LogError("CRC", "Max CRC retries exceeded, frame dropped");
                             _crcRetryCount = 0;
                         }
 
@@ -138,8 +169,8 @@ public class DddSession
                     _crcRetryCount = 0;
                     recvBuffer.RemoveRange(0, Math.Min(result.ConsumedBytes, recvBuffer.Count));
 
-                    _logger.LogInformation("📩 Codec 12 frame, type: 0x{Type:X2}, {Len} bytes",
-                        result.Frame.Type, result.Frame.Data.Length);
+                    _logger.LogInformation("📩 Codec12 frame: type=0x{Type:X2}, {Len}B, state={State}",
+                        result.Frame.Type, result.Frame.Data.Length, _state);
 
                     await ProcessFrameAsync(stream, result.Frame);
 
@@ -151,35 +182,68 @@ public class DddSession
                     break;
             }
         }
+        catch (Exception ex)
+        {
+            _diagnostics.LogError("RunAsync", ex);
+            _trafficLogger?.LogError("RunAsync", ex);
+            _logger.LogError(ex, "💥 Fatal error in session {Id}", _diagnostics.SessionId);
+            TransitionTo(SessionState.Error, $"Fatal: {ex.GetType().Name}: {ex.Message}");
+        }
         finally
         {
+            // Generate and save session summary
+            _diagnostics.Imei = _imei;
+            _diagnostics.Generation = _vuGeneration;
+            _diagnostics.Finish();
+
+            var summary = _diagnostics.GenerateSummary();
+            _logger.LogInformation("\n{Summary}", summary);
+            _trafficLogger?.LogSummary(summary);
+
+            // Save JSON/text report
+            if (_logDir != null)
+            {
+                _diagnostics.SaveToFile(_logDir);
+            }
+
             _trafficLogger?.Dispose();
         }
 
-        _logger.LogInformation("Sesja zakończona, IMEI: {Imei}, stan: {State}, generacja: {Gen}",
-            _imei, _state, _vuGeneration);
+        _logger.LogInformation("Session {Id} ended: IMEI={Imei}, state={State}, gen={Gen}",
+            _diagnostics.SessionId, _imei, _state, _vuGeneration);
     }
 
     // ─── IMEI handling ───────────────────────────────────────────────
 
     private async Task HandleImeiPacket(NetworkStream stream, List<byte> data)
     {
-        // IMEI packet: 2 bytes length (0x000F) + 15 bytes IMEI ASCII
-        int imeiLen = (data[0] << 8) | data[1];
-        if (imeiLen != 15 || data.Count < 17)
+        try
         {
-            _logger.LogWarning("❌ Nieprawidłowy pakiet IMEI, długość: {Len}", imeiLen);
-            _state = SessionState.Error;
-            return;
+            int imeiLen = (data[0] << 8) | data[1];
+            if (imeiLen != 15 || data.Count < 17)
+            {
+                _logger.LogWarning("❌ Invalid IMEI packet, length: {Len}", imeiLen);
+                _diagnostics.LogError("HandleImeiPacket", $"Invalid IMEI length: {imeiLen}, data.Count={data.Count}");
+                TransitionTo(SessionState.Error, $"Invalid IMEI length: {imeiLen}");
+                return;
+            }
+
+            _imei = System.Text.Encoding.ASCII.GetString(data.ToArray(), 2, 15);
+            _diagnostics.Imei = _imei;
+            _logger.LogInformation("📱 IMEI: {Imei}", _imei);
+            _trafficLogger?.LogDecoded("RX", "IMEI", 15, $"IMEI={_imei}");
+
+            await SendRawAsync(stream, new byte[] { 0x01 });
+            _trafficLogger?.LogDecoded("TX", "IMEI_ACK", 1, "Accepted");
+            TransitionTo(SessionState.WaitingForStatus, "IMEI accepted");
         }
-
-        _imei = System.Text.Encoding.ASCII.GetString(data.ToArray(), 2, 15);
-        _logger.LogInformation("📱 IMEI: {Imei}", _imei);
-
-        // Send IMEI ACK (0x01)
-        await SendRawAsync(stream, new byte[] { 0x01 });
-        _state = SessionState.WaitingForStatus;
-        _logger.LogInformation("✅ IMEI zaakceptowany, czekam na STATUS");
+        catch (Exception ex)
+        {
+            _diagnostics.LogError("HandleImeiPacket", ex);
+            _trafficLogger?.LogError("HandleImeiPacket", ex);
+            _logger.LogError(ex, "Error handling IMEI packet");
+            TransitionTo(SessionState.Error, $"IMEI error: {ex.Message}");
+        }
     }
 
     // ─── Frame processing ────────────────────────────────────────────
@@ -189,13 +253,20 @@ public class DddSession
         var packet = DddPacket.Parse(frame.Data);
         if (packet == null)
         {
-            _logger.LogWarning("❌ Cannot parse DDD packet");
+            _logger.LogWarning("❌ Cannot parse DDD packet from frame data ({Len}B)", frame.Data.Length);
+            _diagnostics.LogWarning($"Unparseable DDD packet ({frame.Data.Length}B)");
             return;
         }
 
         var (type, data) = packet.Value;
-        _logger.LogInformation("📦 DDD: type=0x{Type:X2}, {Len}B, state={State}",
-            (byte)type, data.Length, _state);
+        var typeName = type.ToString();
+
+        // Log every received packet to diagnostics
+        _diagnostics.LogPacket("RX", (byte)type, data.Length, $"state={_state}");
+        _trafficLogger?.LogDecodedWithHex("RX", typeName, data, 32, $"state={_state}");
+
+        _logger.LogInformation("📦 DDD: {TypeName} (0x{Type:X2}), {Len}B, state={State}",
+            typeName, (byte)type, data.Length, _state);
 
         // Handle keep alive from device (any state)
         if (type == DddPacketType.KeepAlive)
@@ -204,15 +275,14 @@ public class DddSession
             return;
         }
 
-        // Handle errors (any state) — except states that interpret Error specially
+        // Handle errors (any state)
         if (type == DddPacketType.Error &&
             _state != SessionState.CheckingInterfaceVersion &&
             _state != SessionState.DownloadingFile)
         {
             HandleError(data);
-            // After error, request status to see if we can resume
             await SendDddPacketAsync(stream, DddPacketType.Status);
-            _state = SessionState.WaitingForStatus;
+            TransitionTo(SessionState.WaitingForStatus, "Error received, requesting STATUS");
             return;
         }
 
@@ -226,7 +296,7 @@ public class DddSession
                 if (type == DddPacketType.DriverInfo)
                 {
                     _logger.LogInformation("👤 Driver info received ({Len}B)", data.Length);
-                    // Proceed to authentication
+                    _trafficLogger?.LogDecoded("RX", "DriverInfo", data.Length, "Proceeding to authentication");
                     await StartAuthenticationAsync(stream);
                 }
                 break;
@@ -248,8 +318,9 @@ public class DddSession
                 break;
 
             default:
-                _logger.LogWarning("⚠️ Unexpected packet 0x{Type:X2} in state {State}",
-                    (byte)type, _state);
+                _logger.LogWarning("⚠️ Unexpected packet {TypeName} (0x{Type:X2}) in state {State}",
+                    typeName, (byte)type, _state);
+                _diagnostics.LogWarning($"Unexpected packet {typeName} in state {_state}");
                 break;
         }
     }
@@ -260,85 +331,99 @@ public class DddSession
     {
         if (type != DddPacketType.Status)
         {
-            _logger.LogWarning("⚠️ Expected STATUS, got 0x{Type:X2}", (byte)type);
+            _logger.LogWarning("⚠️ Expected STATUS, got {TypeName} (0x{Type:X2})", type, (byte)type);
+            _diagnostics.LogWarning($"Expected STATUS, got {type} (0x{(byte)type:X2})");
             return;
         }
 
-        // Status payload: "STATUS"(6B) + ResumeState(1B) + SequenceNumber(4B) + Features(1B)
-        // Total = 12 bytes
-        if (data.Length >= 12)
+        try
         {
-            _resumeState = data[6];
-            _lastSequenceNumber = (uint)((data[7] << 24) | (data[8] << 16) | (data[9] << 8) | data[10]);
-            _features = data[11];
-
-            _logger.LogInformation("📊 STATUS: resume=0x{Resume:X2}, seqNum={SeqNum}, features=0x{Features:X2}",
-                _resumeState, _lastSequenceNumber, _features);
-
-            // Check ignition (bit 6 of resume state)
-            if ((_resumeState & 0x40) == 0)
+            if (data.Length >= 12)
             {
-                _logger.LogWarning("🔑 Ignition OFF — nie można pobierać DDD");
-                await SendTerminateAsync(stream);
-                return;
+                _resumeState = data[6];
+                _lastSequenceNumber = (uint)((data[7] << 24) | (data[8] << 16) | (data[9] << 8) | data[10]);
+                _features = data[11];
+
+                _logger.LogInformation("📊 STATUS: resume=0x{Resume:X2}, seqNum={SeqNum}, features=0x{Features:X2}",
+                    _resumeState, _lastSequenceNumber, _features);
+                _trafficLogger?.LogDecoded("RX", "STATUS", data.Length,
+                    $"resume=0x{_resumeState:X2} seqNum={_lastSequenceNumber} features=0x{_features:X2}");
+
+                if ((_resumeState & 0x40) == 0)
+                {
+                    _logger.LogWarning("🔑 Ignition OFF — cannot download DDD");
+                    _diagnostics.LogWarning("Ignition OFF — session terminated");
+                    await SendTerminateAsync(stream, "Ignition OFF");
+                    return;
+                }
             }
-        }
-        else if (data.Length >= 8)
-        {
-            _resumeState = data[6];
-            _features = data.Length >= 12 ? data[11] : (byte)0;
-
-            _logger.LogInformation("📊 STATUS (short): resume=0x{Resume:X2}, features=0x{Features:X2}",
-                _resumeState, _features);
-
-            if ((_resumeState & 0x40) == 0)
+            else if (data.Length >= 8)
             {
-                _logger.LogWarning("🔑 Ignition OFF — nie można pobierać DDD");
-                await SendTerminateAsync(stream);
-                return;
-            }
-        }
-        else
-        {
-            _logger.LogInformation("📊 STATUS received ({Len}B)", data.Length);
-        }
+                _resumeState = data[6];
+                _features = data.Length >= 12 ? data[11] : (byte)0;
 
-        // Resume State logic (bits 0-4)
-        byte resumeBits = (byte)(_resumeState & 0x1F);
+                _logger.LogInformation("📊 STATUS (short {Len}B): resume=0x{Resume:X2}, features=0x{Features:X2}",
+                    data.Length, _resumeState, _features);
+                _trafficLogger?.LogDecoded("RX", "STATUS", data.Length,
+                    $"SHORT resume=0x{_resumeState:X2} features=0x{_features:X2}");
 
-        if ((resumeBits & 0x10) != 0)
-        {
-            // Bit 4: resume from last transfer
-            _logger.LogInformation("🔄 Resuming from last transfer (seq={Seq})", _lastSequenceNumber);
-            await ResumeFromLastTransfer(stream);
-        }
-        else if ((resumeBits & 0x08) != 0)
-        {
-            // Bit 3: resume from file request (skip auth + download list)
-            _logger.LogInformation("🔄 Resuming from file request");
-            await ResumeFromFileRequest(stream);
-        }
-        else if ((resumeBits & 0x04) != 0)
-        {
-            // Bit 2: resume from download list (skip auth)
-            _logger.LogInformation("🔄 Resuming from download list");
-            await StartDownloadListAsync(stream);
-        }
-        else
-        {
-            // Bit 0/1: start from beginning (authentication)
-            // Check if device supports driver info (features bit 1)
-            bool supportsDriverInfo = (_features & 0x02) != 0;
-            if (supportsDriverInfo)
-            {
-                _state = SessionState.RequestingDriverInfo;
-                await SendDddPacketAsync(stream, DddPacketType.DriverInfo);
-                _logger.LogInformation("👤 Requesting driver info...");
+                if ((_resumeState & 0x40) == 0)
+                {
+                    _logger.LogWarning("🔑 Ignition OFF");
+                    _diagnostics.LogWarning("Ignition OFF (short STATUS)");
+                    await SendTerminateAsync(stream, "Ignition OFF");
+                    return;
+                }
             }
             else
             {
-                await StartAuthenticationAsync(stream);
+                _logger.LogWarning("📊 STATUS too short ({Len}B), cannot parse resume/features", data.Length);
+                _diagnostics.LogWarning($"STATUS packet too short: {data.Length}B (expected >=12)");
+                _trafficLogger?.LogDecoded("RX", "STATUS", data.Length, "TOO SHORT — cannot parse");
             }
+
+            // Resume State logic (bits 0-4)
+            byte resumeBits = (byte)(_resumeState & 0x1F);
+
+            if ((resumeBits & 0x10) != 0)
+            {
+                _logger.LogInformation("🔄 Resuming from last transfer (seq={Seq})", _lastSequenceNumber);
+                _diagnostics.LogWarning($"Resume from transfer, seq={_lastSequenceNumber}");
+                await ResumeFromLastTransfer(stream);
+            }
+            else if ((resumeBits & 0x08) != 0)
+            {
+                _logger.LogInformation("🔄 Resuming from file request");
+                _diagnostics.LogWarning("Resume from file request (skip auth+download list)");
+                await ResumeFromFileRequest(stream);
+            }
+            else if ((resumeBits & 0x04) != 0)
+            {
+                _logger.LogInformation("🔄 Resuming from download list");
+                _diagnostics.LogWarning("Resume from download list (skip auth)");
+                await StartDownloadListAsync(stream);
+            }
+            else
+            {
+                bool supportsDriverInfo = (_features & 0x02) != 0;
+                if (supportsDriverInfo)
+                {
+                    TransitionTo(SessionState.RequestingDriverInfo, "Features indicate driver info supported");
+                    await SendDddPacketAsync(stream, DddPacketType.DriverInfo);
+                    _logger.LogInformation("👤 Requesting driver info...");
+                }
+                else
+                {
+                    await StartAuthenticationAsync(stream);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _diagnostics.LogError("HandleStatusPacket", ex);
+            _trafficLogger?.LogError("HandleStatusPacket", ex);
+            _logger.LogError(ex, "Error processing STATUS packet");
+            TransitionTo(SessionState.Error, $"STATUS error: {ex.Message}");
         }
     }
 
@@ -346,7 +431,7 @@ public class DddSession
 
     private async Task ResumeFromFileRequest(NetworkStream stream)
     {
-        _state = SessionState.DownloadingFile;
+        TransitionTo(SessionState.DownloadingFile, "Resume from file request");
         BuildFileList();
         _currentFileIndex = -1;
         await RequestNextFileAsync(stream);
@@ -354,16 +439,14 @@ public class DddSession
 
     private async Task ResumeFromLastTransfer(NetworkStream stream)
     {
-        _state = SessionState.DownloadingFile;
+        TransitionTo(SessionState.DownloadingFile, $"Resume from transfer (seq={_lastSequenceNumber})");
         BuildFileList();
         _currentFileIndex = -1;
 
-        // Send ACK with the sequence number from STATUS to resume transfer
         if (_lastSequenceNumber > 0)
         {
             _currentSequenceNumber = (byte)(_lastSequenceNumber & 0xFF);
             _logger.LogInformation("🔄 Sending ACK for seq={Seq} to resume", _currentSequenceNumber);
-            // We don't know the file type yet; request next file which will trigger fresh download
         }
 
         await RequestNextFileAsync(stream);
@@ -373,36 +456,92 @@ public class DddSession
 
     private async Task StartAuthenticationAsync(NetworkStream stream)
     {
-        _state = SessionState.ApduLoop;
+        TransitionTo(SessionState.ApduLoop, "Starting authentication (ATR)");
 
-        byte[] atr = await _bridge.GetAtrAsync();
-        _logger.LogInformation("💳 ATR from card: {ATR}", BitConverter.ToString(atr));
+        try
+        {
+            byte[] atr = await BridgeGetAtrWithTimeoutAsync();
+            _logger.LogInformation("💳 ATR from card: {ATR} ({Len}B)", BitConverter.ToString(atr), atr.Length);
+            _trafficLogger?.LogDecodedWithHex("BRIDGE", "ATR", atr, 32, "Card ATR received");
 
-        await SendDddPacketAsync(stream, DddPacketType.ATR, atr);
-        _logger.LogInformation("📤 ATR sent to device");
+            await SendDddPacketAsync(stream, DddPacketType.ATR, atr);
+            _logger.LogInformation("📤 ATR sent to device");
+        }
+        catch (OperationCanceledException)
+        {
+            _diagnostics.LogError("StartAuthenticationAsync", "CardBridge timeout getting ATR (30s)");
+            _trafficLogger?.LogError("Authentication", "CardBridge ATR timeout");
+            _logger.LogError("⏱️ CardBridge ATR timeout");
+            TransitionTo(SessionState.Error, "CardBridge ATR timeout");
+        }
+        catch (WebSocketException ex)
+        {
+            _diagnostics.LogError("StartAuthenticationAsync", ex);
+            _trafficLogger?.LogError("Authentication", ex);
+            _logger.LogError(ex, "🔌 CardBridge WebSocket error during ATR");
+            TransitionTo(SessionState.Error, $"CardBridge WebSocket error: {ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            _diagnostics.LogError("StartAuthenticationAsync", ex);
+            _trafficLogger?.LogError("Authentication", ex);
+            _logger.LogError(ex, "Error during authentication start");
+            TransitionTo(SessionState.Error, $"Auth error: {ex.Message}");
+        }
     }
 
     private async Task HandleApduLoop(NetworkStream stream, DddPacketType type, byte[] data)
     {
-        if (type == DddPacketType.VUReadyAPDU || type == DddPacketType.APDU)
+        try
         {
-            _logger.LogInformation("🔀 APDU to card: {Len}B", data.Length);
-            byte[] cardResponse = await _bridge.TransmitApduAsync(data);
-            _logger.LogInformation("🔀 Card response: {Len}B", cardResponse.Length);
+            if (type == DddPacketType.VUReadyAPDU || type == DddPacketType.APDU)
+            {
+                _logger.LogInformation("🔀 APDU to card: {Len}B", data.Length);
+                _trafficLogger?.LogDecodedWithHex("RX", type.ToString(), data, 32, "APDU from VU → card");
 
-            await SendDddPacketAsync(stream, DddPacketType.APDU, cardResponse);
-        }
-        else if (type == DddPacketType.AuthOK)
-        {
-            _logger.LogInformation("🔐 Authentication OK!");
+                byte[] cardResponse = await BridgeTransmitWithTimeoutAsync(data);
+                _diagnostics.ApduExchanges++;
 
-            // After auth OK, check interface version (Gen2v2 detection)
-            _state = SessionState.CheckingInterfaceVersion;
-            await RequestFileAsync(stream, DddFileType.InterfaceVersion);
+                _logger.LogInformation("🔀 Card response: {Len}B", cardResponse.Length);
+                _trafficLogger?.LogDecodedWithHex("BRIDGE", "APDU_RESP", cardResponse, 32, "Card → VU");
+
+                await SendDddPacketAsync(stream, DddPacketType.APDU, cardResponse);
+            }
+            else if (type == DddPacketType.AuthOK)
+            {
+                _logger.LogInformation("🔐 Authentication OK! (after {Apdu} APDU exchanges)", _diagnostics.ApduExchanges);
+                _trafficLogger?.LogDecoded("RX", "AuthOK", data.Length,
+                    $"Authentication successful after {_diagnostics.ApduExchanges} exchanges");
+
+                TransitionTo(SessionState.CheckingInterfaceVersion, "Auth OK, checking interface version");
+                await RequestFileAsync(stream, DddFileType.InterfaceVersion);
+            }
+            else
+            {
+                _logger.LogWarning("⚠️ Unexpected in APDU loop: {TypeName} (0x{Type:X2})", type, (byte)type);
+                _diagnostics.LogWarning($"Unexpected packet in APDU loop: {type}");
+            }
         }
-        else
+        catch (OperationCanceledException)
         {
-            _logger.LogWarning("⚠️ Unexpected in APDU loop: 0x{Type:X2}", (byte)type);
+            _diagnostics.LogError("HandleApduLoop", "CardBridge timeout during APDU exchange (30s)");
+            _trafficLogger?.LogError("ApduLoop", "CardBridge APDU timeout");
+            _logger.LogError("⏱️ CardBridge APDU timeout");
+            TransitionTo(SessionState.Error, "CardBridge APDU timeout");
+        }
+        catch (WebSocketException ex)
+        {
+            _diagnostics.LogError("HandleApduLoop", ex);
+            _trafficLogger?.LogError("ApduLoop", ex);
+            _logger.LogError(ex, "🔌 CardBridge WebSocket error during APDU");
+            TransitionTo(SessionState.Error, $"CardBridge APDU WebSocket error: {ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            _diagnostics.LogError("HandleApduLoop", ex);
+            _trafficLogger?.LogError("HandleApduLoop", ex);
+            _logger.LogError(ex, "Error in APDU loop");
+            TransitionTo(SessionState.Error, $"APDU loop error: {ex.Message}");
         }
     }
 
@@ -410,63 +549,80 @@ public class DddSession
 
     private async Task HandleInterfaceVersionResponse(NetworkStream stream, DddPacketType type, byte[] data)
     {
-        if (type == DddPacketType.FileData)
+        try
         {
-            // Multi-chunk response — buffer data (skip fileType + seqNum)
-            if (data.Length > 2)
-                _fileBuffer.AddRange(data.AsSpan(2).ToArray());
-
-            // ACK with next sequence number
-            byte seqNum = data.Length > 1 ? data[1] : (byte)0;
-            _currentSequenceNumber = (byte)(seqNum + 1);
-            var ackPayload = new byte[] { data[0], _currentSequenceNumber };
-            await SendDddPacketAsync(stream, DddPacketType.FileData, ackPayload);
-        }
-        else if (type == DddPacketType.FileDataEOF)
-        {
-            // Append remaining data
-            if (data.Length > 2)
-                _fileBuffer.AddRange(data.AsSpan(2).ToArray());
-
-            // Parse TREP from buffered data: SID at [0], TREP at [1]
-            byte trep = 0;
-            if (_fileBuffer.Count >= 2)
+            if (type == DddPacketType.FileData)
             {
-                byte sid = _fileBuffer[0];
-                trep = _fileBuffer[1];
-                _logger.LogInformation("🔍 InterfaceVersion: SID=0x{SID:X2}, TREP=0x{TREP:X2}", sid, trep);
-            }
-            else if (data.Length >= 4)
-            {
-                trep = data[3]; // fallback: parse from EOF payload
-            }
+                if (data.Length > 2)
+                    _fileBuffer.AddRange(data.AsSpan(2).ToArray());
 
-            if (trep == 0x02)
-                _vuGeneration = VuGeneration.Gen2v2;
-            else if (trep == 0x01)
-                _vuGeneration = VuGeneration.Gen1; // or Gen2v1, will refine
-            else
+                byte seqNum = data.Length > 1 ? data[1] : (byte)0;
+                _currentSequenceNumber = (byte)(seqNum + 1);
+                var ackPayload = new byte[] { data[0], _currentSequenceNumber };
+                await SendDddPacketAsync(stream, DddPacketType.FileData, ackPayload);
+
+                _trafficLogger?.LogDecoded("RX", "FileData(IntVer)", data.Length - 2,
+                    $"chunk seq={seqNum}, buffered={_fileBuffer.Count}B");
+            }
+            else if (type == DddPacketType.FileDataEOF)
+            {
+                if (data.Length > 2)
+                    _fileBuffer.AddRange(data.AsSpan(2).ToArray());
+
+                byte trep = 0;
+                if (_fileBuffer.Count >= 2)
+                {
+                    byte sid = _fileBuffer[0];
+                    trep = _fileBuffer[1];
+                    _logger.LogInformation("🔍 InterfaceVersion: SID=0x{SID:X2}, TREP=0x{TREP:X2}", sid, trep);
+                    _trafficLogger?.LogDecoded("RX", "FileDataEOF(IntVer)", _fileBuffer.Count,
+                        $"SID=0x{sid:X2} TREP=0x{trep:X2}");
+                }
+                else if (data.Length >= 4)
+                {
+                    trep = data[3];
+                    _trafficLogger?.LogDecoded("RX", "FileDataEOF(IntVer)", data.Length,
+                        $"TREP from payload=0x{trep:X2} (fallback)");
+                }
+
+                if (trep == 0x02)
+                    _vuGeneration = VuGeneration.Gen2v2;
+                else if (trep == 0x01)
+                    _vuGeneration = VuGeneration.Gen1;
+                else
+                    _vuGeneration = VuGeneration.Gen1;
+
+                _fileBuffer.Clear();
+                _currentSequenceNumber = 0;
+
+                _logger.LogInformation("🔍 Detected VU generation: {Gen} (TREP=0x{Trep:X2})", _vuGeneration, trep);
+                _diagnostics.Generation = _vuGeneration;
+                await StartDownloadListAsync(stream);
+            }
+            else if (type == DddPacketType.Error)
+            {
+                HandleError(data);
                 _vuGeneration = VuGeneration.Gen1;
+                _diagnostics.Generation = _vuGeneration;
+                _fileBuffer.Clear();
+                _currentSequenceNumber = 0;
 
-            _fileBuffer.Clear();
-            _currentSequenceNumber = 0;
-
-            _logger.LogInformation("🔍 Detected VU generation: {Gen} (TREP=0x{Trep:X2})", _vuGeneration, trep);
-            await StartDownloadListAsync(stream);
+                _logger.LogInformation("🔍 Interface version not supported — assuming Gen1");
+                _diagnostics.LogWarning("InterfaceVersion error — defaulting to Gen1");
+                await StartDownloadListAsync(stream);
+            }
+            else
+            {
+                _logger.LogWarning("⚠️ Unexpected in version check: {TypeName} (0x{Type:X2})", type, (byte)type);
+                _diagnostics.LogWarning($"Unexpected packet in InterfaceVersion check: {type}");
+            }
         }
-        else if (type == DddPacketType.Error)
+        catch (Exception ex)
         {
-            HandleError(data);
-            // Negative response = Gen1 or Gen2v1 (doesn't support interface version)
-            _vuGeneration = VuGeneration.Gen1;
-            _fileBuffer.Clear();
-            _currentSequenceNumber = 0;
-            _logger.LogInformation("🔍 Interface version not supported — assuming Gen1");
-            await StartDownloadListAsync(stream);
-        }
-        else
-        {
-            _logger.LogWarning("⚠️ Unexpected in version check: 0x{Type:X2}", (byte)type);
+            _diagnostics.LogError("HandleInterfaceVersionResponse", ex);
+            _trafficLogger?.LogError("InterfaceVersion", ex);
+            _logger.LogError(ex, "Error in interface version handling");
+            TransitionTo(SessionState.Error, $"InterfaceVersion error: {ex.Message}");
         }
     }
 
@@ -474,15 +630,16 @@ public class DddSession
 
     private async Task StartDownloadListAsync(NetworkStream stream)
     {
-        _state = SessionState.WaitingForDownloadListAck;
+        TransitionTo(SessionState.WaitingForDownloadListAck, "Sending download list");
 
-        // Build file list based on generation
         BuildFileList();
 
-        // Send download list request
-        await SendDddPacketAsync(stream, DddPacketType.DownloadList, BuildDownloadListPayload());
-        _logger.LogInformation("📋 Download list sent ({Count} files, gen={Gen})",
-            _filesToDownload.Count, _vuGeneration);
+        var payload = BuildDownloadListPayload();
+        await SendDddPacketAsync(stream, DddPacketType.DownloadList, payload);
+        _logger.LogInformation("📋 Download list sent ({Count} files, gen={Gen}, payload={PayloadLen}B)",
+            _filesToDownload.Count, _vuGeneration, payload.Length);
+        _trafficLogger?.LogDecodedWithHex("TX", "DownloadList", payload, 32,
+            $"{_filesToDownload.Count} files, gen={_vuGeneration}");
     }
 
     private void BuildFileList()
@@ -493,61 +650,42 @@ public class DddSession
         _filesToDownload.Add(DddFileType.EventsAndFaults);
         _filesToDownload.Add(DddFileType.DetailedSpeed);
         _filesToDownload.Add(DddFileType.TechnicalData);
-        // Driver cards can be added if driver info indicated cards are present
+
+        _logger.LogDebug("📋 File list built: {Files}", string.Join(", ", _filesToDownload));
     }
 
     /// <summary>
     /// Build Download List payload per spec (Tables 14-16).
-    /// Format: [fileType(1B)][dataLength(1B)][fileTypeData(NB)] for each file.
-    /// Download List ALWAYS uses Gen1 codes (0x01-0x06), regardless of VU generation.
-    /// Generation-specific TRTP codes are used ONLY in FileRequest (0x30).
+    /// Download List ALWAYS uses Gen1 codes (0x01-0x06).
     /// </summary>
     private byte[] BuildDownloadListPayload()
     {
         var payload = new List<byte>();
 
-        // Overview (0x01, dataLen=0)
-        payload.Add(0x01);
-        payload.Add(0x00);
+        payload.Add(0x01); payload.Add(0x00); // Overview
 
-        // Activities (0x02, dataLen=10): [0x02][startType(1B)][start(4B)][endType(1B)][end(4B)]
+        // Activities (0x02, dataLen=10)
         var end = DateTimeOffset.UtcNow;
         var start = end.AddDays(-28);
         payload.Add(0x02);
-        payload.Add(0x0A); // dataLen = 10
-        payload.Add(0x02); // start time type
+        payload.Add(0x0A);
+        payload.Add(0x02);
         WriteBigEndianUint32ToList(payload, (uint)start.ToUnixTimeSeconds());
-        payload.Add(0x03); // end time type
+        payload.Add(0x03);
         WriteBigEndianUint32ToList(payload, (uint)end.ToUnixTimeSeconds());
 
-        // Events and Faults (0x03, dataLen=0)
-        payload.Add(0x03);
-        payload.Add(0x00);
+        payload.Add(0x03); payload.Add(0x00); // Events
+        payload.Add(0x04); payload.Add(0x00); // Speed
+        payload.Add(0x05); payload.Add(0x00); // Technical
 
-        // Detailed Speed (0x04, dataLen=0)
-        payload.Add(0x04);
-        payload.Add(0x00);
-
-        // Technical Data (0x05, dataLen=0)
-        payload.Add(0x05);
-        payload.Add(0x00);
-
-        // Driver Card slot 1 (0x06, dataLen=1, data=0x01)
-        payload.Add(0x06);
-        payload.Add(0x01);
-        payload.Add(0x01);
-
-        // Driver Card slot 2 (0x06, dataLen=1, data=0x02)
-        payload.Add(0x06);
-        payload.Add(0x01);
-        payload.Add(0x02);
+        payload.Add(0x06); payload.Add(0x01); payload.Add(0x01); // Driver slot 1
+        payload.Add(0x06); payload.Add(0x01); payload.Add(0x02); // Driver slot 2
 
         return payload.ToArray();
     }
 
     /// <summary>
-    /// Get the Transfer Request Type Parameter for a file based on VU generation.
-    /// Gen1: 01-05, Gen2v1: 21-25, Gen2v2: 31-35.
+    /// Get TRTP code for FileRequest based on VU generation.
     /// Used ONLY for FileRequest (0x30), NOT for Download List.
     /// </summary>
     private byte GetTrtp(DddFileType fileType)
@@ -565,42 +703,60 @@ public class DddSession
             _ => 0x01
         };
 
-        // Driver cards and interface version don't change per generation
         if (fileType == DddFileType.DriverCard1 || fileType == DddFileType.DriverCard2 ||
             fileType == DddFileType.InterfaceVersion)
             return baseCode;
 
-        // DetailedSpeed: Gen2v2 doesn't have it (no 0x34), use Gen2v1 code 0x24
         if (fileType == DddFileType.DetailedSpeed && _vuGeneration == VuGeneration.Gen2v2)
-            return 0x24; // fallback to Gen2v1
+            return 0x24;
 
         return _vuGeneration switch
         {
             VuGeneration.Gen2v2 => (byte)(baseCode + 0x30),
             VuGeneration.Gen2v1 => (byte)(baseCode + 0x20),
-            _ => baseCode // Gen1
+            _ => baseCode
         };
     }
 
     private async Task HandleDownloadListAck(NetworkStream stream, DddPacketType type, byte[] data)
     {
-        if (type == DddPacketType.DownloadList)
+        try
         {
-            _logger.LogInformation("✅ Download list ACK received");
-            _currentFileIndex = -1;
-            await RequestNextFileAsync(stream);
+            if (type == DddPacketType.DownloadList)
+            {
+                _logger.LogInformation("✅ Download list ACK received");
+                _trafficLogger?.LogDecoded("RX", "DownloadListACK", data.Length, "Proceeding to file downloads");
+                _currentFileIndex = -1;
+                await RequestNextFileAsync(stream);
+            }
+            else if (type == DddPacketType.APDU)
+            {
+                _logger.LogInformation("🔀 APDU during Download List unlock: {Len}B", data.Length);
+                _trafficLogger?.LogDecoded("RX", "APDU(DlListUnlock)", data.Length, "VU APDU during unlock");
+
+                byte[] cardResponse = await BridgeTransmitWithTimeoutAsync(data);
+                _diagnostics.ApduExchanges++;
+                await SendDddPacketAsync(stream, DddPacketType.APDU, cardResponse);
+                _trafficLogger?.LogDecoded("TX", "APDU(DlListUnlock)", cardResponse.Length, "Card response forwarded");
+            }
+            else
+            {
+                _logger.LogWarning("⚠️ Expected DownloadList ACK, got {TypeName} (0x{Type:X2})", type, (byte)type);
+                _diagnostics.LogWarning($"Expected DownloadList ACK, got {type}");
+            }
         }
-        else if (type == DddPacketType.APDU)
+        catch (OperationCanceledException)
         {
-            // VU responded with APDU during unlock — forward to card and send response back
-            _logger.LogInformation("🔀 APDU during Download List unlock: {Len}B", data.Length);
-            byte[] cardResponse = await _bridge.TransmitApduAsync(data);
-            await SendDddPacketAsync(stream, DddPacketType.APDU, cardResponse);
-            // Stay in WaitingForDownloadListAck state
+            _diagnostics.LogError("HandleDownloadListAck", "CardBridge timeout during APDU (unlock)");
+            _trafficLogger?.LogError("DownloadListAck", "CardBridge APDU timeout");
+            TransitionTo(SessionState.Error, "CardBridge timeout during download list unlock");
         }
-        else
+        catch (Exception ex)
         {
-            _logger.LogWarning("⚠️ Expected DownloadList ACK, got 0x{Type:X2}", (byte)type);
+            _diagnostics.LogError("HandleDownloadListAck", ex);
+            _trafficLogger?.LogError("HandleDownloadListAck", ex);
+            _logger.LogError(ex, "Error handling download list ACK");
+            TransitionTo(SessionState.Error, $"DownloadListAck error: {ex.Message}");
         }
     }
 
@@ -608,28 +764,42 @@ public class DddSession
 
     private async Task RequestNextFileAsync(NetworkStream stream)
     {
-        _currentFileIndex++;
-
-        if (_currentFileIndex >= _filesToDownload.Count)
+        try
         {
-            // All files downloaded — merge VU files and terminate
-            _logger.LogInformation("🎉 All {Count} files downloaded!", _filesToDownload.Count);
-            MergeVuFiles();
-            await SendTerminateAsync(stream);
-            return;
+            _currentFileIndex++;
+
+            if (_currentFileIndex >= _filesToDownload.Count)
+            {
+                _logger.LogInformation("🎉 All {Count} files downloaded!", _filesToDownload.Count);
+                MergeVuFiles();
+                await SendTerminateAsync(stream, "All files downloaded");
+                return;
+            }
+
+            _currentFileType = _filesToDownload[_currentFileIndex];
+            _currentSequenceNumber = 0;
+            _fileBuffer.Clear();
+            _lastSid = 0;
+            _lastTrep = 0;
+
+            // Start file timer
+            _diagnostics.StartFileTimer(_currentFileType);
+
+            TransitionTo(SessionState.DownloadingFile,
+                $"Requesting file {_currentFileIndex + 1}/{_filesToDownload.Count}: {_currentFileType}");
+
+            await RequestFileAsync(stream, _currentFileType);
+
+            _logger.LogInformation("📥 Requesting file {Idx}/{Total}: {Type} (TRTP=0x{Trtp:X2})",
+                _currentFileIndex + 1, _filesToDownload.Count, _currentFileType, GetTrtp(_currentFileType));
         }
-
-        _currentFileType = _filesToDownload[_currentFileIndex];
-        _currentSequenceNumber = 0;
-        _fileBuffer.Clear();
-        _lastSid = 0;
-        _lastTrep = 0;
-
-        _state = SessionState.DownloadingFile;
-        await RequestFileAsync(stream, _currentFileType);
-
-        _logger.LogInformation("📥 Requesting file {Idx}/{Total}: {Type} (TRTP=0x{Trtp:X2})",
-            _currentFileIndex + 1, _filesToDownload.Count, _currentFileType, GetTrtp(_currentFileType));
+        catch (Exception ex)
+        {
+            _diagnostics.LogError("RequestNextFileAsync", ex);
+            _trafficLogger?.LogError("RequestNextFile", ex);
+            _logger.LogError(ex, "Error requesting next file");
+            TransitionTo(SessionState.Error, $"RequestNextFile error: {ex.Message}");
+        }
     }
 
     private async Task RequestFileAsync(NetworkStream stream, DddFileType fileType)
@@ -639,7 +809,6 @@ public class DddSession
 
         if (fileType == DddFileType.Activities)
         {
-            // Activities need start + end timestamps (download last 28 days)
             var end = DateTimeOffset.UtcNow;
             var start = end.AddDays(-28);
             payload = new byte[9];
@@ -649,11 +818,11 @@ public class DddSession
         }
         else if (fileType == DddFileType.DriverCard1)
         {
-            payload = new byte[] { trtp, 0x01 }; // slot 1
+            payload = new byte[] { trtp, 0x01 };
         }
         else if (fileType == DddFileType.DriverCard2)
         {
-            payload = new byte[] { trtp, 0x02 }; // slot 2
+            payload = new byte[] { trtp, 0x02 };
         }
         else
         {
@@ -661,78 +830,113 @@ public class DddSession
         }
 
         await SendDddPacketAsync(stream, DddPacketType.FileRequest, payload);
+        _trafficLogger?.LogDecodedWithHex("TX", "FileRequest", payload, 16,
+            $"{fileType} TRTP=0x{trtp:X2}");
     }
 
     private async Task HandleFileData(NetworkStream stream, DddPacketType type, byte[] data)
     {
-        if (type == DddPacketType.FileData)
+        try
         {
-            // File data: [fileType(1B)] [seqNum(1B)] [data...]
-            if (data.Length < 2) return;
-
-            byte seqNum = data[1];
-            int dataOffset = 2;
-
-            // First packet of a file contains SID + TREP (read dynamically)
-            if (_currentSequenceNumber == 0 && data.Length > 3)
+            if (type == DddPacketType.FileData)
             {
-                _lastSid = data[2];
-                _lastTrep = data[3];
-                dataOffset = 4; // skip SID + TREP
+                if (data.Length < 2) return;
 
-                _logger.LogInformation("📄 File start — SID=0x{SID:X2}, TREP=0x{TREP:X2}",
-                    _lastSid, _lastTrep);
+                byte seqNum = data[1];
+                int dataOffset = 2;
 
-                if (_lastSid == 0x7F)
+                // First packet — SID + TREP
+                if (_currentSequenceNumber == 0 && data.Length > 3)
                 {
-                    _logger.LogWarning("⚠️ Negative response (SID=0x7F) for {Type}!", _currentFileType);
+                    _lastSid = data[2];
+                    _lastTrep = data[3];
+                    dataOffset = 4;
+
+                    _logger.LogInformation("📄 File start — SID=0x{SID:X2}, TREP=0x{TREP:X2}", _lastSid, _lastTrep);
+                    _trafficLogger?.LogDecoded("RX", "FileData(Start)", data.Length,
+                        $"{_currentFileType} SID=0x{_lastSid:X2} TREP=0x{_lastTrep:X2}");
+
+                    if (_lastSid == 0x7F)
+                    {
+                        _logger.LogWarning("⚠️ Negative response (SID=0x7F) for {Type}!", _currentFileType);
+                        _diagnostics.LogWarning($"Negative response (SID=0x7F) for {_currentFileType}");
+                    }
                 }
-            }
 
-            // Append file data (skip fileType + seqNum + SID/TREP)
-            if (data.Length > dataOffset)
+                if (data.Length > dataOffset)
+                {
+                    _fileBuffer.AddRange(data.AsSpan(dataOffset).ToArray());
+                }
+
+                _currentSequenceNumber = (byte)(seqNum + 1);
+
+                if (seqNum % 10 == 0 || seqNum == 0) // Log every 10th chunk + first
+                {
+                    _logger.LogInformation("📥 Chunk seq={Seq}, +{ChunkLen}B, total={Total}B",
+                        seqNum, data.Length - dataOffset, _fileBuffer.Count);
+                }
+
+                var ackPayload = new byte[] { data[0], _currentSequenceNumber };
+                await SendDddPacketAsync(stream, DddPacketType.FileData, ackPayload);
+            }
+            else if (type == DddPacketType.FileDataEOF)
             {
-                _fileBuffer.AddRange(data.AsSpan(dataOffset).ToArray());
+                if (data.Length > 2)
+                {
+                    _fileBuffer.AddRange(data.AsSpan(2).ToArray());
+                }
+
+                // Stop file timer
+                _diagnostics.StopFileTimer(_currentFileType, _fileBuffer.Count, true);
+
+                // Calculate speed
+                var lastDownload = _diagnostics.FileDownloads.LastOrDefault();
+                string speedInfo = "";
+                if (lastDownload != null && lastDownload.Duration.TotalSeconds > 0)
+                {
+                    double kbps = (_fileBuffer.Count / 1024.0) / lastDownload.Duration.TotalSeconds;
+                    speedInfo = $" ({lastDownload.Duration.TotalSeconds:F1}s, {kbps:F1} KB/s)";
+                }
+
+                // Store for merging
+                if (_fileBuffer.Count > 0)
+                {
+                    _downloadedFiles[_currentFileType] = _fileBuffer.ToArray();
+                }
+
+                SaveCurrentFile();
+                _logger.LogInformation("💾 File saved: {Type}, {Size}B{Speed}",
+                    _currentFileType, _fileBuffer.Count, speedInfo);
+                _trafficLogger?.LogDecoded("RX", "FileDataEOF", data.Length,
+                    $"{_currentFileType} complete: {_fileBuffer.Count}B{speedInfo}");
+
+                await RequestNextFileAsync(stream);
             }
-
-            _currentSequenceNumber = (byte)(seqNum + 1);
-            _logger.LogInformation("📥 Chunk seq={Seq}, {Len}B, total={Total}B",
-                seqNum, data.Length - dataOffset, _fileBuffer.Count);
-
-            // Send ACK with next expected sequence number
-            var ackPayload = new byte[] { data[0], _currentSequenceNumber };
-            await SendDddPacketAsync(stream, DddPacketType.FileData, ackPayload);
-        }
-        else if (type == DddPacketType.FileDataEOF)
-        {
-            // EOF: [fileType(1B)] [seqNum(1B)] [remaining data...]
-            if (data.Length > 2)
+            else if (type == DddPacketType.Error)
             {
-                _fileBuffer.AddRange(data.AsSpan(2).ToArray());
-            }
+                HandleError(data);
 
-            // Store downloaded file data for merging
-            if (_fileBuffer.Count > 0)
+                // Stop file timer with failure
+                _diagnostics.StopFileTimer(_currentFileType, _fileBuffer.Count, false,
+                    $"Error during download: {(data.Length >= 2 ? DddErrorCodes.Format(data[0], data[1]) : "unknown")}");
+
+                _logger.LogWarning("⚠️ Error downloading {Type}, skipping", _currentFileType);
+                await RequestNextFileAsync(stream);
+            }
+            else
             {
-                _downloadedFiles[_currentFileType] = _fileBuffer.ToArray();
+                _logger.LogWarning("⚠️ Unexpected {TypeName} (0x{Type:X2}) during download of {File}",
+                    type, (byte)type, _currentFileType);
+                _diagnostics.LogWarning($"Unexpected packet {type} during download of {_currentFileType}");
             }
-
-            // Save individual file
-            SaveCurrentFile();
-            _logger.LogInformation("💾 File saved: {Type}, {Size}B", _currentFileType, _fileBuffer.Count);
-
-            // Request next file (no ACK for EOF)
-            await RequestNextFileAsync(stream);
         }
-        else if (type == DddPacketType.Error)
+        catch (Exception ex)
         {
-            // Error during file download — skip this file, try next
-            _logger.LogWarning("⚠️ Error downloading {Type}, skipping", _currentFileType);
-            await RequestNextFileAsync(stream);
-        }
-        else
-        {
-            _logger.LogWarning("⚠️ Unexpected 0x{Type:X2} during download", (byte)type);
+            _diagnostics.LogError("HandleFileData", ex);
+            _diagnostics.StopFileTimer(_currentFileType, _fileBuffer.Count, false, ex.Message);
+            _trafficLogger?.LogError("HandleFileData", ex);
+            _logger.LogError(ex, "Error handling file data for {Type}", _currentFileType);
+            TransitionTo(SessionState.Error, $"FileData error: {ex.Message}");
         }
     }
 
@@ -760,11 +964,6 @@ public class DddSession
 
     // ─── VU FILE MERGING ─────────────────────────────────────────────
 
-    /// <summary>
-    /// Merge VU files (Overview, Activities, Events, Speed, Technical) into a single .DDD file.
-    /// Driver cards are kept as separate files per spec (str. 35).
-    /// Files are merged in order: Overview, Activities, Events, Speed, Technical.
-    /// </summary>
     private void MergeVuFiles()
     {
         var vuFileTypes = new[]
@@ -807,35 +1006,37 @@ public class DddSession
 
     private void HandleError(byte[] data)
     {
-        if (data.Length >= 3)
+        if (data.Length >= 2)
         {
             byte errorClass = data[0];
             byte errorCode = data[1];
-            ushort errorState = (ushort)((data[2] << 8) | (data.Length > 3 ? data[3] : 0));
+            ushort errorState = data.Length >= 4 ? (ushort)((data[2] << 8) | data[3]) : (ushort)0;
 
-            _logger.LogError("❌ ERROR class={Class}, code={Code:X2}, state=0x{State:X4}",
-                errorClass, errorCode, errorState);
+            string description = DddErrorCodes.Format(errorClass, errorCode);
+            _logger.LogError("❌ DDD ERROR: {Description}, state=0x{State:X4}", description, errorState);
+            _trafficLogger?.LogError("DddError", $"{description}, state=0x{errorState:X4}");
+            _diagnostics.LogError("DddProtocol", $"{description}, state=0x{errorState:X4}");
 
-            // Error 020A = Auth failure (certificate rejected)
             if (errorClass == 2 && errorCode == 0x0A)
             {
                 _logger.LogError("🔒 Authentication failure — certificate rejected");
-                _state = SessionState.Error;
+                TransitionTo(SessionState.Error, "Certificate rejected");
             }
         }
         else
         {
-            _logger.LogError("❌ ERROR packet ({Len}B)", data.Length);
+            _logger.LogError("❌ ERROR packet ({Len}B) — too short to parse", data.Length);
+            _diagnostics.LogError("DddProtocol", $"Error packet too short: {data.Length}B");
         }
     }
 
     // ─── TERMINATE ───────────────────────────────────────────────────
 
-    private async Task SendTerminateAsync(NetworkStream stream)
+    private async Task SendTerminateAsync(NetworkStream stream, string reason = "session complete")
     {
         await SendDddPacketAsync(stream, DddPacketType.Terminate);
-        _state = SessionState.Complete;
-        _logger.LogInformation("🏁 Terminate sent, session complete");
+        TransitionTo(SessionState.Complete, reason);
+        _logger.LogInformation("🏁 Terminate sent: {Reason}", reason);
     }
 
     // ─── Low-level send helpers ──────────────────────────────────────
@@ -844,6 +1045,12 @@ public class DddSession
     {
         var dddPayload = DddPacket.Build(type, data);
         var frame = Codec12Parser.Build(dddPayload);
+
+        // Log outgoing packet
+        var typeName = type.ToString();
+        _diagnostics.LogPacket("TX", (byte)type, frame.Length, $"{typeName}");
+        _trafficLogger?.LogDecoded("TX", typeName, data?.Length ?? 0, $"frame={frame.Length}B");
+
         await SendRawAsync(stream, frame);
     }
 
@@ -851,6 +1058,7 @@ public class DddSession
     {
         await stream.WriteAsync(data);
         _trafficLogger?.Log("TX", data, data.Length);
+        _diagnostics.BytesSent += data.Length;
         _lastActivity = DateTime.UtcNow;
     }
 
@@ -858,6 +1066,20 @@ public class DddSession
     {
         await SendDddPacketAsync(stream, DddPacketType.KeepAlive);
         _logger.LogDebug("💓 Keep alive sent");
+    }
+
+    // ─── CardBridge wrappers with timeout ────────────────────────────
+
+    private async Task<byte[]> BridgeGetAtrWithTimeoutAsync()
+    {
+        using var cts = new CancellationTokenSource(BridgeTimeout);
+        return await _bridge.GetAtrAsync();
+    }
+
+    private async Task<byte[]> BridgeTransmitWithTimeoutAsync(byte[] apdu)
+    {
+        using var cts = new CancellationTokenSource(BridgeTimeout);
+        return await _bridge.TransmitApduAsync(apdu);
     }
 
     // ─── Utilities ───────────────────────────────────────────────────
