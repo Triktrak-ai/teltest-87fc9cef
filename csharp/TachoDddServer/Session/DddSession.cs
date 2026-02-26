@@ -39,6 +39,17 @@ public class DddSession
             recvBuffer.AddRange(buffer.AsSpan(0, bytesRead).ToArray());
 
             var frameData = recvBuffer.ToArray();
+
+            // Sprawdź czy to ramka AVL (Codec 8 / 8E) — jeśli tak, wyślij ACK i pomiń
+            if (TryHandleAvlFrame(frameData, frameData.Length, stream, out bool wasAvl))
+            {
+                if (wasAvl)
+                {
+                    recvBuffer.Clear();
+                    continue;
+                }
+            }
+
             var frame = Codec12Parser.Parse(frameData, frameData.Length);
 
             if (frame == null) continue;
