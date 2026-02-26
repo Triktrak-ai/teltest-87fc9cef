@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using TachoDddServer.Session;
 using TachoDddServer.CardBridge;
+using TachoDddServer.Reporting;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -58,18 +59,26 @@ while (true)
     _ = Task.Run(async () =>
     {
         var sessionSw = Stopwatch.StartNew();
+        var sessionId = Guid.NewGuid().ToString("N")[..12];
+        using var webReporter = new WebReporter(sessionId, webReportUrl, webReportApiKey, webReportEnabled,
+            loggerFactory.CreateLogger<WebReporter>());
+
         try
         {
+            // Report initial connecting status
+            webReporter.ReportStatus("connecting");
+
             using var bridge = new CardBridgeClient(cardBridgeUrl, loggerFactory.CreateLogger<CardBridgeClient>());
             await bridge.ConnectAsync();
 
             var session = new DddSession(client, bridge, outputDir, loggerFactory.CreateLogger<DddSession>(),
-                trafficLogDir, logTraffic, webReportUrl, webReportApiKey, webReportEnabled);
+                trafficLogDir, logTraffic, webReporter);
             await session.RunAsync();
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "❌ Session error from {IP}:{Port}", ep?.Address, ep?.Port);
+            webReporter.ReportError("CONNECTION_FAILED", ex.Message);
         }
         finally
         {
