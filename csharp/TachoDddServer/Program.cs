@@ -59,7 +59,7 @@ while (true)
     _ = Task.Run(async () =>
     {
         var sessionSw = Stopwatch.StartNew();
-        var sessionId = Guid.NewGuid().ToString("N")[..12];
+        var sessionId = Guid.NewGuid().ToString();
         using var webReporter = new WebReporter(sessionId, webReportUrl, webReportApiKey, webReportEnabled,
             loggerFactory.CreateLogger<WebReporter>());
 
@@ -69,7 +69,6 @@ while (true)
             webReporter.ReportStatus("connecting");
 
             using var bridge = new CardBridgeClient(cardBridgeUrl, loggerFactory.CreateLogger<CardBridgeClient>());
-            await bridge.ConnectAsync();
 
             var session = new DddSession(client, bridge, outputDir, loggerFactory.CreateLogger<DddSession>(),
                 trafficLogDir, logTraffic, webReporter);
@@ -83,6 +82,7 @@ while (true)
         finally
         {
             sessionSw.Stop();
+            await webReporter.FlushAsync();
             logger.LogInformation("📡 Disconnected {IP}:{Port} — session duration: {Duration}",
                 ep?.Address, ep?.Port, FormatDuration(sessionSw.Elapsed));
             client.Dispose();
