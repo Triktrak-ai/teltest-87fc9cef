@@ -5,6 +5,7 @@ using TachoDddServer.Protocol;
 using TachoDddServer.CardBridge;
 using TachoDddServer.Storage;
 using TachoDddServer.Logging;
+using TachoDddServer.Reporting;
 
 namespace TachoDddServer.Session;
 
@@ -16,6 +17,7 @@ public class DddSession
     private readonly ILogger _logger;
     private readonly TrafficLogger? _trafficLogger;
     private readonly SessionDiagnostics _diagnostics;
+    private readonly WebReporter? _webReporter;
     private readonly string? _logDir;
 
     private SessionState _state = SessionState.WaitingForImei;
@@ -51,7 +53,8 @@ public class DddSession
     private static readonly TimeSpan KeepAliveInterval = TimeSpan.FromSeconds(80);
 
     public DddSession(TcpClient client, CardBridgeClient bridge, string outputDir, ILogger logger,
-        string? trafficLogDir = null, bool logTraffic = false)
+        string? trafficLogDir = null, bool logTraffic = false,
+        string? webReportUrl = null, string? webReportApiKey = null, bool webReportEnabled = false)
     {
         _client = client;
         _bridge = bridge;
@@ -68,6 +71,8 @@ public class DddSession
             _trafficLogger = new TrafficLogger(trafficLogDir, sessionId);
         }
 
+        _webReporter = new WebReporter(_diagnostics.SessionId, webReportUrl, webReportApiKey, webReportEnabled, logger);
+
         _logger.LogInformation("📋 Session created: id={SessionId}, endpoint={Endpoint}",
             _diagnostics.SessionId, endpoint);
     }
@@ -81,6 +86,38 @@ public class DddSession
         _diagnostics.LogStateTransition(oldState, newState, reason);
         _trafficLogger?.LogStateChange(oldState, newState, reason);
         _logger.LogInformation("STATE {From} -> {To} [{Reason}]", oldState, newState, reason);
+
+        // Map SessionState to web dashboard status
+        var webStatus = newState switch
+        {
+            SessionState.WaitingForImei or SessionState.WaitingForStatus => "connecting",
+            SessionState.RequestingDriverInfo => "connecting",
+            SessionState.ApduLoop => _vuGeneration switch
+            {
+                VuGeneration.Gen2v2 => "auth_gen2v2",
+                VuGeneration.Gen2v1 => "auth_gen2v1",
+                VuGeneration.Gen1 => "auth_gen1",
+                _ => "connecting"
+            },
+            SessionState.CheckingInterfaceVersion => "connecting",
+            SessionState.WaitingForDownloadListAck => "waiting",
+            SessionState.DownloadingFile or SessionState.ResumingDownload => "downloading",
+            SessionState.Complete => "completed",
+            SessionState.Error => "error",
+            _ => "connecting"
+        };
+
+        var progress = _filesToDownload.Count > 0
+            ? (int)(_currentFileIndex * 100.0 / _filesToDownload.Count)
+            : 0;
+
+        _webReporter?.ReportStatus(
+            webStatus, progress, _currentFileIndex > 0 ? _currentFileIndex : 0,
+            _filesToDownload.Count,
+            _currentFileType.ToString(),
+            _diagnostics.BytesSent + _diagnostics.BytesReceived,
+            _diagnostics.ApduExchanges, _diagnostics.CrcErrors,
+            "info", $"{oldState} → {newState}: {reason}", "TransitionTo");
     }
 
     // ─── Main loop ───────────────────────────────────────────────────
@@ -205,6 +242,7 @@ public class DddSession
             }
 
             _trafficLogger?.Dispose();
+            _webReporter?.Dispose();
         }
 
         _logger.LogInformation("Session {Id} ended: IMEI={Imei}, state={State}, gen={Gen}",
@@ -228,6 +266,7 @@ public class DddSession
 
             _imei = System.Text.Encoding.ASCII.GetString(data.ToArray(), 2, 15);
             _diagnostics.Imei = _imei;
+            _webReporter?.SetImei(_imei);
             _logger.LogInformation("📱 IMEI: {Imei}", _imei);
             _trafficLogger?.LogDecoded("RX", "IMEI", 15, $"IMEI={_imei}");
 
@@ -595,6 +634,7 @@ public class DddSession
 
                 _logger.LogInformation("🔍 Detected VU generation: {Gen} (TREP=0x{Trep:X2})", _vuGeneration, trep);
                 _diagnostics.Generation = _vuGeneration;
+                _webReporter?.SetGeneration(_vuGeneration);
                 await StartDownloadListAsync(stream);
             }
             else if (type == DddPacketType.Error)
@@ -602,6 +642,7 @@ public class DddSession
                 HandleError(data);
                 _vuGeneration = VuGeneration.Gen1;
                 _diagnostics.Generation = _vuGeneration;
+                _webReporter?.SetGeneration(_vuGeneration);
                 _fileBuffer.Clear();
                 _currentSequenceNumber = 0;
 
