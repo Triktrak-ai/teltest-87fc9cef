@@ -132,6 +132,8 @@ public class DddSession
 
         try
         {
+            // Connect to CardBridge first (inside session so logs/diagnostics are available on failure)
+            await _bridge.ConnectAsync();
             while (_client.Connected)
             {
                 // Keep alive check
@@ -205,7 +207,7 @@ public class DddSession
                     recvBuffer.RemoveRange(0, Math.Min(result.ConsumedBytes, recvBuffer.Count));
 
                     _logger.LogInformation("📩 Codec12 frame: type=0x{Type:X2}, {Len}B, state={State}",
-                        result.Frame.Type, result.Frame.Data.Length, _state);
+                        result.Frame!.Type, result.Frame.Data.Length, _state);
 
                     await ProcessFrameAsync(stream, result.Frame);
 

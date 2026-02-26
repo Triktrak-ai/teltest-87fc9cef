@@ -48,9 +48,9 @@ public class SessionDiagnostics
 
     private readonly object _lock = new();
 
-    public SessionDiagnostics(string endpoint)
+    public SessionDiagnostics(string endpoint, string? sessionId = null)
     {
-        SessionId = Guid.NewGuid().ToString("N")[..12];
+        SessionId = sessionId ?? Guid.NewGuid().ToString();
         Endpoint = endpoint;
     }
 

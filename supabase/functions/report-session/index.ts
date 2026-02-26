@@ -37,14 +37,19 @@ Deno.serve(async (req) => {
     const body = await req.json();
 
     // Validate required fields
-    if (!body.session_id || !body.imei) {
+    if (!body.session_id) {
       return new Response(
-        JSON.stringify({ error: "session_id and imei are required" }),
+        JSON.stringify({ error: "session_id is required" }),
         {
           status: 400,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         }
       );
+    }
+
+    // Fallback IMEI to "unknown" if not provided
+    if (!body.imei) {
+      body.imei = "unknown";
     }
 
     // Upsert session

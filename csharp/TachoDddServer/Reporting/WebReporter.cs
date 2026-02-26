@@ -13,8 +13,11 @@ public class WebReporter : IDisposable
     private readonly bool _enabled;
     private readonly ILogger _logger;
     private readonly string _sessionId;
-    private string _imei = "";
+    private string _imei = "unknown";
     private VuGeneration _generation = VuGeneration.Unknown;
+
+    private readonly object _lock = new();
+    private readonly List<Task> _inFlight = new();
 
     public WebReporter(string sessionId, string? url, string? apiKey, bool enabled, ILogger logger)
     {
@@ -32,7 +35,7 @@ public class WebReporter : IDisposable
     public void SetGeneration(VuGeneration gen) => _generation = gen;
 
     /// <summary>
-    /// Report current session status (fire-and-forget).
+    /// Report current session status (fire-and-forget, tracked for flush).
     /// </summary>
     public void ReportStatus(string status, int progress = 0, int filesDownloaded = 0,
         int totalFiles = 0, string? currentFile = null, long bytesDownloaded = 0,
@@ -66,11 +69,11 @@ public class WebReporter : IDisposable
             };
         }
 
-        _ = SendAsync(payload);
+        Track(SendAsync(payload));
     }
 
     /// <summary>
-    /// Report error (fire-and-forget).
+    /// Report error (fire-and-forget, tracked for flush).
     /// </summary>
     public void ReportError(string errorCode, string errorMessage, int apduExchanges = 0, int crcErrors = 0)
     {
@@ -94,7 +97,37 @@ public class WebReporter : IDisposable
             },
         };
 
-        _ = SendAsync(payload);
+        Track(SendAsync(payload));
+    }
+
+    private void Track(Task task)
+    {
+        lock (_lock)
+        {
+            _inFlight.Add(task);
+        }
+    }
+
+    /// <summary>
+    /// Wait for all pending HTTP requests to complete. Call before Dispose.
+    /// </summary>
+    public async Task FlushAsync()
+    {
+        Task[] pending;
+        lock (_lock)
+        {
+            pending = _inFlight.ToArray();
+            _inFlight.Clear();
+        }
+
+        try
+        {
+            await Task.WhenAll(pending);
+        }
+        catch
+        {
+            // Errors already logged in SendAsync
+        }
     }
 
     private async Task SendAsync(Dictionary<string, object?> payload)
