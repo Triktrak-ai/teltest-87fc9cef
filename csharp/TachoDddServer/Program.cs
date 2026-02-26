@@ -15,8 +15,15 @@ var logger = loggerFactory.CreateLogger("TachoDddServer");
 int port = config.GetValue<int>("TcpPort");
 string cardBridgeUrl = config["CardBridgeUrl"]!;
 string outputDir = config["OutputDir"]!;
+string? trafficLogDir = config["TrafficLogDir"];
+bool logTraffic = config.GetValue<bool>("LogTraffic");
 
 Directory.CreateDirectory(outputDir);
+if (logTraffic && trafficLogDir != null)
+{
+    Directory.CreateDirectory(trafficLogDir);
+    logger.LogInformation("📝 Logowanie ruchu włączone, folder: {Dir}", trafficLogDir);
+}
 
 var listener = new TcpListener(IPAddress.Any, port);
 listener.Start();
@@ -35,7 +42,8 @@ while (true)
             using var bridge = new CardBridgeClient(cardBridgeUrl, loggerFactory.CreateLogger<CardBridgeClient>());
             await bridge.ConnectAsync();
 
-            var session = new DddSession(client, bridge, outputDir, loggerFactory.CreateLogger<DddSession>());
+            var session = new DddSession(client, bridge, outputDir, loggerFactory.CreateLogger<DddSession>(),
+                trafficLogDir, logTraffic);
             await session.RunAsync();
         }
         catch (Exception ex)

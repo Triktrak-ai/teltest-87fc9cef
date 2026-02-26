@@ -7,6 +7,10 @@ using System.Text.Json;
 Console.WriteLine("💳 CardBridge Service - Serwis czytnika kart");
 Console.WriteLine("============================================");
 
+// Konfiguracja logowania
+var logDir = Path.Combine(AppContext.BaseDirectory, "Logs");
+Directory.CreateDirectory(logDir);
+
 var listener = new HttpListener();
 listener.Prefixes.Add("http://+:5201/");
 listener.Start();
@@ -35,6 +39,12 @@ static async Task HandleSessionAsync(WebSocket ws)
     IntPtr hCard = IntPtr.Zero;
     int activeProtocol = 0;
 
+    var logDir = Path.Combine(AppContext.BaseDirectory, "Logs");
+    Directory.CreateDirectory(logDir);
+    var logFile = Path.Combine(logDir, $"cardbridge_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+    using var logWriter = new StreamWriter(logFile, append: true) { AutoFlush = true };
+    logWriter.WriteLine($"=== Sesja rozpoczęta: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} ===");
+
     try
     {
         int ret = SCardEstablishContext(2, IntPtr.Zero, IntPtr.Zero, out hContext);
@@ -62,6 +72,9 @@ static async Task HandleSessionAsync(WebSocket ws)
             var request = JsonSerializer.Deserialize<JsonElement>(json);
             string cmd = request.GetProperty("cmd").GetString()!;
             byte[] data = Convert.FromBase64String(request.GetProperty("data").GetString()!);
+
+            // Log RX
+            logWriter.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] RX cmd={cmd} {data.Length}B: {ToHex(data)}");
 
             Console.WriteLine($"📩 Komenda: {cmd}, dane: {data.Length}B");
 
@@ -107,8 +120,12 @@ static async Task HandleSessionAsync(WebSocket ws)
                 var errorResp = JsonSerializer.Serialize(new { error = $"Unknown command: {cmd}" });
                 await ws.SendAsync(Encoding.UTF8.GetBytes(errorResp),
                     WebSocketMessageType.Text, true, CancellationToken.None);
+                logWriter.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] TX ERROR: Unknown command: {cmd}");
                 continue;
             }
+
+            // Log TX
+            logWriter.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] TX {responseData.Length}B: {ToHex(responseData)}");
 
             var response = JsonSerializer.Serialize(new { data = Convert.ToBase64String(responseData) });
             await ws.SendAsync(Encoding.UTF8.GetBytes(response),
@@ -118,6 +135,7 @@ static async Task HandleSessionAsync(WebSocket ws)
     catch (Exception ex)
     {
         Console.WriteLine($"❌ Błąd: {ex.Message}");
+        logWriter.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] ERROR: {ex.Message}");
         if (ws.State == WebSocketState.Open)
         {
             var errorResp = JsonSerializer.Serialize(new { error = ex.Message });
@@ -129,7 +147,19 @@ static async Task HandleSessionAsync(WebSocket ws)
     {
         if (hCard != IntPtr.Zero) SCardDisconnect(hCard, 0);
         if (hContext != IntPtr.Zero) SCardReleaseContext(hContext);
+        logWriter.WriteLine($"=== Sesja zakończona: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} ===");
     }
+}
+
+static string ToHex(byte[] data)
+{
+    var sb = new StringBuilder(data.Length * 3);
+    for (int i = 0; i < data.Length; i++)
+    {
+        if (i > 0) sb.Append(' ');
+        sb.Append(data[i].ToString("X2"));
+    }
+    return sb.ToString();
 }
 
 // ===== winscard.dll P/Invoke =====

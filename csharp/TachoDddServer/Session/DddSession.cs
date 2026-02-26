@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using TachoDddServer.Protocol;
 using TachoDddServer.CardBridge;
 using TachoDddServer.Storage;
+using TachoDddServer.Logging;
 
 namespace TachoDddServer.Session;
 
@@ -12,15 +13,24 @@ public class DddSession
     private readonly CardBridgeClient _bridge;
     private readonly string _outputDir;
     private readonly ILogger _logger;
+    private readonly TrafficLogger? _trafficLogger;
     private SessionState _state = SessionState.WaitingForStatus;
     private readonly List<byte> _fileBuffer = new();
 
-    public DddSession(TcpClient client, CardBridgeClient bridge, string outputDir, ILogger logger)
+    public DddSession(TcpClient client, CardBridgeClient bridge, string outputDir, ILogger logger,
+        string? trafficLogDir = null, bool logTraffic = false)
     {
         _client = client;
         _bridge = bridge;
         _outputDir = outputDir;
         _logger = logger;
+
+        if (logTraffic && trafficLogDir != null)
+        {
+            var endpoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
+            var sessionId = endpoint.Replace(":", "_").Replace(".", "-");
+            _trafficLogger = new TrafficLogger(trafficLogDir, sessionId);
+        }
     }
 
     public async Task RunAsync()
@@ -31,29 +41,44 @@ public class DddSession
 
         _logger.LogInformation("Sesja DDD rozpoczęta, stan: {State}", _state);
 
-        while (_client.Connected)
+        try
         {
-            int bytesRead = await stream.ReadAsync(buffer);
-            if (bytesRead == 0) break;
+            while (_client.Connected)
+            {
+                int bytesRead = await stream.ReadAsync(buffer);
+                if (bytesRead == 0) break;
 
-            recvBuffer.AddRange(buffer.AsSpan(0, bytesRead).ToArray());
+                _trafficLogger?.Log("RX", buffer, bytesRead);
 
-            var frameData = recvBuffer.ToArray();
-            var frame = Codec12Parser.Parse(frameData, frameData.Length);
+                recvBuffer.AddRange(buffer.AsSpan(0, bytesRead).ToArray());
 
-            if (frame == null) continue;
+                var frameData = recvBuffer.ToArray();
+                var frame = Codec12Parser.Parse(frameData, frameData.Length);
 
-            recvBuffer.Clear();
-            _logger.LogInformation("📩 Odebrano ramkę Codec 12, typ: 0x{Type:X2}, {Len} bajtów",
-                frame.Type, frame.Data.Length);
+                if (frame == null) continue;
 
-            await ProcessFrameAsync(stream, frame);
+                recvBuffer.Clear();
+                _logger.LogInformation("📩 Odebrano ramkę Codec 12, typ: 0x{Type:X2}, {Len} bajtów",
+                    frame.Type, frame.Data.Length);
 
-            if (_state == SessionState.Complete || _state == SessionState.Error)
-                break;
+                await ProcessFrameAsync(stream, frame);
+
+                if (_state == SessionState.Complete || _state == SessionState.Error)
+                    break;
+            }
+        }
+        finally
+        {
+            _trafficLogger?.Dispose();
         }
 
         _logger.LogInformation("Sesja zakończona, stan: {State}", _state);
+    }
+
+    private async Task SendFrameAsync(NetworkStream stream, byte[] frameData)
+    {
+        await stream.WriteAsync(frameData);
+        _trafficLogger?.Log("TX", frameData, frameData.Length);
     }
 
     private async Task ProcessFrameAsync(NetworkStream stream, Codec12Frame frame)
@@ -81,7 +106,7 @@ public class DddSession
 
                     var atrPacket = DddPacket.Build(DddPacketType.SendATR, atr);
                     var atrFrame = Codec12Parser.Build(atrPacket);
-                    await stream.WriteAsync(atrFrame);
+                    await SendFrameAsync(stream, atrFrame);
 
                     _state = SessionState.WaitingForATR;
                     _logger.LogInformation("📤 ATR wysłany do FMB640");
@@ -102,7 +127,7 @@ public class DddSession
 
                     var respPacket = DddPacket.Build(DddPacketType.SendAPDU, cardResponse);
                     var respFrame = Codec12Parser.Build(respPacket);
-                    await stream.WriteAsync(respFrame);
+                    await SendFrameAsync(stream, respFrame);
                 }
                 else if (type == DddPacketType.AuthOK)
                 {
