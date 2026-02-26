@@ -7,4 +7,11 @@ public static class DddFileWriter
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllBytes(path, data);
     }
+
+    public static void Append(string path, byte[] data)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using var fs = new FileStream(path, FileMode.Append, FileAccess.Write);
+        fs.Write(data);
+    }
 }

@@ -2,11 +2,16 @@ namespace TachoDddServer.Session;
 
 public enum SessionState
 {
+    WaitingForImei,
     WaitingForStatus,
+    RequestingDriverInfo,
     SendingATR,
-    WaitingForATR,
     ApduLoop,
-    Downloading,
+    CheckingInterfaceVersion,
+    SendingDownloadList,
+    WaitingForDownloadListAck,
+    RequestingFile,
+    DownloadingFile,
     Complete,
     Error
 }

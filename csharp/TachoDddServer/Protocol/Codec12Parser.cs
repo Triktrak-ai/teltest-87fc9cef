@@ -38,9 +38,9 @@ public static class Codec12Parser
         frame[6] = (byte)(dataLen >> 8);
         frame[7] = (byte)(dataLen);
 
-        frame[8] = 0x0C;
-        frame[9] = 0x01;
-        frame[10] = 0x05;
+        frame[8] = 0x0C;  // Codec ID
+        frame[9] = 0x01;  // NOD
+        frame[10] = 0x10; // CMD type: DDD packet
         frame[11] = (byte)(cmdLen >> 24);
         frame[12] = (byte)(cmdLen >> 16);
         frame[13] = (byte)(cmdLen >> 8);
