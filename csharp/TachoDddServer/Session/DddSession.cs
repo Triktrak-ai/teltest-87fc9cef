@@ -54,7 +54,7 @@ public class DddSession
 
     public DddSession(TcpClient client, CardBridgeClient bridge, string outputDir, ILogger logger,
         string? trafficLogDir = null, bool logTraffic = false,
-        string? webReportUrl = null, string? webReportApiKey = null, bool webReportEnabled = false)
+        WebReporter? webReporter = null)
     {
         _client = client;
         _bridge = bridge;
@@ -71,7 +71,7 @@ public class DddSession
             _trafficLogger = new TrafficLogger(trafficLogDir, sessionId);
         }
 
-        _webReporter = new WebReporter(_diagnostics.SessionId, webReportUrl, webReportApiKey, webReportEnabled, logger);
+        _webReporter = webReporter;
 
         _logger.LogInformation("📋 Session created: id={SessionId}, endpoint={Endpoint}",
             _diagnostics.SessionId, endpoint);
@@ -242,7 +242,7 @@ public class DddSession
             }
 
             _trafficLogger?.Dispose();
-            _webReporter?.Dispose();
+            // WebReporter is owned by Program.cs, do not dispose here
         }
 
         _logger.LogInformation("Session {Id} ended: IMEI={Imei}, state={State}, gen={Gen}",
