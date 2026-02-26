@@ -200,17 +200,131 @@ SMS: TACHOADDRSET IP_VPS:5200
 SMS: READTAC
 ```
 
-## Logowanie ruchu
+## Logowanie i diagnostyka
 
-Gdy `LogTraffic: true`, surowy ruch jest zapisywany do plików:
+### Poziomy logowania
 
-- **TachoDddServer:** `traffic_[data]_[IP].log` w `TrafficLogDir`
-- **CardBridgeService:** `cardbridge_[data].log` w folderze `Logs/`
+System loguje na trzech równoległych kanałach:
 
-Format:
+| Kanał | Plik | Zawartość |
+|-------|------|-----------|
+| **ILogger (konsola)** | stdout | Kluczowe zdarzenia, błędy, ostrzeżenia |
+| **TrafficLogger** | `traffic_*.log` | Surowy hex dump + zdekodowane pakiety + przejścia stanów + błędy |
+| **SessionDiagnostics** | `session_*.txt` + `session_*.json` | Pełny raport sesji z metrykami |
+
+### TrafficLogger — format logu
+
+Gdy `LogTraffic: true`, plik traffic zawiera:
+
 ```
-[2026-02-26 07:45:30.123] RX 45B: 00 00 00 00 00 1D 0C 01 05 ...
-[2026-02-26 07:45:30.456] TX 32B: 00 00 00 00 00 12 0C 01 06 ...
+[2026-02-26 07:45:30.123] RX 45B: 00 00 00 00 00 1D 0C 01 05 ... (+13B)
+[2026-02-26 07:45:30.123] RX DDD [Status] 12B — resume=0x43 seqNum=0 features=0x02
+[2026-02-26 07:45:30.130] STATE WaitingForStatus -> ApduLoop [Starting authentication (ATR)]
+[2026-02-26 07:45:30.456] TX DDD [ATR] 19B — frame=36B
+[2026-02-26 07:45:31.200] ERROR [ApduLoop] WebSocketException: Connection closed
+```
+
+Metody TrafficLogger:
+- `Log(direction, data, length)` — surowy hex dump (max 64B, reszta skrócona)
+- `LogDecoded(direction, packetType, dataLen, comment)` — zdekodowany pakiet z kontekstem
+- `LogDecodedWithHex(direction, packetType, data, maxBytes, comment)` — zdekodowany + hex preview
+- `LogStateChange(from, to, reason)` — przejście stanu
+- `LogError(context, message/exception)` — błąd z kontekstem i stack trace
+- `LogWarning(message)` — ostrzeżenie
+- `LogSummary(summary)` — raport sesji na końcu pliku
+
+### SessionDiagnostics — raport sesji
+
+Po zakończeniu każdej sesji generowany jest raport tekstowy i JSON:
+
+```
+╔══════════════════════════════════════════════════════════╗
+║              SESSION DIAGNOSTIC SUMMARY                 ║
+╚══════════════════════════════════════════════════════════╝
+  SessionId:   a1b2c3d4e5f6
+  IMEI:        352093089012345
+  Endpoint:    192.168.1.100:54321
+  Generation:  Gen2v2
+  Start:       2026-02-26 07:45:30.123 UTC
+  End:         2026-02-26 07:48:04.567 UTC
+  Duration:    2m 34s
+
+── State Flow ──────────────────────────────────────────────
+  [   0.000s] WaitingForImei -> WaitingForStatus [IMEI accepted]
+  [   0.234s] WaitingForStatus -> ApduLoop [Starting authentication (ATR)]
+  [  12.456s] ApduLoop -> CheckingInterfaceVersion [Auth OK]
+  [  13.100s] CheckingInterfaceVersion -> WaitingForDownloadListAck [Sending download list]
+  [  14.200s] WaitingForDownloadListAck -> DownloadingFile [Requesting file 1/5: Overview]
+  ...
+  [ 154.567s] DownloadingFile -> Complete [All files downloaded]
+
+── File Downloads ──────────────────────────────────────────
+  ✓ Overview                  12345B     1.2s  (9.9 KB/s)
+  ✓ Activities               234567B    45.3s  (5.1 KB/s)
+  ✓ EventsAndFaults           45678B     8.7s  (5.1 KB/s)
+  ✗ DetailedSpeed                  0B     0.5s  (0.0 KB/s)  ERR: [0x03:0x01] File not available
+  ✓ TechnicalData              8901B     2.1s  (4.1 KB/s)
+  Total: 4/5 successful
+
+── Counters ────────────────────────────────────────────────
+  Packets TX:       127
+  Packets RX:       134
+  Bytes TX:         4,567
+  Bytes RX:         301,234
+  APDU exchanges:   14
+  CRC errors:       0
+
+── Warnings ────────────────────────────────────────────────
+  [  14.500s] Negative response (SID=0x7F) for DetailedSpeed
+
+  Total errors:   1
+  Total warnings: 1
+```
+
+Raport JSON (`session_*.json`) zawiera te same dane w formacie do dalszej analizy.
+
+### Kody błędów DDD (DddErrorCodes)
+
+Klasa `DddErrorCodes` mapuje surowe kody błędów protokołu na czytelne opisy:
+
+| Klasa | Kod | Opis |
+|-------|-----|------|
+| 0x01 | 0x01 | VU busy |
+| 0x01 | 0x02 | VU internal error |
+| 0x02 | 0x0A | Authentication failed — certificate rejected |
+| 0x02 | 0x04 | Authentication failed — card expired |
+| 0x03 | 0x01 | File not available |
+| 0x04 | 0x02 | Communication error — timeout |
+
+### CardBridgeClient — timeout i logowanie
+
+Każde wywołanie WebSocket (`SendAsync`/`ReceiveAsync`) ma timeout 30 sekund. Logowane są:
+- Stan WebSocket przed każdym wywołaniem
+- Komenda + rozmiar danych (level: Debug)
+- Czas odpowiedzi w ms (level: Information)
+- Pełny JSON request/response (level: Debug)
+- Szczegóły błędów WebSocket (level: Error)
+
+### Obsługa błędów (try/catch)
+
+Każda metoda async w `DddSession` jest owinięta w `try/catch`:
+- `HandleImeiPacket`, `HandleStatusPacket`, `HandleApduLoop`
+- `HandleInterfaceVersionResponse`, `HandleDownloadListAck`
+- `HandleFileData`, `RequestNextFileAsync`, `StartAuthenticationAsync`
+
+Każdy catch:
+1. Loguje błąd do ILogger, TrafficLogger i SessionDiagnostics
+2. Przechodzi do stanu `Error` przez `TransitionTo()`
+3. Sesja kończy się z pełnym raportem diagnostycznym
+
+### Przejścia stanów (TransitionTo)
+
+Wszystkie zmiany stanu przechodzą przez `TransitionTo(newState, reason)`:
+```csharp
+TransitionTo(SessionState.ApduLoop, "Starting authentication (ATR)");
+// → ILogger: "STATE WaitingForStatus -> ApduLoop [Starting authentication (ATR)]"
+// → TrafficLogger: "[timestamp] STATE WaitingForStatus -> ApduLoop [Starting authentication (ATR)]"
+// → SessionDiagnostics: zapis do listy przejść z timestampem
 ```
 
 ## Struktura plików
@@ -221,22 +335,24 @@ csharp/
 │   ├── Program.cs              # WebSocket ↔ PC/SC bridge
 │   └── CardBridgeService.csproj
 ├── TachoDddServer/
-│   ├── Program.cs              # Punkt wejścia, TCP listener
+│   ├── Program.cs              # Punkt wejścia, TCP listener, logowanie konfiguracji
 │   ├── appsettings.json        # Konfiguracja
 │   ├── Protocol/
 │   │   ├── Codec12Parser.cs    # Parsowanie/budowanie ramek Codec 12 + CRC weryfikacja
 │   │   ├── Codec12Frame.cs     # Record ramki
 │   │   ├── DddPacket.cs        # Parsowanie/budowanie pakietów DDD
-│   │   └── DddPacketType.cs    # Enum typów pakietów
+│   │   ├── DddPacketType.cs    # Enum typów pakietów
+│   │   └── DddErrorCodes.cs    # Mapowanie kodów błędów → czytelne opisy
 │   ├── Session/
-│   │   ├── DddSession.cs       # Główna logika sesji (maszyna stanów + resume + merging)
-│   │   ├── SessionState.cs     # Enum stanów sesji (+ ResumingDownload)
+│   │   ├── DddSession.cs       # Główna logika sesji (maszyna stanów + diagnostyka + merging)
+│   │   ├── SessionState.cs     # Enum stanów sesji
 │   │   ├── DddFileType.cs      # Enum typów plików DDD
 │   │   └── VuGeneration.cs     # Enum generacji tachografu
 │   ├── CardBridge/
-│   │   └── CardBridgeClient.cs # Klient WebSocket do CardBridge
+│   │   └── CardBridgeClient.cs # Klient WebSocket do CardBridge (timeout 30s + logowanie)
 │   ├── Logging/
-│   │   └── TrafficLogger.cs    # Logger surowego ruchu
+│   │   ├── TrafficLogger.cs    # Logger ruchu (hex dump + decoded packets + state changes)
+│   │   └── SessionDiagnostics.cs # Centralna diagnostyka sesji (raport TXT + JSON)
 │   └── Storage/
 │       └── DddFileWriter.cs    # Zapis plików DDD na dysk
 └── README.md                   # Ten plik

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using Microsoft.Extensions.Logging;
@@ -34,7 +33,7 @@ public class DddSession
     private readonly List<DddFileType> _filesToDownload = new();
     private int _currentFileIndex = -1;
     private DddFileType _currentFileType;
-    private string _currentFilePath = "";
+    
     private byte _currentSequenceNumber = 0;
     private readonly List<byte> _fileBuffer = new();
 
@@ -45,8 +44,7 @@ public class DddSession
     private int _crcRetryCount = 0;
     private const int MaxCrcRetries = 3;
 
-    // CardBridge timeout
-    private static readonly TimeSpan BridgeTimeout = TimeSpan.FromSeconds(30);
+    // Keep alive
 
     // Keep alive
     private DateTime _lastActivity = DateTime.UtcNow;
@@ -460,7 +458,7 @@ public class DddSession
 
         try
         {
-            byte[] atr = await BridgeGetAtrWithTimeoutAsync();
+            byte[] atr = await _bridge.GetAtrAsync();
             _logger.LogInformation("💳 ATR from card: {ATR} ({Len}B)", BitConverter.ToString(atr), atr.Length);
             _trafficLogger?.LogDecodedWithHex("BRIDGE", "ATR", atr, 32, "Card ATR received");
 
@@ -499,7 +497,7 @@ public class DddSession
                 _logger.LogInformation("🔀 APDU to card: {Len}B", data.Length);
                 _trafficLogger?.LogDecodedWithHex("RX", type.ToString(), data, 32, "APDU from VU → card");
 
-                byte[] cardResponse = await BridgeTransmitWithTimeoutAsync(data);
+                byte[] cardResponse = await _bridge.TransmitApduAsync(data);
                 _diagnostics.ApduExchanges++;
 
                 _logger.LogInformation("🔀 Card response: {Len}B", cardResponse.Length);
@@ -734,7 +732,7 @@ public class DddSession
                 _logger.LogInformation("🔀 APDU during Download List unlock: {Len}B", data.Length);
                 _trafficLogger?.LogDecoded("RX", "APDU(DlListUnlock)", data.Length, "VU APDU during unlock");
 
-                byte[] cardResponse = await BridgeTransmitWithTimeoutAsync(data);
+                byte[] cardResponse = await _bridge.TransmitApduAsync(data);
                 _diagnostics.ApduExchanges++;
                 await SendDddPacketAsync(stream, DddPacketType.APDU, cardResponse);
                 _trafficLogger?.LogDecoded("TX", "APDU(DlListUnlock)", cardResponse.Length, "Card response forwarded");
@@ -1068,19 +1066,7 @@ public class DddSession
         _logger.LogDebug("💓 Keep alive sent");
     }
 
-    // ─── CardBridge wrappers with timeout ────────────────────────────
-
-    private async Task<byte[]> BridgeGetAtrWithTimeoutAsync()
-    {
-        using var cts = new CancellationTokenSource(BridgeTimeout);
-        return await _bridge.GetAtrAsync();
-    }
-
-    private async Task<byte[]> BridgeTransmitWithTimeoutAsync(byte[] apdu)
-    {
-        using var cts = new CancellationTokenSource(BridgeTimeout);
-        return await _bridge.TransmitApduAsync(apdu);
-    }
+    // Note: CardBridgeClient already has internal 30s timeout per operation.
 
     // ─── Utilities ───────────────────────────────────────────────────
 
