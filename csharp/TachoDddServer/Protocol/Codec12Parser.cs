@@ -1,21 +1,51 @@
 namespace TachoDddServer.Protocol;
 
+/// <summary>
+/// Result of parsing a Codec 12 frame with CRC verification.
+/// </summary>
+public record Codec12ParseResult(Codec12Frame? Frame, bool CrcError, int ConsumedBytes);
+
 public static class Codec12Parser
 {
+    /// <summary>
+    /// Parse without CRC check (legacy, kept for backward compat).
+    /// </summary>
     public static Codec12Frame? Parse(byte[] buffer, int length)
     {
-        if (length < 17) return null;
+        var result = ParseWithCrc(buffer, length);
+        return result.Frame;
+    }
+
+    /// <summary>
+    /// Parse a Codec 12 frame with CRC verification.
+    /// Returns Frame, CrcError flag, and number of consumed bytes.
+    /// </summary>
+    public static Codec12ParseResult ParseWithCrc(byte[] buffer, int length)
+    {
+        if (length < 17)
+            return new Codec12ParseResult(null, false, 0);
 
         if (buffer[0] != 0 || buffer[1] != 0 || buffer[2] != 0 || buffer[3] != 0)
-            return null;
+            return new Codec12ParseResult(null, false, 0);
 
         int dataLen = (buffer[4] << 24) | (buffer[5] << 16) | (buffer[6] << 8) | buffer[7];
+        int totalLen = 8 + dataLen + 4;
 
-        if (length < 8 + dataLen + 4) return null;
+        if (length < totalLen)
+            return new Codec12ParseResult(null, false, 0);
 
         byte codecId = buffer[8];
-        if (codecId != 0x0C) return null;
+        if (codecId != 0x0C)
+            return new Codec12ParseResult(null, false, 0);
 
+        // Verify CRC
+        ushort receivedCrc = (ushort)((buffer[8 + dataLen + 2] << 8) | buffer[8 + dataLen + 3]);
+        ushort calculatedCrc = Crc16(buffer, 8, dataLen);
+
+        if (receivedCrc != calculatedCrc)
+            return new Codec12ParseResult(null, true, totalLen);
+
+        // Parse payload
         byte qty1 = buffer[9];
         byte type = buffer[10];
         int cmdSize = (buffer[11] << 24) | (buffer[12] << 16) | (buffer[13] << 8) | buffer[14];
@@ -23,7 +53,7 @@ public static class Codec12Parser
         byte[] cmdData = new byte[cmdSize];
         Array.Copy(buffer, 15, cmdData, 0, cmdSize);
 
-        return new Codec12Frame(type, cmdData);
+        return new Codec12ParseResult(new Codec12Frame(type, cmdData), false, totalLen);
     }
 
     public static byte[] Build(byte[] commandData)

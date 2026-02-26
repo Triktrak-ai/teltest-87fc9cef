@@ -23,7 +23,12 @@ WaitingForImei
     │ IMEI (15B ASCII) → ACK (0x01)
     ▼
 WaitingForStatus
-    │ STATUS → parse resume/features/ignition
+    │ STATUS → parse resume/features/ignition/sequenceNumber
+    │ Resume State (bity 0-4):
+    │   bit 0/1 → start od ATR (pełna autentykacja)
+    │   bit 2   → resume od Download List (pomija auth)
+    │   bit 3   → resume od File Request (pomija auth + download list)
+    │   bit 4   → resume od ostatniego transferu
     ▼
 RequestingDriverInfo (opcjonalnie, jeśli features bit 1)
     │ DriverInfo request → response
@@ -38,15 +43,42 @@ CheckingInterfaceVersion
     │ lub Error → fallback Gen1
     ▼
 WaitingForDownloadListAck
-    │ DownloadList (kody TRTP) → ACK
+    │ DownloadList (kody Gen1: 0x01-0x06) → ACK
+    │ Obsługa APDU (0x12) jeśli VU wymaga interakcji z kartą
     ▼
 DownloadingFile (pętla po plikach)
-    │ FileRequest → FileData (chunki + ACK) → FileDataEOF → zapis .ddd
+    │ FileRequest (TRTP wg generacji) → FileData (chunki + ACK) → FileDataEOF → zapis .ddd
+    │ Dynamiczny SID/TREP z pierwszego pakietu (ostrzeżenie gdy SID=0x7F)
     │ powtórz dla każdego pliku
     ▼
 Complete
+    │ Łączenie plików VU → jeden .ddd (Overview+Activities+Events+Speed+Technical)
     │ Terminate (0xE0) → sesja zamknięta
 ```
+
+## Zgodność z dokumentacją Teltonika DDD Protocol
+
+### Download List — format payloadu (Tabele 14-16)
+
+Download List używa **zawsze** kodów Gen1 (0x01-0x06), niezależnie od generacji VU. Format każdego wpisu: `[fileType(1B)][dataLength(1B)][fileTypeData(NB)]`.
+
+Kody TRTP specyficzne dla generacji (Gen2v1: 0x21-0x25, Gen2v2: 0x31-0x35) są używane **wyłącznie** w pakietach `FileRequest (0x30)`.
+
+### Weryfikacja CRC + RepeatRequest
+
+Serwer weryfikuje CRC-16 każdej odebranej ramki Codec 12. W przypadku niezgodności CRC wysyła `RepeatRequest (0x00)` do urządzenia (max 3 próby).
+
+### Dynamiczny SID/TREP
+
+Pierwszy pakiet danych pliku zawiera bajty SID i TREP, które są odczytywane dynamicznie (nie hardkodowane). SID=0x7F oznacza negatywną odpowiedź.
+
+### Keep Alive
+
+Interwał: 80 sekund (zgodnie ze specyfikacją sekcja 5.17).
+
+### Łączenie plików VU
+
+Po pobraniu wszystkich plików, pliki VU (Overview, Activities, Events, Speed, Technical) są łączone w jeden plik `.ddd` w kolejności zgodnej ze specyfikacją. Karty kierowców zapisywane osobno. Pliki indywidualne również zachowane.
 
 ## Generacje tachografów i kody TRTP
 
@@ -113,7 +145,16 @@ Wewnątrz payloadu Codec 12, pakiet DDD:
 | Bit | Znaczenie |
 |-----|-----------|
 | 6 | Zapłon ON/OFF |
-| 0-5 | Stan wewnętrzny sesji |
+| 4 | Resume od ostatniego transferu |
+| 3 | Resume od file request |
+| 2 | Resume od download list |
+| 0-1 | Start od autentykacji (ATR) |
+
+### Payload STATUS
+
+```
+"STATUS"(6B ASCII) + ResumeState(1B) + SequenceNumber(4B) + Features(1B) = 12B
+```
 
 ## Uruchomienie
 
@@ -183,13 +224,13 @@ csharp/
 │   ├── Program.cs              # Punkt wejścia, TCP listener
 │   ├── appsettings.json        # Konfiguracja
 │   ├── Protocol/
-│   │   ├── Codec12Parser.cs    # Parsowanie/budowanie ramek Codec 12
+│   │   ├── Codec12Parser.cs    # Parsowanie/budowanie ramek Codec 12 + CRC weryfikacja
 │   │   ├── Codec12Frame.cs     # Record ramki
 │   │   ├── DddPacket.cs        # Parsowanie/budowanie pakietów DDD
 │   │   └── DddPacketType.cs    # Enum typów pakietów
 │   ├── Session/
-│   │   ├── DddSession.cs       # Główna logika sesji (maszyna stanów)
-│   │   ├── SessionState.cs     # Enum stanów sesji
+│   │   ├── DddSession.cs       # Główna logika sesji (maszyna stanów + resume + merging)
+│   │   ├── SessionState.cs     # Enum stanów sesji (+ ResumingDownload)
 │   │   ├── DddFileType.cs      # Enum typów plików DDD
 │   │   └── VuGeneration.cs     # Enum generacji tachografu
 │   ├── CardBridge/
