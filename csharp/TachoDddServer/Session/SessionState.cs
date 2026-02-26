@@ -9,6 +9,7 @@ public enum SessionState
     CheckingInterfaceVersion,
     WaitingForDownloadListAck,
     DownloadingFile,
+    ResumingDownload,
     Complete,
     Error
 }

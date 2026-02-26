@@ -20,6 +20,11 @@ public class DddSession
     private VuGeneration _vuGeneration = VuGeneration.Unknown;
     private byte _features = 0;
     private byte _resumeState = 0;
+    private uint _lastSequenceNumber = 0; // from STATUS packet, for resume
+
+    // SID/TREP tracking (dynamic, read from first file data packet)
+    private byte _lastSid = 0;
+    private byte _lastTrep = 0;
 
     // File download state
     private readonly List<DddFileType> _filesToDownload = new();
@@ -29,9 +34,16 @@ public class DddSession
     private byte _currentSequenceNumber = 0;
     private readonly List<byte> _fileBuffer = new();
 
+    // Downloaded files storage for merging
+    private readonly Dictionary<DddFileType, byte[]> _downloadedFiles = new();
+
+    // CRC repeat request tracking
+    private int _crcRetryCount = 0;
+    private const int MaxCrcRetries = 3;
+
     // Keep alive
     private DateTime _lastActivity = DateTime.UtcNow;
-    private static readonly TimeSpan KeepAliveInterval = TimeSpan.FromSeconds(70);
+    private static readonly TimeSpan KeepAliveInterval = TimeSpan.FromSeconds(80);
 
     public DddSession(TcpClient client, CardBridgeClient bridge, string outputDir, ILogger logger,
         string? trafficLogDir = null, bool logTraffic = false)
@@ -93,24 +105,43 @@ public class DddSession
                     continue;
                 }
 
-                // Try to parse Codec 12 frames
+                // Try to parse Codec 12 frames with CRC verification
                 while (recvBuffer.Count > 0)
                 {
                     var frameData = recvBuffer.ToArray();
-                    var frame = Codec12Parser.Parse(frameData, frameData.Length);
+                    var result = Codec12Parser.ParseWithCrc(frameData, frameData.Length);
 
-                    if (frame == null) break;
+                    if (result.Frame == null && !result.CrcError)
+                        break; // incomplete frame
 
-                    // Calculate consumed bytes: 4 (zeros) + 4 (dataLen) + dataLen + 4 (CRC+zeros)
-                    int dataLen = (frameData[4] << 24) | (frameData[5] << 16) |
-                                  (frameData[6] << 8) | frameData[7];
-                    int consumed = 4 + 4 + dataLen + 4;
-                    recvBuffer.RemoveRange(0, Math.Min(consumed, recvBuffer.Count));
+                    if (result.CrcError)
+                    {
+                        // CRC mismatch — send RepeatRequest
+                        _crcRetryCount++;
+                        _logger.LogWarning("⚠️ CRC error (attempt {Count}/{Max})", _crcRetryCount, MaxCrcRetries);
+
+                        if (_crcRetryCount <= MaxCrcRetries)
+                        {
+                            await SendDddPacketAsync(stream, DddPacketType.RepeatRequest);
+                        }
+                        else
+                        {
+                            _logger.LogError("❌ Max CRC retries exceeded, dropping frame");
+                            _crcRetryCount = 0;
+                        }
+
+                        recvBuffer.RemoveRange(0, Math.Min(result.ConsumedBytes, recvBuffer.Count));
+                        continue;
+                    }
+
+                    // Valid frame — reset CRC retry counter
+                    _crcRetryCount = 0;
+                    recvBuffer.RemoveRange(0, Math.Min(result.ConsumedBytes, recvBuffer.Count));
 
                     _logger.LogInformation("📩 Codec 12 frame, type: 0x{Type:X2}, {Len} bytes",
-                        frame.Type, frame.Data.Length);
+                        result.Frame.Type, result.Frame.Data.Length);
 
-                    await ProcessFrameAsync(stream, frame);
+                    await ProcessFrameAsync(stream, result.Frame);
 
                     if (_state == SessionState.Complete || _state == SessionState.Error)
                         break;
@@ -233,21 +264,33 @@ public class DddSession
             return;
         }
 
-        // Status payload: "STATUS" (6B) + PayloadType(1B) + StatusData(4B) + ResumeState(1B) + Features(1B)
-        // But from Codec12, the data after payload type is:
-        // STATUS(6B ascii) + 0x01(payload type, already stripped) + ...
-        // Actually the full payload parsed by DddPacket is:
-        // data = [STATUS_ascii(6B)] [resume_state(1B)] [seq_number(4B)] [features(1B)]
-        // Let me parse what we have
-        if (data.Length >= 8)
+        // Status payload: "STATUS"(6B) + ResumeState(1B) + SequenceNumber(4B) + Features(1B)
+        // Total = 12 bytes
+        if (data.Length >= 12)
         {
-            _resumeState = data[6]; // resume state byte
-            _features = data.Length >= 12 ? data[11] : (byte)0;
+            _resumeState = data[6];
+            _lastSequenceNumber = (uint)((data[7] << 24) | (data[8] << 16) | (data[9] << 8) | data[10]);
+            _features = data[11];
 
-            _logger.LogInformation("📊 STATUS: resume=0x{Resume:X2}, features=0x{Features:X2}",
-                _resumeState, _features);
+            _logger.LogInformation("📊 STATUS: resume=0x{Resume:X2}, seqNum={SeqNum}, features=0x{Features:X2}",
+                _resumeState, _lastSequenceNumber, _features);
 
             // Check ignition (bit 6 of resume state)
+            if ((_resumeState & 0x40) == 0)
+            {
+                _logger.LogWarning("🔑 Ignition OFF — nie można pobierać DDD");
+                await SendTerminateAsync(stream);
+                return;
+            }
+        }
+        else if (data.Length >= 8)
+        {
+            _resumeState = data[6];
+            _features = data.Length >= 12 ? data[11] : (byte)0;
+
+            _logger.LogInformation("📊 STATUS (short): resume=0x{Resume:X2}, features=0x{Features:X2}",
+                _resumeState, _features);
+
             if ((_resumeState & 0x40) == 0)
             {
                 _logger.LogWarning("🔑 Ignition OFF — nie można pobierać DDD");
@@ -260,18 +303,70 @@ public class DddSession
             _logger.LogInformation("📊 STATUS received ({Len}B)", data.Length);
         }
 
-        // Check if device supports driver info (features bit 1)
-        bool supportsDriverInfo = (_features & 0x02) != 0;
-        if (supportsDriverInfo)
+        // Resume State logic (bits 0-4)
+        byte resumeBits = (byte)(_resumeState & 0x1F);
+
+        if ((resumeBits & 0x10) != 0)
         {
-            _state = SessionState.RequestingDriverInfo;
-            await SendDddPacketAsync(stream, DddPacketType.DriverInfo);
-            _logger.LogInformation("👤 Requesting driver info...");
+            // Bit 4: resume from last transfer
+            _logger.LogInformation("🔄 Resuming from last transfer (seq={Seq})", _lastSequenceNumber);
+            await ResumeFromLastTransfer(stream);
+        }
+        else if ((resumeBits & 0x08) != 0)
+        {
+            // Bit 3: resume from file request (skip auth + download list)
+            _logger.LogInformation("🔄 Resuming from file request");
+            await ResumeFromFileRequest(stream);
+        }
+        else if ((resumeBits & 0x04) != 0)
+        {
+            // Bit 2: resume from download list (skip auth)
+            _logger.LogInformation("🔄 Resuming from download list");
+            await StartDownloadListAsync(stream);
         }
         else
         {
-            await StartAuthenticationAsync(stream);
+            // Bit 0/1: start from beginning (authentication)
+            // Check if device supports driver info (features bit 1)
+            bool supportsDriverInfo = (_features & 0x02) != 0;
+            if (supportsDriverInfo)
+            {
+                _state = SessionState.RequestingDriverInfo;
+                await SendDddPacketAsync(stream, DddPacketType.DriverInfo);
+                _logger.LogInformation("👤 Requesting driver info...");
+            }
+            else
+            {
+                await StartAuthenticationAsync(stream);
+            }
         }
+    }
+
+    // ─── RESUME helpers ──────────────────────────────────────────────
+
+    private async Task ResumeFromFileRequest(NetworkStream stream)
+    {
+        _state = SessionState.DownloadingFile;
+        BuildFileList();
+        _currentFileIndex = -1;
+        await RequestNextFileAsync(stream);
+    }
+
+    private async Task ResumeFromLastTransfer(NetworkStream stream)
+    {
+        _state = SessionState.DownloadingFile;
+        BuildFileList();
+        _currentFileIndex = -1;
+
+        // Send ACK with the sequence number from STATUS to resume transfer
+        if (_lastSequenceNumber > 0)
+        {
+            _currentSequenceNumber = (byte)(_lastSequenceNumber & 0xFF);
+            _logger.LogInformation("🔄 Sending ACK for seq={Seq} to resume", _currentSequenceNumber);
+            // We don't know the file type yet; request next file which will trigger fresh download
+        }
+
+        await RequestNextFileAsync(stream);
     }
 
     // ─── AUTHENTICATION ──────────────────────────────────────────────
@@ -333,11 +428,18 @@ public class DddSession
             if (data.Length > 2)
                 _fileBuffer.AddRange(data.AsSpan(2).ToArray());
 
-            // Parse TREP to detect generation from buffered data or EOF payload
-            // TREP is typically at offset 3 in first response (after fileType, seqNum, SID)
+            // Parse TREP from buffered data: SID at [0], TREP at [1]
             byte trep = 0;
-            if (data.Length >= 4)
-                trep = data[3];
+            if (_fileBuffer.Count >= 2)
+            {
+                byte sid = _fileBuffer[0];
+                trep = _fileBuffer[1];
+                _logger.LogInformation("🔍 InterfaceVersion: SID=0x{SID:X2}, TREP=0x{TREP:X2}", sid, trep);
+            }
+            else if (data.Length >= 4)
+            {
+                trep = data[3]; // fallback: parse from EOF payload
+            }
 
             if (trep == 0x02)
                 _vuGeneration = VuGeneration.Gen2v2;
@@ -394,20 +496,59 @@ public class DddSession
         // Driver cards can be added if driver info indicated cards are present
     }
 
+    /// <summary>
+    /// Build Download List payload per spec (Tables 14-16).
+    /// Format: [fileType(1B)][dataLength(1B)][fileTypeData(NB)] for each file.
+    /// Download List ALWAYS uses Gen1 codes (0x01-0x06), regardless of VU generation.
+    /// Generation-specific TRTP codes are used ONLY in FileRequest (0x30).
+    /// </summary>
     private byte[] BuildDownloadListPayload()
     {
-        // Download list request payload contains TRTP codes for each file
         var payload = new List<byte>();
-        foreach (var fileType in _filesToDownload)
-        {
-            payload.Add(GetTrtp(fileType));
-        }
+
+        // Overview (0x01, dataLen=0)
+        payload.Add(0x01);
+        payload.Add(0x00);
+
+        // Activities (0x02, dataLen=10): [0x02][startType(1B)][start(4B)][endType(1B)][end(4B)]
+        var end = DateTimeOffset.UtcNow;
+        var start = end.AddDays(-28);
+        payload.Add(0x02);
+        payload.Add(0x0A); // dataLen = 10
+        payload.Add(0x02); // start time type
+        WriteBigEndianUint32ToList(payload, (uint)start.ToUnixTimeSeconds());
+        payload.Add(0x03); // end time type
+        WriteBigEndianUint32ToList(payload, (uint)end.ToUnixTimeSeconds());
+
+        // Events and Faults (0x03, dataLen=0)
+        payload.Add(0x03);
+        payload.Add(0x00);
+
+        // Detailed Speed (0x04, dataLen=0)
+        payload.Add(0x04);
+        payload.Add(0x00);
+
+        // Technical Data (0x05, dataLen=0)
+        payload.Add(0x05);
+        payload.Add(0x00);
+
+        // Driver Card slot 1 (0x06, dataLen=1, data=0x01)
+        payload.Add(0x06);
+        payload.Add(0x01);
+        payload.Add(0x01);
+
+        // Driver Card slot 2 (0x06, dataLen=1, data=0x02)
+        payload.Add(0x06);
+        payload.Add(0x01);
+        payload.Add(0x02);
+
         return payload.ToArray();
     }
 
     /// <summary>
     /// Get the Transfer Request Type Parameter for a file based on VU generation.
-    /// Gen1: 01-05, Gen2v1: 21-25, Gen2v2: 31-35
+    /// Gen1: 01-05, Gen2v1: 21-25, Gen2v2: 31-35.
+    /// Used ONLY for FileRequest (0x30), NOT for Download List.
     /// </summary>
     private byte GetTrtp(DddFileType fileType)
     {
@@ -449,6 +590,14 @@ public class DddSession
             _currentFileIndex = -1;
             await RequestNextFileAsync(stream);
         }
+        else if (type == DddPacketType.APDU)
+        {
+            // VU responded with APDU during unlock — forward to card and send response back
+            _logger.LogInformation("🔀 APDU during Download List unlock: {Len}B", data.Length);
+            byte[] cardResponse = await _bridge.TransmitApduAsync(data);
+            await SendDddPacketAsync(stream, DddPacketType.APDU, cardResponse);
+            // Stay in WaitingForDownloadListAck state
+        }
         else
         {
             _logger.LogWarning("⚠️ Expected DownloadList ACK, got 0x{Type:X2}", (byte)type);
@@ -463,8 +612,9 @@ public class DddSession
 
         if (_currentFileIndex >= _filesToDownload.Count)
         {
-            // All files downloaded — terminate session
+            // All files downloaded — merge VU files and terminate
             _logger.LogInformation("🎉 All {Count} files downloaded!", _filesToDownload.Count);
+            MergeVuFiles();
             await SendTerminateAsync(stream);
             return;
         }
@@ -472,6 +622,8 @@ public class DddSession
         _currentFileType = _filesToDownload[_currentFileIndex];
         _currentSequenceNumber = 0;
         _fileBuffer.Clear();
+        _lastSid = 0;
+        _lastTrep = 0;
 
         _state = SessionState.DownloadingFile;
         await RequestFileAsync(stream, _currentFileType);
@@ -521,12 +673,20 @@ public class DddSession
             byte seqNum = data[1];
             int dataOffset = 2;
 
-            // First packet of a file also contains SID (0x76) + TREP
-            if (_currentSequenceNumber == 0 && data.Length > 4 && data[2] == 0x76)
+            // First packet of a file contains SID + TREP (read dynamically)
+            if (_currentSequenceNumber == 0 && data.Length > 3)
             {
+                _lastSid = data[2];
+                _lastTrep = data[3];
                 dataOffset = 4; // skip SID + TREP
+
                 _logger.LogInformation("📄 File start — SID=0x{SID:X2}, TREP=0x{TREP:X2}",
-                    data[2], data[3]);
+                    _lastSid, _lastTrep);
+
+                if (_lastSid == 0x7F)
+                {
+                    _logger.LogWarning("⚠️ Negative response (SID=0x7F) for {Type}!", _currentFileType);
+                }
             }
 
             // Append file data (skip fileType + seqNum + SID/TREP)
@@ -551,7 +711,13 @@ public class DddSession
                 _fileBuffer.AddRange(data.AsSpan(2).ToArray());
             }
 
-            // Save file
+            // Store downloaded file data for merging
+            if (_fileBuffer.Count > 0)
+            {
+                _downloadedFiles[_currentFileType] = _fileBuffer.ToArray();
+            }
+
+            // Save individual file
             SaveCurrentFile();
             _logger.LogInformation("💾 File saved: {Type}, {Size}B", _currentFileType, _fileBuffer.Count);
 
@@ -590,6 +756,51 @@ public class DddSession
         var filePath = Path.Combine(_outputDir, _imei, fileName);
         DddFileWriter.Save(filePath, _fileBuffer.ToArray());
         _logger.LogInformation("💾 {Path} ({Size}B)", filePath, _fileBuffer.Count);
+    }
+
+    // ─── VU FILE MERGING ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Merge VU files (Overview, Activities, Events, Speed, Technical) into a single .DDD file.
+    /// Driver cards are kept as separate files per spec (str. 35).
+    /// Files are merged in order: Overview, Activities, Events, Speed, Technical.
+    /// </summary>
+    private void MergeVuFiles()
+    {
+        var vuFileTypes = new[]
+        {
+            DddFileType.Overview,
+            DddFileType.Activities,
+            DddFileType.EventsAndFaults,
+            DddFileType.DetailedSpeed,
+            DddFileType.TechnicalData
+        };
+
+        var mergedData = new List<byte>();
+        int fileCount = 0;
+
+        foreach (var ft in vuFileTypes)
+        {
+            if (_downloadedFiles.TryGetValue(ft, out var fileData) && fileData.Length > 0)
+            {
+                mergedData.AddRange(fileData);
+                fileCount++;
+                _logger.LogInformation("📎 Merged {Type}: {Size}B", ft, fileData.Length);
+            }
+        }
+
+        if (fileCount < 2)
+        {
+            _logger.LogInformation("📎 Not enough VU files to merge ({Count}), skipping", fileCount);
+            return;
+        }
+
+        string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        string mergedFileName = $"{_imei}_vu_{timestamp}.ddd";
+        var mergedPath = Path.Combine(_outputDir, _imei, mergedFileName);
+        DddFileWriter.Save(mergedPath, mergedData.ToArray());
+        _logger.LogInformation("📦 Merged VU file: {Path} ({Size}B, {Count} files)",
+            mergedPath, mergedData.Count, fileCount);
     }
 
     // ─── ERROR handling ──────────────────────────────────────────────
@@ -657,5 +868,13 @@ public class DddSession
         buffer[offset + 1] = (byte)(value >> 16);
         buffer[offset + 2] = (byte)(value >> 8);
         buffer[offset + 3] = (byte)value;
+    }
+
+    private static void WriteBigEndianUint32ToList(List<byte> list, uint value)
+    {
+        list.Add((byte)(value >> 24));
+        list.Add((byte)(value >> 16));
+        list.Add((byte)(value >> 8));
+        list.Add((byte)value);
     }
 }
