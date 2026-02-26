@@ -173,8 +173,10 @@ public class DddSession
             return;
         }
 
-        // Handle errors (any state)
-        if (type == DddPacketType.Error)
+        // Handle errors (any state) — except states that interpret Error specially
+        if (type == DddPacketType.Error &&
+            _state != SessionState.CheckingInterfaceVersion &&
+            _state != SessionState.DownloadingFile)
         {
             HandleError(data);
             // After error, request status to see if we can resume
@@ -313,39 +315,50 @@ public class DddSession
 
     private async Task HandleInterfaceVersionResponse(NetworkStream stream, DddPacketType type, byte[] data)
     {
-        if (type == DddPacketType.FileDataEOF)
+        if (type == DddPacketType.FileData)
         {
-            // Positive response — parse TREP to detect generation
-            // EOF payload: [fileType(1B)] [seqNum(1B)] [SID(1B)?] [TREP(1B)?] [data...]
-            if (data.Length >= 4)
-            {
-                byte trep = data[3]; // 0x01=Gen1, 0x01=Gen2v1 default, 0x02=Gen2v2
-                // Check for 0202 pattern meaning Gen2v2
-                if (data.Length >= 5 && data[3] == 0x02 && data[4] == 0x02)
-                {
-                    _vuGeneration = VuGeneration.Gen2v2;
-                }
-                else if (data.Length >= 5 && data[3] == 0x01 && data[4] == 0x01)
-                {
-                    _vuGeneration = VuGeneration.Gen1; // or Gen2v1, will refine
-                }
-                else
-                {
-                    _vuGeneration = VuGeneration.Gen1;
-                }
-            }
-            else
-            {
-                _vuGeneration = VuGeneration.Gen1;
-            }
+            // Multi-chunk response — buffer data (skip fileType + seqNum)
+            if (data.Length > 2)
+                _fileBuffer.AddRange(data.AsSpan(2).ToArray());
 
-            _logger.LogInformation("🔍 Detected VU generation: {Gen}", _vuGeneration);
+            // ACK with next sequence number
+            byte seqNum = data.Length > 1 ? data[1] : (byte)0;
+            _currentSequenceNumber = (byte)(seqNum + 1);
+            var ackPayload = new byte[] { data[0], _currentSequenceNumber };
+            await SendDddPacketAsync(stream, DddPacketType.FileData, ackPayload);
+        }
+        else if (type == DddPacketType.FileDataEOF)
+        {
+            // Append remaining data
+            if (data.Length > 2)
+                _fileBuffer.AddRange(data.AsSpan(2).ToArray());
+
+            // Parse TREP to detect generation from buffered data or EOF payload
+            // TREP is typically at offset 3 in first response (after fileType, seqNum, SID)
+            byte trep = 0;
+            if (data.Length >= 4)
+                trep = data[3];
+
+            if (trep == 0x02)
+                _vuGeneration = VuGeneration.Gen2v2;
+            else if (trep == 0x01)
+                _vuGeneration = VuGeneration.Gen1; // or Gen2v1, will refine
+            else
+                _vuGeneration = VuGeneration.Gen1;
+
+            _fileBuffer.Clear();
+            _currentSequenceNumber = 0;
+
+            _logger.LogInformation("🔍 Detected VU generation: {Gen} (TREP=0x{Trep:X2})", _vuGeneration, trep);
             await StartDownloadListAsync(stream);
         }
         else if (type == DddPacketType.Error)
         {
+            HandleError(data);
             // Negative response = Gen1 or Gen2v1 (doesn't support interface version)
             _vuGeneration = VuGeneration.Gen1;
+            _fileBuffer.Clear();
+            _currentSequenceNumber = 0;
             _logger.LogInformation("🔍 Interface version not supported — assuming Gen1");
             await StartDownloadListAsync(stream);
         }
