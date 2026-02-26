@@ -66,8 +66,8 @@ public class SessionDiagnostics
     {
         lock (_lock)
         {
-            if (direction == "TX") { PacketsSent++; BytesSent += size; }
-            else { PacketsReceived++; BytesReceived += size; }
+            if (direction == "TX") PacketsSent++;
+            else PacketsReceived++;
             _packetLog.Add(new PacketLogEntry(DateTime.UtcNow, direction, type, size, details));
         }
     }
@@ -226,7 +226,7 @@ public class SessionDiagnostics
                 generation = Generation.ToString(),
                 startTime = StartTime,
                 endTime = EndTime,
-                durationSeconds = (EndTime ?? DateTime.UtcNow - StartTime).TotalSeconds,
+                durationSeconds = ((EndTime ?? DateTime.UtcNow) - StartTime).TotalSeconds,
                 counters = new
                 {
                     packetsSent = PacketsSent,
