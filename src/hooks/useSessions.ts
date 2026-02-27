@@ -107,6 +107,13 @@ export function useSessionEvents() {
   return query;
 }
 
+export function isStaleSession(session: Session, thresholdMinutes = 5): boolean {
+  if (session.status === "completed" || session.status === "error") return false;
+  const lastActivity = new Date(session.last_activity).getTime();
+  const now = Date.now();
+  return (now - lastActivity) > thresholdMinutes * 60 * 1000;
+}
+
 export function useSessionStats() {
   const { data: sessions, isLoading } = useSessions();
 
@@ -127,7 +134,7 @@ export function useSessionStats() {
     today.setHours(0, 0, 0, 0);
 
     const active = sessions.filter(
-      (s) => s.status !== "completed" && s.status !== "error"
+      (s) => s.status !== "completed" && s.status !== "error" && !isStaleSession(s)
     );
 
     const completedToday = sessions.filter(
