@@ -38,11 +38,12 @@ public static class Codec12Parser
         if (codecId != 0x0C)
             return new Codec12ParseResult(null, false, 0);
 
-        // Verify CRC
-        ushort receivedCrc = (ushort)((buffer[8 + dataLen + 2] << 8) | buffer[8 + dataLen + 3]);
+        // Verify CRC (device frames may encode CRC bytes as LE on wire)
+        ushort receivedCrcBe = (ushort)((buffer[8 + dataLen + 2] << 8) | buffer[8 + dataLen + 3]);
+        ushort receivedCrcLe = (ushort)((buffer[8 + dataLen + 3] << 8) | buffer[8 + dataLen + 2]);
         ushort calculatedCrc = Crc16(buffer, 8, dataLen);
 
-        if (receivedCrc != calculatedCrc)
+        if (receivedCrcBe != calculatedCrc && receivedCrcLe != calculatedCrc)
             return new Codec12ParseResult(null, true, totalLen);
 
         // Parse payload
@@ -84,8 +85,9 @@ public static class Codec12Parser
         int crcPos = 8 + dataLen;
         frame[crcPos] = 0;
         frame[crcPos + 1] = 0;
-        frame[crcPos + 2] = (byte)(crc >> 8);
-        frame[crcPos + 3] = (byte)(crc);
+        // CRC bytes on wire: low byte first, then high byte
+        frame[crcPos + 2] = (byte)(crc);
+        frame[crcPos + 3] = (byte)(crc >> 8);
 
         return frame;
     }
