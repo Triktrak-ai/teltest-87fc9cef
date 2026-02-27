@@ -648,7 +648,7 @@ public class DddSession
                 if (trep == 0x02)
                     _vuGeneration = VuGeneration.Gen2v2;
                 else if (trep == 0x01)
-                    _vuGeneration = VuGeneration.Gen1;
+                    _vuGeneration = VuGeneration.Gen2v1;
                 else
                     _vuGeneration = VuGeneration.Gen1;
 
