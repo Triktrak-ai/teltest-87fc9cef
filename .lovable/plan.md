@@ -1,62 +1,49 @@
 
 
-# Naprawa nieskonczonej petli autentykacji + APDU SELECT MF
+# Resetowanie stanu karty przed ponowna proba autentykacji
 
-## Problem 1: Nieskonczona petla "Certificate rejected" (KRYTYCZNY)
+## Problem
 
-Retry limit (MaxAuthRetries=3) **nigdy nie dziala**, bo:
+Po bledzie autentykacji karta pozostaje w kontekscie DF aplikacji (SMRDT/TACHO). Kolejna proba natychmiast failuje z `6A 82` (file not found) bo VU probuje `SELECT EF_ICC` ktory nie jest dostepny w tym kontekscie. Efekt: 2 z 3 prob sa zmarnowane.
 
-1. Linia 330: `HandleError(data)` zmienia stan z `ApduLoop` na `Error` (przez `TransitionTo` w linii 1285)
-2. Linia 333: sprawdzenie `if (_state == SessionState.ApduLoop)` jest **zawsze false** — stan jest juz `Error`
-3. `_authRetryCount` nigdy nie jest inkrementowany
-4. Linia 348-349: wysyla STATUS i przechodzi do `WaitingForStatus` — cykl zaczyna sie od nowa, bez limitu
-
-Wynik: 38 powtorzen w 9 minut, az karta fizycznie przestaje odpowiadac (0x80100068).
-
-### Naprawa
-
-Zapisac stan **przed** wywolaniem `HandleError`, i uzyc zapisanego stanu do sprawdzenia retry:
+## Analiza traffic logu
 
 ```text
-Linia 325-346 w DddSession.cs:
-
-  var stateBeforeError = _state;   // <-- zapisz stan PRZED HandleError
-  HandleError(data);
-
-  if (stateBeforeError == SessionState.ApduLoop)  // <-- uzywaj zapisanego stanu
-  {
-      _authRetryCount++;
-      ...
-  }
+Proba 1: Pelna autentykacja -> secure messaging 0C B0 -> 6A 88 -> "certificate rejected"
+          Karta zostaje w kontekscie DF SMRDT/TACHO
+Proba 2: VU wysyla SELECT EF_ICC -> 6A 82 (nie istnieje w biezacym DF) -> natychmiastowy fail
+Proba 3: To samo co proba 2
 ```
 
-## Problem 2: SELECT MF z P2=0C (6A86)
+## Rozwiazanie
 
-Komendy SELECT MF w `ProbeCardGenerationAsync()` (linia 587) i `TryResetCardState()` (linia 651) uzywaja `P2=0C`, co niektorym kartom nie odpowiada (SW=6A86).
+Dodac wywolanie `TryResetCardState()` (SELECT MF) **przed** wyslaniem ATR w kolejnej probie, zeby zresetowac karte do kontekstu Master File.
 
-### Naprawa
+## Zmiana w pliku
 
-Zmienic P2 z `0x0C` na `0x00` we wszystkich komendach SELECT MF:
+**`csharp/TachoDddServer/Session/DddSession.cs`** — w bloku retry (linie 346-351)
+
+Przed wyslaniem STATUS i przejsciem do `WaitingForStatus`, wywolac `TryResetCardState()`:
 
 ```text
-Bylo:    00 A4 00 0C 02 3F 00
-Bedzie:  00 A4 00 00 02 3F 00
+// Po sprawdzeniu limitu retry, ale przed wyslaniem STATUS:
+if (stateBeforeError == SessionState.ApduLoop)
+{
+    // Reset card state before retry
+    await TryResetCardState();
+}
+
+await SendDddPacketAsync(stream, DddPacketType.Status);
+TransitionTo(SessionState.WaitingForStatus, "Error received, requesting STATUS");
 ```
 
-Dotyczy dwoch miejsc:
-- `ProbeCardGenerationAsync()` linia 587
-- `TryResetCardState()` linia 651
+## Dodatkowa obserwacja
 
-## Pliki do zmiany
+Blad `6A 88` (Referenced data not found) podczas secure messaging w pierwszej probie wskazuje na potencjalna niezgodnosc generacyjna — tachograf moze nie obslugiwac certyfikatow Gen2. To jest problem po stronie VU/tachografu, nie po stronie naszego kodu. Ale prawidlowy reset karty zapewni ze kazda proba ma szanse na pelna autentykacje zamiast natychmiastowego failu.
 
-| Plik | Zmiana |
-|------|--------|
-| `DddSession.cs` linia 325-333 | Zapisac `_state` przed `HandleError`, uzyc w warunku retry |
-| `DddSession.cs` linia 587 | SELECT MF: P2 z 0x0C na 0x00 |
-| `DddSession.cs` linia 651 | SELECT MF: P2 z 0x0C na 0x00 |
+## Oczekiwany efekt
 
-## Efekt po naprawie
-
-- Sesja z "Certificate rejected" zakonczy sie po 3 probach (ok. 40s) zamiast 38+ (9 min)
-- Probe EF_ICC nie bedzie blokowac na SELECT MF z 6A86
+- Kazda z 3 prob bedzie miala pelna sekwencje autentykacji (nie tylko retry 1)
+- Jesli problem jest przejsciowy (np. timing), proba 2 lub 3 moze sie udac
+- Jesli to niezgodnosc generacyjna, sesja i tak zakonczy sie po 3 probach, ale z pelna diagnostyka z kazdej proby
 
