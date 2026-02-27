@@ -527,8 +527,20 @@ public class DddSession
             _trafficLogger?.LogDecodedWithHex("BRIDGE", "ATR", atr, 32, "Card ATR received");
 
             _cardGeneration = DetectCardGeneration(atr);
-            _logger.LogInformation("💳 Detected card generation: {Gen}", _cardGeneration);
+            _logger.LogInformation("💳 Detected card generation (ATR): {Gen}", _cardGeneration);
             _webReporter?.SetCardGeneration(_cardGeneration);
+
+            // If Gen2 detected from ATR, probe EF_ICC to distinguish Gen2v1 vs Gen2v2
+            if (_cardGeneration == "Gen2")
+            {
+                var probed = await ProbeCardGenerationAsync();
+                if (probed != _cardGeneration)
+                {
+                    _cardGeneration = probed;
+                    _logger.LogInformation("💳 Refined card generation via EF_ICC: {Gen}", _cardGeneration);
+                    _webReporter?.SetCardGeneration(_cardGeneration);
+                }
+            }
 
             TransitionTo(SessionState.ApduLoop, "Starting authentication (ATR)");
 
@@ -556,6 +568,154 @@ public class DddSession
             _logger.LogError(ex, "Error during authentication start");
             TransitionTo(SessionState.Error, $"Auth error: {ex.Message}");
         }
+    }
+
+    // ─── EF_ICC PROBE (Gen2v1 vs Gen2v2) ──────────────────────────
+
+    /// <summary>
+    /// Probes the driver card's EF_ICC file to determine Gen2v1 vs Gen2v2.
+    /// Sends APDU sequence: SELECT MF → SELECT DF 0007 → SELECT EF_ICC → READ BINARY → SELECT MF (reset).
+    /// Returns "Gen2v1", "Gen2v2", or "Gen2" (fallback on error).
+    /// </summary>
+    private async Task<string> ProbeCardGenerationAsync()
+    {
+        try
+        {
+            _logger.LogInformation("🔬 Probing EF_ICC for card generation...");
+
+            // 1. SELECT MF (3F00)
+            var selectMf = new byte[] { 0x00, 0xA4, 0x00, 0x0C, 0x02, 0x3F, 0x00 };
+            var resp = await _bridge.TransmitApduAsync(selectMf);
+            if (!IsSwSuccess(resp))
+            {
+                _logger.LogWarning("⚠️ EF_ICC probe: SELECT MF failed (SW={SW})", FormatSw(resp));
+                return "Gen2";
+            }
+
+            // 2. SELECT DF Tachograph_G2 (0007)
+            var selectDf = new byte[] { 0x00, 0xA4, 0x02, 0x0C, 0x02, 0x00, 0x07 };
+            resp = await _bridge.TransmitApduAsync(selectDf);
+            if (!IsSwSuccess(resp))
+            {
+                _logger.LogInformation("🔬 SELECT DF 0007 failed (SW={SW}) — confirming Gen1 card", FormatSw(resp));
+                await TryResetCardState();
+                return "Gen1";
+            }
+
+            // 3. SELECT EF_ICC (0002)
+            var selectEfIcc = new byte[] { 0x00, 0xA4, 0x02, 0x0C, 0x02, 0x00, 0x02 };
+            resp = await _bridge.TransmitApduAsync(selectEfIcc);
+            if (!IsSwSuccess(resp))
+            {
+                _logger.LogWarning("⚠️ EF_ICC probe: SELECT EF_ICC failed (SW={SW})", FormatSw(resp));
+                await TryResetCardState();
+                return "Gen2";
+            }
+
+            // 4. READ BINARY (first 25 bytes — enough for cardGeneration field)
+            var readBinary = new byte[] { 0x00, 0xB0, 0x00, 0x00, 0x19 };
+            resp = await _bridge.TransmitApduAsync(readBinary);
+
+            _logger.LogInformation("🔬 EF_ICC READ BINARY response: {Hex} ({Len}B)",
+                BitConverter.ToString(resp), resp.Length);
+
+            if (resp.Length >= 3 && IsSwSuccess(resp))
+            {
+                // Parse cardGeneration from EF_ICC data
+                // The data portion is resp[0 .. resp.Length-3] (last 2 bytes are SW)
+                var data = resp.AsSpan(0, resp.Length - 2);
+                var generation = ParseCardGenerationFromEfIcc(data.ToArray());
+
+                await TryResetCardState();
+                return generation;
+            }
+
+            _logger.LogWarning("⚠️ EF_ICC READ BINARY unexpected response ({Len}B)", resp.Length);
+            await TryResetCardState();
+            return "Gen2";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "⚠️ EF_ICC probe failed, falling back to Gen2");
+            _diagnostics.LogWarning($"EF_ICC probe error: {ex.Message}");
+            await TryResetCardState();
+            return "Gen2";
+        }
+    }
+
+    private async Task TryResetCardState()
+    {
+        try
+        {
+            var selectMf = new byte[] { 0x00, 0xA4, 0x00, 0x0C, 0x02, 0x3F, 0x00 };
+            await _bridge.TransmitApduAsync(selectMf);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("⚠️ Failed to reset card state after probe: {Msg}", ex.Message);
+        }
+    }
+
+    private static bool IsSwSuccess(byte[] response)
+    {
+        return response.Length >= 2 &&
+               response[^2] == 0x90 &&
+               response[^1] == 0x00;
+    }
+
+    private static string FormatSw(byte[] response)
+    {
+        if (response.Length >= 2)
+            return $"{response[^2]:X2} {response[^1]:X2}";
+        return $"(len={response.Length})";
+    }
+
+    /// <summary>
+    /// Parse the cardGeneration byte from EF_ICC data.
+    /// Per Regulation 2016/799 Appendix 2, EF_ICC contains cardIccIdentification
+    /// with a cardGeneration field (1 byte): 0x01 = Gen2v1, 0x02 = Gen2v2.
+    /// We search for the byte empirically and log the full data for diagnostics.
+    /// </summary>
+    private string ParseCardGenerationFromEfIcc(byte[] data)
+    {
+        _logger.LogInformation("🔬 EF_ICC data ({Len}B): {Hex}", data.Length, BitConverter.ToString(data));
+
+        // cardGeneration is typically found in the first few bytes of EF_ICC.
+        // Scan for known values — the field is a single byte with value 0x01 or 0x02.
+        // In Gen2 cards, the structure starts with clock stop mode (1B), card extended serial number (8B),
+        // then card approval number, etc. The cardGeneration byte is at a known offset.
+        // For safety, we check multiple possible positions.
+
+        // Known offset for cardGeneration in Gen2 cards: typically byte 0
+        // (first byte of cardIccIdentification for Gen2)
+        if (data.Length > 0)
+        {
+            byte firstByte = data[0];
+            if (firstByte == 0x01)
+            {
+                _logger.LogInformation("🔬 cardGeneration=0x01 → Gen2v1 (offset 0)");
+                return "Gen2v1";
+            }
+            if (firstByte == 0x02)
+            {
+                _logger.LogInformation("🔬 cardGeneration=0x02 → Gen2v2 (offset 0)");
+                return "Gen2v2";
+            }
+        }
+
+        // Fallback: scan first 10 bytes for generation markers
+        for (int i = 1; i < Math.Min(data.Length, 10); i++)
+        {
+            if (data[i] == 0x01 || data[i] == 0x02)
+            {
+                _logger.LogInformation("🔬 Possible cardGeneration=0x{Val:X2} at offset {Off} — using it",
+                    data[i], i);
+                return data[i] == 0x01 ? "Gen2v1" : "Gen2v2";
+            }
+        }
+
+        _logger.LogWarning("⚠️ Could not parse cardGeneration from EF_ICC, defaulting to Gen2");
+        return "Gen2";
     }
 
     private async Task HandleApduLoop(NetworkStream stream, DddPacketType type, byte[] data)

@@ -29,11 +29,23 @@ function isGenerationMismatch(s: Session): boolean {
   const card = s.card_generation ?? "Unknown";
   const vu = s.generation ?? "Unknown";
   if (card === "Unknown" || vu === "Unknown") return false;
-  return card !== vu;
+
+  // Gen1 card works with everything
+  if (card === "Gen1") return false;
+
+  // Gen2/Gen2v1/Gen2v2 card in Gen1 tachograph = mismatch
+  if (vu === "Gen1") return true;
+
+  // Gen2v2 card in Gen2v1 tachograph = mismatch
+  if (card === "Gen2v2" && vu === "Gen2v1") return true;
+
+  // Otherwise compatible (Gen2* card in Gen2* tachograph)
+  return false;
 }
 
 function genBadgeClass(gen: string): string {
-  if (gen.startsWith("Gen2")) return "bg-info/20 text-info border-info/30";
+  if (gen === "Gen2v2") return "bg-accent text-accent-foreground border-accent/30";
+  if (gen === "Gen2v1" || gen === "Gen2") return "bg-info/20 text-info border-info/30";
   if (gen === "Gen1") return "bg-muted text-muted-foreground border-muted-foreground/20";
   return "";
 }
