@@ -85,9 +85,9 @@ public static class Codec12Parser
         int crcPos = 8 + dataLen;
         frame[crcPos] = 0;
         frame[crcPos + 1] = 0;
-        // CRC bytes on wire: low byte first, then high byte
-        frame[crcPos + 2] = (byte)(crc);
-        frame[crcPos + 3] = (byte)(crc >> 8);
+        // CRC bytes on wire: big-endian (high byte first)
+        frame[crcPos + 2] = (byte)(crc >> 8);
+        frame[crcPos + 3] = (byte)(crc);
 
         return frame;
     }
