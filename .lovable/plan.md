@@ -1,109 +1,102 @@
 
 
-# Wykrywanie niezgodnosci generacji karta/tachograf
+# Rozroznienie Gen2v1 vs Gen2v2 na podstawie EF_ICC
 
-## Problem
+## Obecny stan
 
-Gdy karta Gen2 laczy sie z tachografem Gen1, autentykacja konczy sie bledem `0x02:0x02` ("card not recognized") bez zadnej informacji o przyczynie. Uzytkownik musi recznie analizowac logi ATR i APDU, zeby zrozumiec co sie stalo.
+Detekcja karty opiera sie wylacznie na ATR (protokol T=0 vs T=1), co pozwala rozroznic Gen1 od Gen2, ale nie rozroznia Gen2v1 od Gen2v2. Obie wersje uzywaja T=1.
 
-## Rozwiazanie
+## Podejscie
 
-Dodanie automatycznego wykrywania generacji karty z ATR, generacji tachografu z pierwszego APDU SELECT, i wyswietlania czytelnego komunikatu o niezgodnosci na dashboardzie.
+Po pobraniu ATR i wykryciu "Gen2", aktywnie odpytujemy karte przez CardBridge o zawartosc pliku EF_ICC, ktory zawiera pole `cardGeneration`:
+- wartosc 1 = Gen2v1
+- wartosc 2 = Gen2v2
 
-## Zmiany
+Nastepnie resetujemy stan karty (SELECT MF), aby nie zaklocic pozniejszej autentykacji VU.
 
-### 1. Migracja bazy danych
+## Sekwencja APDU do odczytu EF_ICC
 
-Dodanie kolumny `card_generation` do tabeli `sessions`:
-
-```sql
-ALTER TABLE sessions ADD COLUMN card_generation text DEFAULT 'Unknown';
+```text
+1. SELECT MF:        00 A4 00 0C 02 3F 00
+2. SELECT DF 0007:   00 A4 02 0C 02 00 07
+3. SELECT EF_ICC:    00 A4 02 0C 02 00 02
+4. READ BINARY:      00 B0 00 00 00   (odczyt pierwszych bajtow)
+5. SELECT MF:        00 A4 00 0C 02 3F 00   (reset stanu karty)
 ```
 
-### 2. `csharp/TachoDddServer/Session/DddSession.cs`
+Jesli SELECT DF 0007 zwroci blad (np. `6A 82` - file not found), karta jest Gen1 (potwierdzenie z ATR).
 
-**a) Nowe pole i metoda detekcji karty:**
+## Zmiany w plikach
 
-Dodanie pola `_cardGeneration` (string, domyslnie "Unknown") obok istniejacego `_vuGeneration`.
+### 1. `csharp/TachoDddServer/Session/DddSession.cs`
 
-Nowa metoda `DetectCardGeneration(byte[] atr)`:
-- Parsowanie ATR zgodnie z ISO 7816-3
-- Bajt T0 (indeks 1) -- liczba historical bytes w gornych 4 bitach, interface bytes w dolnych
-- Jesli TD1 wskazuje T=1 (bit 0 = 1) -- karta Gen2
-- Jesli T=0 -- karta Gen1
-- Dla przykladu z logow: ATR `3B FE 96 00 00 80 31 FE 43...` -- TD1 = `FE`, bit 0 = 0... ale `80 31` w historical bytes wskazuje T=1 via TCK. Prostsze podejscie: sprawdzenie czy ATR zawiera bajt `31` po `80` w historical bytes (T=1 indicator w compact TLV).
+**a) Nowa metoda `ProbeCardGenerationAsync()`:**
 
-**b) Wykrywanie generacji VU z pierwszego APDU SELECT:**
+- Wysyla sekwencje APDU przez `_bridge.TransmitApduAsync()`
+- Sprawdza SW (ostatnie 2 bajty odpowiedzi): `90 00` = sukces
+- Jesli SELECT DF 0007 sie nie powiedzie -- zwraca "Gen1"
+- Jesli READ BINARY EF_ICC sie powiedzie -- parsuje bajt `cardGeneration` z odpowiedzi
+- Na koniec wysyla SELECT MF zeby zresetowac stan karty
+- Otoczona try/catch -- w razie bledu zwraca "Gen2" (fallback jak dotychczas)
 
-W `HandleApduLoop`, przy pierwszym APDU (`_diagnostics.ApduExchanges == 0`), parsowanie komendy SELECT:
-- `00 A4 02 0C 02 00 02` -- SELECT DF `0002` = Gen1 tachograf
-- `00 A4 02 0C 02 00 07` lub inne -- Gen2 tachograf
+**b) Modyfikacja `StartAuthenticationAsync()`:**
 
-Zapisywanie tej informacji w nowym polu `_detectedVuGenFromApdu`.
+Po wykryciu "Gen2" z ATR, wywolanie `ProbeCardGenerationAsync()` ktore zwroci "Gen2v1" lub "Gen2v2". Podmiana wartosci `_cardGeneration` i ponowne wywolanie `_webReporter?.SetCardGeneration()`.
 
-**c) Rozszerzenie HandleError o diagnostyke niezgodnosci:**
+**c) Modyfikacja `DetectCardGeneration()`:**
 
-W bloku obslugi bledow autentykacji (linia 328-346), po wykryciu bledu `0x02:0x02` w stanie `ApduLoop`:
-- Sprawdzenie czy `_cardGeneration` != "Unknown" i czy wykryta generacja VU z APDU jest inna niz generacja karty
-- Jesli niezgodnosc: logowanie czytelnego komunikatu np. "Generation mismatch: Card is Gen2 but VU requires Gen1 -- incompatible"
-- Raportowanie do dashboardu z typem "warning" i kontekstem "GenerationMismatch"
+Bez zmian -- nadal zwraca "Gen1" lub "Gen2" z ATR. Probe robi dokladniejsza detekcje.
 
-**d) W `StartAuthenticationAsync`:**
+### 2. `src/components/SessionsTable.tsx`
 
-Po pobraniu ATR (linia 523), wywolanie `DetectCardGeneration(atr)` i ustawienie `_cardGeneration`. Przekazanie do WebReportera.
+**Aktualizacja `isGenerationMismatch()`:**
 
-### 3. `csharp/TachoDddServer/Reporting/WebReporter.cs`
+Zmiana logiki na macierz kompatybilnosci:
+- Gen1 karta + dowolny tachograf = OK
+- Gen2v1 karta + Gen1 tachograf = NIEZGODNOSC (ale moze dzialac)
+- Gen2v1 karta + Gen2 tachograf = OK
+- Gen2v2 karta + Gen1 tachograf = NIEZGODNOSC
+- Gen2v2 karta + Gen2 tachograf = OK (przy zalozeniu ze Gen2 obejmuje v1 i v2)
 
-- Nowe pole `_cardGeneration` (string)
-- Nowa metoda `SetCardGeneration(string gen)`
-- Dodanie `card_generation` do payloadu w `ReportStatus()` i `ReportError()`
+**Aktualizacja `genBadgeClass()`:**
 
-### 4. `supabase/functions/report-session/index.ts`
+Dodanie stylu dla "Gen2v1" (niebieski) i "Gen2v2" (fioletowy/accent) aby wizualnie je rozroznic.
 
-Dodanie obslugi pola `card_generation` w sekcji opcjonalnych pol (obok `generation`):
+### 3. `src/hooks/useSessions.ts`
 
-```typescript
-if (body.card_generation !== undefined)
-  sessionData.card_generation = body.card_generation;
-```
+Bez zmian -- pole `card_generation` juz jest typu `string`, wiec "Gen2v1"/"Gen2v2" beda obslugiwane automatycznie.
 
-### 5. `src/hooks/useSessions.ts`
+### 4. Baza danych / Edge Function
 
-Dodanie `card_generation: string` do interfejsu `Session`.
+Bez zmian -- kolumna `card_generation` jest typu `text`, wiec nowe wartosci beda zapisywane bez migracji.
 
-### 6. `src/components/SessionsTable.tsx`
+## Parsowanie EF_ICC
 
-- Zmiana naglowka "Generacja" na dwie kolumny: "Tachograf" i "Karta"
-- Wyswietlanie `s.generation` jako generacja tachografu (VU)
-- Wyswietlanie `s.card_generation` jako generacja karty firmowej
-- Kolorowe badge: Gen1 = szary, Gen2 = niebieski, Unknown = domyslny
-- Gdy `s.error_message` zawiera "Generation mismatch" lub `s.error_code` = "0x02:0x02" i karta != tachograf: czerwony alert z ikonka ostrzezenia i komunikatem "Niezgodnosc generacji"
+Struktura EF_ICC dla Gen2 (Appendix 2, Regulation 2016/799):
+- Bajty 0-3: `cardIccIdentification` header
+- W obrebie danych: `cardGeneration` (1 bajt) -- wartosc `0x01` = Gen2v1, `0x02` = Gen2v2
 
-### 7. `csharp/TachoDddServer/Protocol/DddErrorCodes.cs`
-
-Dodanie nowej metody `IsGenerationMismatch(byte errorClass, byte errorCode)` zwracajacej `true` dla `0x02:0x02`, uzywana do warunkowej diagnostyki.
+Dokladna pozycja bajtu zostanie ustalona empirycznie z odpowiedzi READ BINARY (zalogowana w diagnostyce). Fallback: jesli parsowanie sie nie powiedzie, zostawiamy "Gen2".
 
 ## Przebieg w runtime
 
 ```text
 1. ATR z karty -> DetectCardGeneration() -> "Gen2"
-2. VU wysyla SELECT 00 A4 02 0C 02 00 02 -> wykryty Gen1 VU
-3. Karta odpowiada 6A 82 (file not found)
-4. VU zwraca error 0x02:0x02
-5. HandleError() -> sprawdzenie: karta=Gen2, VU=Gen1
-6. Log: "GENERATION MISMATCH: Card Gen2 cannot authenticate with Gen1 VU"
-7. Dashboard: kolumna Karta="Gen2", Tachograf="Gen1", badge "Niezgodnosc generacji"
+2. ProbeCardGenerationAsync():
+   a. SELECT MF -> 90 00
+   b. SELECT DF 0007 -> 90 00 (karta obsluguje Gen2)
+   c. SELECT EF_ICC -> 90 00
+   d. READ BINARY -> dane z cardGeneration=0x01 -> "Gen2v1"
+   e. SELECT MF -> 90 00 (reset)
+3. _cardGeneration = "Gen2v1"
+4. VU wysyla SELECT 00 A4 02 0C 02 00 02 -> Gen1 tachograf
+5. Dashboard: Karta="Gen2v1", Tachograf="Gen1"
 ```
 
 ## Pliki do zmiany
 
 | Plik | Zmiana |
 |------|--------|
-| Migracja SQL | kolumna `card_generation` |
-| `DddSession.cs` | detekcja generacji karty i VU, diagnostyka mismatch |
-| `WebReporter.cs` | pole i payload `card_generation` |
-| `report-session/index.ts` | obsluga `card_generation` |
-| `useSessions.ts` | rozszerzenie interfejsu |
-| `SessionsTable.tsx` | dwie kolumny generacji + alert mismatch |
-| `DddErrorCodes.cs` | helper `IsGenerationMismatch` |
+| `DddSession.cs` | Nowa metoda `ProbeCardGenerationAsync()`, wywolanie w `StartAuthenticationAsync()` |
+| `SessionsTable.tsx` | Macierz kompatybilnosci w `isGenerationMismatch()`, nowe kolory badge |
 
