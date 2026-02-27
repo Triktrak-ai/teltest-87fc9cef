@@ -1371,11 +1371,23 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
 
   while (r.remaining >= 12) {
     try {
-      const date = r.readTimestamp();
-      if (!date) { r.skip(8); continue; }
+      // Zmiana 1: walidacja timestamp — break przy śmieciach z cyklicznego bufora
+      const tsValue = r.readUint32();
+      if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) {
+        break;
+      }
+      const date = new Date(tsValue * 1000);
+
       const dailyPresenceCounter = r.readUint16();
+
+      // Zmiana 4: walidacja dayDistance
       const dayDistance = r.readUint16();
+      if (dayDistance > 9999) break;
+
+      // Zmiana 2: walidacja activityChangeCount
       const activityChangeCount = r.remaining >= 2 ? r.readUint16() : 0;
+      if (activityChangeCount > 1440) break;
+
       const entries: ActivityChangeEntry[] = [];
 
       for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
@@ -1384,6 +1396,10 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
         const cardInserted = ((word >> 14) & 0x01) === 1;
         const activity = (word >> 12) & 0x03;
         const minutes = word & 0x0FFF;
+
+        // Zmiana 3: walidacja minutes — pomijaj śmieci
+        if (minutes >= 1440) continue;
+
         const statusMap: Record<number, ActivityChangeEntry['status']> = {
           0: 'break', 1: 'availability', 2: 'work', 3: 'driving',
         };
