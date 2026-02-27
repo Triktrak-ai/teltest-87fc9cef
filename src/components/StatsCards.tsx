@@ -50,7 +50,7 @@ export function StatsCards() {
       <StatCard label="Aktywne sesje" value={stats.activeSessions} icon={<Activity size={28} />} accent="primary" loading={isLoading} />
       <StatCard label="Ukończone dziś" value={stats.completedToday} icon={<CheckCircle size={28} />} accent="success" loading={isLoading} />
       <StatCard label="Błędy dziś" value={stats.errorsToday} icon={<AlertTriangle size={28} />} accent="destructive" loading={isLoading} />
-      <StatCard label="IMEI online" value={stats.uniqueImei} icon={<Radio size={28} />} accent="warning" loading={isLoading} />
+      <StatCard label="IMEI aktywne" value={stats.uniqueImei} icon={<Radio size={28} />} accent="warning" loading={isLoading} />
       <StatCard label="Pobrano łącznie" value={formatBytes(stats.totalBytes)} icon={<HardDrive size={28} />} accent="primary" loading={isLoading} />
       <StatCard label="APDU łącznie" value={stats.totalApdu} icon={<Repeat size={28} />} accent="warning" loading={isLoading} />
       <StatCard label="Błędy CRC" value={stats.totalCrc} icon={<ShieldAlert size={28} />} accent="destructive" loading={isLoading} />

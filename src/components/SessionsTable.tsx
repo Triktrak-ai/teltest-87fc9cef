@@ -1,7 +1,8 @@
-import { useSessions, type Session } from "@/hooks/useSessions";
+import { useSessions, isStaleSession, type Session } from "@/hooks/useSessions";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 type SessionStatus = Session["status"];
 
@@ -87,11 +88,15 @@ export function SessionsTable() {
             {sessions?.map((s) => {
               const sc = statusConfig[s.status] ?? statusConfig.connecting;
               const active = isActive(s.status);
+              const stale = isStaleSession(s);
+              const staleMinutes = stale
+                ? Math.round((Date.now() - new Date(s.last_activity).getTime()) / 60000)
+                : 0;
               return (
-                <tr key={s.id} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
+                <tr key={s.id} className={`border-b border-border/50 hover:bg-secondary/30 transition-colors ${stale ? "opacity-50" : ""}`}>
                   <td className="px-5 py-3 font-mono text-xs">
                     <span className="flex items-center gap-1.5">
-                      {active && (
+                      {active && !stale && (
                         <span className="relative flex h-1.5 w-1.5">
                           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
                           <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
@@ -105,9 +110,25 @@ export function SessionsTable() {
                     <span className="font-mono text-xs">{s.generation}</span>
                   </td>
                   <td className="px-5 py-3">
-                    <Badge variant="outline" className={sc.className}>
-                      {sc.label}
-                    </Badge>
+                    <span className="flex items-center gap-1.5">
+                      <Badge variant="outline" className={sc.className}>
+                        {sc.label}
+                      </Badge>
+                      {stale && (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge variant="secondary" className="bg-muted text-muted-foreground border-muted-foreground/20 text-[10px]">
+                                Nieaktywna
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>Brak aktywności od {staleMinutes} min</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      )}
+                    </span>
                     {s.error_code && (
                       <span className="ml-2 font-mono text-xs text-destructive">
                         {s.error_code}
