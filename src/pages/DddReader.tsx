@@ -66,7 +66,7 @@ const DddReader = () => {
       reader.onload = (e) => {
         try {
           const buf = e.target?.result as ArrayBuffer;
-          const parsed = parseDddFile(buf);
+          const parsed = parseDddFile(buf, file.name);
           mergedResult = mergeDddData(mergedResult, parsed);
           newNames.push(file.name);
         } catch (err) {
