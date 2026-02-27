@@ -623,8 +623,9 @@ public class DddSession
             {
                 // Parse cardGeneration from EF_ICC data
                 // The data portion is resp[0 .. resp.Length-3] (last 2 bytes are SW)
-                var data = resp.AsSpan(0, resp.Length - 2);
-                var generation = ParseCardGenerationFromEfIcc(data.ToArray());
+                var data = new byte[resp.Length - 2];
+                Array.Copy(resp, 0, data, 0, data.Length);
+                var generation = ParseCardGenerationFromEfIcc(data);
 
                 await TryResetCardState();
                 return generation;
