@@ -1,12 +1,13 @@
 import { useState, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
-import { Radio, Upload, FileText, ArrowLeft, Activity, AlertTriangle, Wrench, Gauge } from "lucide-react";
+import { Radio, Upload, FileText, ArrowLeft, Activity, AlertTriangle, Wrench, Gauge, Search } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { parseDddFile, type DddFileData } from "@/lib/ddd-parser";
+import { parseDddFile, type DddFileData, type DddSection } from "@/lib/ddd-parser";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
 const ACTIVITY_COLORS: Record<string, string> = {
@@ -27,6 +28,22 @@ const ACTIVITY_LABELS: Record<string, string> = {
 
 const formatDate = (d: Date | null) => d ? d.toLocaleDateString("pl-PL") : "—";
 const formatDateTime = (d: Date | null) => d ? d.toLocaleString("pl-PL") : "—";
+
+const hexDump = (data: Uint8Array, maxBytes = 32): string => {
+  const slice = data.slice(0, maxBytes);
+  return Array.from(slice).map(b => b.toString(16).padStart(2, '0')).join(' ');
+};
+
+const TAG_NAMES: Record<number, string> = {
+  0x01: 'MF_IC_Card / Cert CA',
+  0x02: 'Card Certificate / Cert VU',
+  0x03: 'CA Certificate',
+  0x05: 'Overview',
+  0x06: 'Activities',
+  0x07: 'Events & Faults',
+  0x08: 'Detailed Speed',
+  0x09: 'Technical Data',
+};
 
 const DddReader = () => {
   const [data, setData] = useState<DddFileData | null>(null);
@@ -118,6 +135,7 @@ const DddReader = () => {
               {data.speedRecords.length > 0 && (
                 <TabsTrigger value="speed"><Gauge className="mr-1.5 h-3.5 w-3.5" />Prędkość ({data.speedRecords.length})</TabsTrigger>
               )}
+              <TabsTrigger value="diagnostics"><Search className="mr-1.5 h-3.5 w-3.5" />Diagnostyka ({data.rawSections.length})</TabsTrigger>
             </TabsList>
 
             {/* Overview */}
@@ -335,6 +353,76 @@ const DddReader = () => {
                 </Card>
               </TabsContent>
             )}
+            {/* Diagnostics */}
+            <TabsContent value="diagnostics">
+              <div className="space-y-4">
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <Card>
+                    <CardContent className="py-4">
+                      <p className="text-xs text-muted-foreground">Rozmiar pliku</p>
+                      <p className="mt-1 font-semibold font-mono">{data.fileSize.toLocaleString()} B</p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="py-4">
+                      <p className="text-xs text-muted-foreground">Bajty sparsowane</p>
+                      <p className="mt-1 font-semibold font-mono">{data.bytesParsed.toLocaleString()} B ({Math.round(data.bytesParsed / data.fileSize * 100)}%)</p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="py-4">
+                      <p className="text-xs text-muted-foreground">Sekcje TLV</p>
+                      <p className="mt-1 font-semibold">{data.rawSections.length}</p>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                <Card>
+                  <CardHeader className="py-3"><CardTitle className="text-sm">Znalezione sekcje</CardTitle></CardHeader>
+                  <CardContent className="p-0">
+                    <ScrollArea className="max-h-[500px]">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="w-12">#</TableHead>
+                            <TableHead>Tag</TableHead>
+                            <TableHead>Nazwa</TableHead>
+                            <TableHead>Offset</TableHead>
+                            <TableHead>Długość</TableHead>
+                            <TableHead>Hex dump (32B)</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {data.rawSections.map((s, i) => (
+                            <TableRow key={i}>
+                              <TableCell className="text-xs font-mono">{i + 1}</TableCell>
+                              <TableCell className="text-xs font-mono">0x76 0x{s.tag.toString(16).padStart(2, '0')}</TableCell>
+                              <TableCell className="text-xs">{TAG_NAMES[s.tag] || 'Nieznany'}</TableCell>
+                              <TableCell className="text-xs font-mono">{s.offset}</TableCell>
+                              <TableCell className="text-xs font-mono">{s.length.toLocaleString()}</TableCell>
+                              <TableCell className="text-xs font-mono break-all max-w-xs">{hexDump(s.data)}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </ScrollArea>
+                  </CardContent>
+                </Card>
+
+                {data.warnings.length > 0 && (
+                  <Card className="border-amber-500/30">
+                    <CardHeader className="py-3"><CardTitle className="text-sm text-amber-600">Ostrzeżenia parsera ({data.warnings.length})</CardTitle></CardHeader>
+                    <CardContent className="space-y-1">
+                      {data.warnings.map((w, i) => (
+                        <p key={i} className="text-xs font-mono text-muted-foreground">
+                          <span className="text-amber-600">offset {w.offset}:</span> {w.message}
+                        </p>
+                      ))}
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
+            </TabsContent>
           </Tabs>
         )}
       </main>
