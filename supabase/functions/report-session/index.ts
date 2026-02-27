@@ -82,6 +82,8 @@ Deno.serve(async (req) => {
       sessionData.apdu_exchanges = body.apdu_exchanges;
     if (body.crc_errors !== undefined)
       sessionData.crc_errors = body.crc_errors;
+    if (body.card_generation !== undefined)
+      sessionData.card_generation = body.card_generation;
 
     // Set completed_at when status is completed
     if (body.status === "completed") {

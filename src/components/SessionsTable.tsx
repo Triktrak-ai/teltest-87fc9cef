@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { AlertTriangle } from "lucide-react";
 
 type SessionStatus = Session["status"];
 
@@ -22,6 +23,19 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function isGenerationMismatch(s: Session): boolean {
+  const card = s.card_generation ?? "Unknown";
+  const vu = s.generation ?? "Unknown";
+  if (card === "Unknown" || vu === "Unknown") return false;
+  return card !== vu;
+}
+
+function genBadgeClass(gen: string): string {
+  if (gen.startsWith("Gen2")) return "bg-info/20 text-info border-info/30";
+  if (gen === "Gen1") return "bg-muted text-muted-foreground border-muted-foreground/20";
+  return "";
 }
 
 function isActive(status: string): boolean {
@@ -53,7 +67,8 @@ export function SessionsTable() {
             <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
               <th className="px-5 py-3">IMEI</th>
               <th className="px-5 py-3">Pojazd</th>
-              <th className="px-5 py-3">Generacja</th>
+              <th className="px-5 py-3">Tachograf</th>
+              <th className="px-5 py-3">Karta</th>
               <th className="px-5 py-3">Status</th>
               <th className="px-5 py-3">Postęp</th>
               <th className="px-5 py-3">Pliki</th>
@@ -69,7 +84,7 @@ export function SessionsTable() {
               <>
                 {[1, 2, 3].map((i) => (
                   <tr key={i} className="border-b border-border/50">
-                    {Array.from({ length: 11 }).map((_, j) => (
+                    {Array.from({ length: 12 }).map((_, j) => (
                       <td key={j} className="px-5 py-3">
                         <Skeleton className="h-4 w-full" />
                       </td>
@@ -80,7 +95,7 @@ export function SessionsTable() {
             )}
             {!isLoading && sessions && sessions.length === 0 && (
               <tr>
-                <td colSpan={11} className="px-5 py-12 text-center text-muted-foreground">
+                <td colSpan={12} className="px-5 py-12 text-center text-muted-foreground">
                   Brak aktywnych sesji
                 </td>
               </tr>
@@ -107,7 +122,30 @@ export function SessionsTable() {
                   </td>
                   <td className="px-5 py-3 font-medium">{s.vehicle_plate ?? "—"}</td>
                   <td className="px-5 py-3">
-                    <span className="font-mono text-xs">{s.generation}</span>
+                    <Badge variant="outline" className={genBadgeClass(s.generation)}>
+                      <span className="font-mono text-xs">{s.generation}</span>
+                    </Badge>
+                  </td>
+                  <td className="px-5 py-3">
+                    <span className="flex items-center gap-1.5">
+                      <Badge variant="outline" className={genBadgeClass(s.card_generation ?? "Unknown")}>
+                        <span className="font-mono text-xs">{s.card_generation ?? "Unknown"}</span>
+                      </Badge>
+                      {isGenerationMismatch(s) && (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="inline-flex items-center gap-1 text-destructive">
+                                <AlertTriangle className="h-3.5 w-3.5" />
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>Niezgodność generacji: karta {s.card_generation}, tachograf {s.generation}</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      )}
+                    </span>
                   </td>
                   <td className="px-5 py-3">
                     <span className="flex items-center gap-1.5">

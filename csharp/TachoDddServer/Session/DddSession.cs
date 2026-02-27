@@ -23,6 +23,8 @@ public class DddSession
     private SessionState _state = SessionState.WaitingForImei;
     private string _imei = "";
     private VuGeneration _vuGeneration = VuGeneration.Unknown;
+    private string _cardGeneration = "Unknown";
+    private string _detectedVuGenFromApdu = "Unknown";
     private byte _features = 0;
     private byte _resumeState = 0;
     private uint _lastSequenceNumber = 0;
@@ -524,6 +526,10 @@ public class DddSession
             _logger.LogInformation("💳 ATR from card: {ATR} ({Len}B)", BitConverter.ToString(atr), atr.Length);
             _trafficLogger?.LogDecodedWithHex("BRIDGE", "ATR", atr, 32, "Card ATR received");
 
+            _cardGeneration = DetectCardGeneration(atr);
+            _logger.LogInformation("💳 Detected card generation: {Gen}", _cardGeneration);
+            _webReporter?.SetCardGeneration(_cardGeneration);
+
             await SendDddPacketAsync(stream, DddPacketType.ATR, atr);
             _logger.LogInformation("📤 ATR sent to device");
         }
@@ -556,6 +562,16 @@ public class DddSession
         {
             if (type == DddPacketType.VUReadyAPDU || type == DddPacketType.APDU)
             {
+                // Detect VU generation from first APDU SELECT command
+                if (_diagnostics.ApduExchanges == 0 && data.Length >= 7)
+                {
+                    _detectedVuGenFromApdu = DetectVuGenerationFromApdu(data);
+                    if (_detectedVuGenFromApdu != "Unknown")
+                    {
+                        _logger.LogInformation("🔍 Detected VU generation from APDU: {Gen}", _detectedVuGenFromApdu);
+                    }
+                }
+
                 _logger.LogInformation("🔀 APDU to card: {Len}B", data.Length);
                 _trafficLogger?.LogDecodedWithHex("RX", type.ToString(), data, 32, "APDU from VU → card");
 
@@ -1081,6 +1097,24 @@ public class DddSession
             _trafficLogger?.LogError("DddError", $"{description}, state=0x{errorState:X4}");
             _diagnostics.LogError("DddProtocol", $"{description}, state=0x{errorState:X4}");
 
+            // Detect generation mismatch on auth error 0x02:0x02
+            if (DddErrorCodes.IsGenerationMismatch(errorClass, errorCode) &&
+                _state == SessionState.ApduLoop &&
+                _cardGeneration != "Unknown" &&
+                _detectedVuGenFromApdu != "Unknown" &&
+                _cardGeneration != _detectedVuGenFromApdu)
+            {
+                var mismatchMsg = $"GENERATION MISMATCH: Card is {_cardGeneration} but VU requires {_detectedVuGenFromApdu} — incompatible";
+                _logger.LogWarning("⚠️ {Msg}", mismatchMsg);
+                _trafficLogger?.LogWarning(mismatchMsg);
+                _diagnostics.LogWarning(mismatchMsg);
+
+                _webReporter?.ReportStatus(
+                    "error", 0, 0, 0, null, 0,
+                    _diagnostics.ApduExchanges, _diagnostics.CrcErrors,
+                    "warning", mismatchMsg, "GenerationMismatch");
+            }
+
             if (errorClass == 2 && errorCode == 0x0A)
             {
                 _logger.LogError("🔒 Authentication failure — certificate rejected");
@@ -1092,6 +1126,74 @@ public class DddSession
             _logger.LogError("❌ ERROR packet ({Len}B) — too short to parse", data.Length);
             _diagnostics.LogError("DddProtocol", $"Error packet too short: {data.Length}B");
         }
+    }
+
+    // ─── GENERATION DETECTION ────────────────────────────────────────
+
+    /// <summary>
+    /// Detect card generation from ATR bytes (ISO 7816-3).
+    /// Gen2 cards use T=1 protocol, indicated by byte 0x31 after 0x80 in historical bytes.
+    /// Gen1 cards use T=0 protocol only.
+    /// </summary>
+    private static string DetectCardGeneration(byte[] atr)
+    {
+        if (atr.Length < 4) return "Unknown";
+
+        // Search for compact TLV indicator: 0x80 followed by byte with bit 0 set (T=1)
+        // In tachograph card ATRs, 0x80 0x31 indicates T=1 support = Gen2
+        for (int i = 2; i < atr.Length - 1; i++)
+        {
+            if (atr[i] == 0x80 && (atr[i + 1] & 0x01) != 0)
+            {
+                return "Gen2";
+            }
+        }
+
+        // Also check TD1 byte for T=1 indication
+        // T0 is at index 1, interface bytes follow based on T0's upper nibble
+        byte t0 = atr[1];
+        int interfaceByteCount = 0;
+
+        // Count interface bytes indicated by T0
+        if ((t0 & 0x10) != 0) interfaceByteCount++; // TA1
+        if ((t0 & 0x20) != 0) interfaceByteCount++; // TB1
+        if ((t0 & 0x40) != 0) interfaceByteCount++; // TC1
+        if ((t0 & 0x80) != 0) interfaceByteCount++; // TD1
+
+        // If TD1 exists, check its protocol type
+        if ((t0 & 0x80) != 0 && 2 + interfaceByteCount - 1 < atr.Length)
+        {
+            byte td1 = atr[1 + interfaceByteCount]; // TD1 is last of the interface bytes
+            if ((td1 & 0x0F) == 1) // T=1
+            {
+                return "Gen2";
+            }
+        }
+
+        return "Gen1";
+    }
+
+    /// <summary>
+    /// Detect VU generation from the first SELECT APDU command.
+    /// SELECT DF 0002 = Gen1 tachograph, SELECT DF 0007 = Gen2 tachograph.
+    /// </summary>
+    private static string DetectVuGenerationFromApdu(byte[] apdu)
+    {
+        // Expected format: 00 A4 02 0C 02 XX XX
+        if (apdu.Length >= 7 &&
+            apdu[0] == 0x00 && apdu[1] == 0xA4 && apdu[2] == 0x02 && apdu[3] == 0x0C &&
+            apdu[4] == 0x02)
+        {
+            ushort dfId = (ushort)((apdu[5] << 8) | apdu[6]);
+            return dfId switch
+            {
+                0x0002 => "Gen1",
+                0x0007 => "Gen2",
+                _ => "Unknown"
+            };
+        }
+
+        return "Unknown";
     }
 
     // ─── TERMINATE ───────────────────────────────────────────────────

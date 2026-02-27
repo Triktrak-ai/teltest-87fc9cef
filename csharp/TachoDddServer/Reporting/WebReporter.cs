@@ -15,6 +15,7 @@ public class WebReporter : IDisposable
     private readonly string _sessionId;
     private string _imei = "unknown";
     private VuGeneration _generation = VuGeneration.Unknown;
+    private string _cardGeneration = "Unknown";
 
     private readonly object _lock = new();
     private readonly List<Task> _inFlight = new();
@@ -33,6 +34,7 @@ public class WebReporter : IDisposable
 
     public void SetImei(string imei) => _imei = imei;
     public void SetGeneration(VuGeneration gen) => _generation = gen;
+    public void SetCardGeneration(string gen) => _cardGeneration = gen;
 
     /// <summary>
     /// Report current session status (fire-and-forget, tracked for flush).
@@ -50,6 +52,7 @@ public class WebReporter : IDisposable
             ["imei"] = _imei,
             ["status"] = status,
             ["generation"] = _generation.ToString(),
+            ["card_generation"] = _cardGeneration,
             ["progress"] = progress,
             ["files_downloaded"] = filesDownloaded,
             ["total_files"] = totalFiles,
@@ -85,6 +88,7 @@ public class WebReporter : IDisposable
             ["imei"] = _imei,
             ["status"] = "error",
             ["generation"] = _generation.ToString(),
+            ["card_generation"] = _cardGeneration,
             ["error_code"] = errorCode,
             ["error_message"] = errorMessage,
             ["apdu_exchanges"] = apduExchanges,

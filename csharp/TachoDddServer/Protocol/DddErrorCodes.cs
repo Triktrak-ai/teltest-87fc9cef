@@ -59,4 +59,12 @@ public static class DddErrorCodes
     {
         return $"[0x{errorClass:X2}:0x{errorCode:X2}] {Describe(errorClass, errorCode)}";
     }
+
+    /// <summary>
+    /// Check if the error code indicates a potential generation mismatch (card not recognized).
+    /// </summary>
+    public static bool IsGenerationMismatch(byte errorClass, byte errorCode)
+    {
+        return errorClass == 0x02 && errorCode == 0x02;
+    }
 }
