@@ -1,40 +1,48 @@
 
-
-# Naprawa detekcji generacji VU (TREP mapping bug)
+# Wykrywanie nieaktualnych sesji i poprawa statystyk
 
 ## Problem
 
-Serwer C# blednie mapuje bajt TREP z odpowiedzi InterfaceVersion:
+Statystyki "Aktywne sesje" i "IMEI online" nie uwzgledniaja czasu ostatniej aktywnosci. Sesja w stanie "connecting" lub "downloading", ktora nie otrzymala aktualizacji od np. 5 minut, jest nadal liczona jako aktywna. To prowadzi do falszywych wskazan na dashboardzie.
 
-- `TREP=0x01` jest przypisywany do `Gen1`, podczas gdy powinien byc `Gen2v1`
-- Tachografy Gen1 w ogole nie obsluguja zapytania InterfaceVersion i zwracaja Error (co juz poprawnie wyzwala fallback do Gen1 w linii 666)
-- W efekcie monitor pokazuje "Gen1" lub "Unknown" dla tachografow ktore w rzeczywistosci sa Gen2v1 lub Gen2v2
+## Rozwiazanie
 
-Pliki DDD dla IMEI 358480081630115 zostaly poprawnie wykryte przez parser frontendu jako Gen2v2 na podstawie struktury binarnej, ale serwer zarapotowal bledna generacje do bazy danych.
+Wprowadzenie progu nieaktywnosci (np. 5 minut). Sesje bez aktualizacji `last_activity` dluzej niz prog sa traktowane jako "stale" (nieaktualne) i:
+- Nie sa liczone w "Aktywne sesje" ani "IMEI online"
+- Sa wizualnie oznaczone w tabeli sesji (przygaszony wiersz, badge "Nieaktywna")
 
-## Naprawa
+## Zmiany
 
-### Plik: `csharp/TachoDddServer/Session/DddSession.cs`
+### 1. `src/hooks/useSessions.ts` -- filtrowanie stalych sesji w statystykach
 
-Jedna zmiana w linii 651:
-
-```text
-Przed:  _vuGeneration = VuGeneration.Gen1;
-Po:     _vuGeneration = VuGeneration.Gen2v1;
-```
-
-Pelna logika po naprawie:
+Dodanie funkcji pomocniczej `isStaleSession(session, thresholdMinutes = 5)`:
 
 ```text
-TREP=0x02          → Gen2v2   (bez zmian)
-TREP=0x01          → Gen2v1   (POPRAWKA)
-TREP=inne          → Gen1     (bez zmian)
-Error na zapytanie → Gen1     (bez zmian, linia 666)
+isStaleSession(s):
+  if status == "completed" || status == "error" -> false (juz zamkniete)
+  return (now - last_activity) > threshold
 ```
 
-### Wplyw
+Zmiana w `useSessionStats()`:
+- "Aktywne sesje" = sesje nie-completed, nie-error, nie-stale
+- "IMEI online" = unikalne IMEI z aktywnych (nie-stale) sesji
 
-- Monitor bedzie poprawnie wyswietlal "Gen2v1" w kolumnie generacji
-- Status "auth_gen2v1" bedzie poprawnie raportowany (jesli serwer wysyla go na podstawie `_vuGeneration`)
-- Istniejace rekordy w bazie danych nie zostana zaktualizowane -- poprawka dotyczy tylko nowych sesji
+Eksport funkcji `isStaleSession` do uzytku w tabeli.
 
+### 2. `src/components/SessionsTable.tsx` -- wizualne oznaczenie stalych sesji
+
+- Wiersze stalych sesji: przygaszony tekst (`opacity-50`)
+- Obok badge statusu: dodatkowy badge "Nieaktywna" w kolorze szarym
+- Tooltip lub tekst z informacja "Brak aktywnosci od X minut"
+
+### 3. `src/components/StatsCards.tsx` -- zmiana opisu "IMEI online"
+
+Zmiana etykiety z "IMEI online" na "IMEI aktywne" dla jasnosci, ze chodzi o urzadzenia z aktywna (nie-stale) sesja.
+
+## Pliki do zmiany
+
+| Plik | Zmiana |
+|------|--------|
+| `src/hooks/useSessions.ts` | Dodanie `isStaleSession()`, aktualizacja statystyk |
+| `src/components/SessionsTable.tsx` | Wizualne oznaczenie stalych sesji |
+| `src/components/StatsCards.tsx` | Zmiana etykiety "IMEI online" na "IMEI aktywne" |
