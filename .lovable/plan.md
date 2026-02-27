@@ -1,86 +1,68 @@
 
-# Modul czytnika plikow DDD
 
-## Opis
+# Naprawa parsera DDD -- poprawna ekstrakcja sekcji TLV
 
-Nowa strona/zakladka w aplikacji umozliwiajaca wczytanie pliku .DDD z dysku (drag-and-drop lub przycisk) i wyswietlenie jego zawartosci w czytelnej formie tabelarycznej.
+## Problem
 
-## Co bedzie parsowane
+Scalony plik VU (`_vu_*.ddd`) z serwera C# to surowa konkatenacja pobranych plikow (Overview, Activities, Events, Speed, Technical). Kazdy z tych plikow zawiera bloki TLV z tagami `0x76 XX` (certyfikaty + dane sekcji). Parser znajduje tylko 2 sekcje zamiast oczekiwanych 10+, bo:
 
-Pliki DDD (Vehicle Unit) skladaja sie z sekcji o znanej strukturze binarnej (rozporzadzenie UE 3821/85, Annex 1B). Parser obsluzy:
+1. **Bledne odczytanie dlugosci** jednej sekcji powoduje utrate synchronizacji -- parser przeskakuje w zle miejsce i juz nigdy nie trafia na poprawny tag
+2. **Brak odpornosci na bledy** -- parser nie probuje odzyskac synchronizacji po napotkaniu nieprawidlowego bloku
+3. **Brak logowania diagnostycznego** -- nie widac co parser faktycznie odczytuje z pliku
 
-- **Overview** - numer VU, numer rejestracyjny, kraj, data kalibracji
-- **Activities** - dzienne zapisy czynnosci kierowcy (jazda, odpoczynek, praca, dyspozycyjnosc) z datami i czasami
-- **Events & Faults** - zdarzenia i usterki tachografu z kodami i datami
-- **Technical Data** - dane kalibracji, czujnikow, plomb
-- **Detailed Speed** - rekordy predkosci (opcjonalnie, jako wykres)
+## Rozwiazanie
 
-Kazda sekcja DDD zaczyna sie od identyfikatora (tag + length), co pozwala na sekwencyjne parsowanie ArrayBuffer w TypeScript.
+### 1. Ulepszenie `extractSections()` w `src/lib/ddd-parser.ts`
 
-## Zakres zmian
+- **Skanowanie z odzyskiwaniem synchronizacji**: zamiast przeskakiwac po 1 bajcie przy bledzie, szukac nastepnego `0x76` i walidowac czy nastepny bajt jest poprawnym tagiem sekcji (0x01-0x09)
+- **Walidacja dlugosci**: sprawdzac czy deklarowana dlugosc sekcji jest rozsadna (np. < 500KB) zanim ja zaakceptujemy
+- **Logowanie do konsoli**: dodac `console.log` z informacja o kazdej znalezionej sekcji (tag, offset, dlugosc) -- to pozwoli debugowac kolejne problemy
 
-### 1. Parser binarny DDD (`src/lib/ddd-parser.ts`)
-- Klasa `DddParser` przyjmujaca `ArrayBuffer`
-- Metody do odczytu sekcji: `parseOverview()`, `parseActivities()`, `parseEventsAndFaults()`, `parseTechnicalData()`
-- Pomocnicze funkcje: odczyt dat (sekundy od 01.01.1970 UTC, 4 bajty), odczyt stringow (kodowanie ISO 8859), odczyt VRN, numeru karty itp.
-- Typy TypeScript dla kazdej sekcji danych
+### 2. Poprawienie parsowania poszczegolnych sekcji
 
-### 2. Strona czytnika (`src/pages/DddReader.tsx`)
-- Strefa drag-and-drop / przycisk wyboru pliku
-- Po wczytaniu: zakladki (Tabs) z sekcjami: Przegląd, Czynności, Zdarzenia, Dane techniczne, Predkosc
-- Kazda zakladka wyswietla dane w tabelach/kartach
-- Sekcja Czynnosci: timeline/tabela z kolorami wg typu czynnosci
-- Sekcja Predkosc: prosty wykres liniowy (recharts)
+Obecne parsery zakladaja bardzo konkretny uklad bajtow, ktory moze nie odpowiadac rzeczywistej strukturze danych z tachografu. Glowne poprawki:
 
-### 3. Routing (`src/App.tsx`)
-- Nowa trasa `/ddd-reader`
+- **parseOverview**: dane Overview z tachografu zaczynaja sie od pod-rekordow TLV (np. `VuIdentification`, `VuDownloadablePeriod`), NIE od surowych pol. Parser musi rozpoznac te pod-rekordy i odczytac pola z odpowiednich offsetow
+- **parseActivities**: analogicznie -- sekcja Activities zawiera pod-rekordy z wlasnymi naglowkami
+- **parseEventsAndFaults**: j.w.
+- **parseTechnicalData**: j.w.
 
-### 4. Nawigacja (`src/pages/Index.tsx`)
-- Przycisk/link do czytnika DDD w headerze
+### 3. Dodanie trybu diagnostycznego w UI (`src/pages/DddReader.tsx`)
+
+- Wyswietlanie listy WSZYSTKICH znalezionych sekcji surowych (tag hex, offset, rozmiar) w zakladce "Diagnostyka"
+- Hex dump pierwszych 64 bajtow kazdej sekcji -- pozwoli wizualnie zweryfikowac co parser odczytal
+- Wyswietlanie calkowitego rozmiaru pliku i ile bajtow zostalo sparsowanych vs pominieto
 
 ## Szczegoly techniczne
 
-### Struktura binarna pliku VU DDD
-Plik sklada sie z bloków TLV (Tag-Length-Value). Glowne tagi:
-- `0x76 01` - MemberStateCertificate
-- `0x76 02` - VuCertificate  
-- `0x76 05` - VuOverview
-- `0x76 06` - VuActivities
-- `0x76 07` - VuEventsAndFaults
-- `0x76 08` - VuDetailedSpeed
-- `0x76 09` - VuTechnicalData
+### Poprawiona logika `extractSections()`
 
-Data jest przechowywana jako 4-bajtowy unsigned int (sekundy od epoch Unix). Stringi sa w kodowaniu ISO 8859-1, 8859-7 lub 8859-15 (zalezy od flagi codepage).
-
-### Parser - podejscie
 ```text
-ArrayBuffer --> DataView --> sekwencyjny odczyt TLV blokow
-  |-> dla kazdego tagu: rozpoznanie sekcji
-  |-> parsowanie podrekordow wg specyfikacji
-  |-> zwrocenie typowanego obiektu JS
+pos = 0
+while pos < buffer.length - 4:
+  byte = buffer[pos]
+  if byte == 0x76:
+    tagLow = buffer[pos+1]
+    if tagLow >= 0x01 AND tagLow <= 0x09:
+      length = readUint16(pos+2)
+      if length > 0 AND length <= 500000 AND pos+4+length <= buffer.length:
+        // Valid section found
+        sections.push({tag: tagLow, offset: pos, length, data})
+        pos += 4 + length
+        continue
+  pos += 1  // scan forward byte by byte
 ```
 
-Parser bedzie obslugiwac zarowno pliki Gen1 jak i Gen2 (roznica w dlugosci tagow i niektorych polach).
+### Nowa zakladka "Diagnostyka" w DddReader
 
-### UI - uklad
-```text
-+------------------------------------------+
-| TachoDDD Monitor    [Czytnik DDD]  [...]  |
-+------------------------------------------+
-| Przeciagnij plik .DDD lub kliknij [Wybierz] |
-+------------------------------------------+
-| [Przegląd] [Czynności] [Zdarzenia] [Tech] |
-|                                          |
-|  VRN: WA 1234X                           |
-|  VU S/N: 12345678                        |
-|  Kraj: PL                                |
-|  Ostatnia kalibracja: 2025-01-15         |
-|  ...                                     |
-+------------------------------------------+
-```
+Wyswietla:
+- Rozmiar pliku
+- Liczba znalezionych sekcji TLV
+- Tabela: tag (hex), offset, dlugosc, hex dump (pierwsze 32B)
+- Ostrzezenia parsera (bledne sekcje, pominiety dane)
 
-## Ograniczenia
-- Plik jest parsowany wylacznie w przegladarce (bez backendu) - nie wymaga uploadu na serwer
-- Obsluga Gen1 w pierwszej iteracji; Gen2 moze wymagac dodatkowej pracy z dluższymi tagami
-- Podpisy cyfrowe i certyfikaty nie beda weryfikowane - tylko wyswietlane jako metadane
-- Szczegolowa predkosc moze generowac duze tablice - bedzie renderowana z wirtualizacja lub ograniczeniem
+### Pliki do zmiany
+
+1. `src/lib/ddd-parser.ts` -- poprawienie extractSections, dodanie logowania, uodpornienie parserow sekcji
+2. `src/pages/DddReader.tsx` -- dodanie zakladki diagnostycznej z informacjami o surowych sekcjach
+
