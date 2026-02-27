@@ -346,6 +346,12 @@ public class DddSession
                 }
             }
 
+            // Reset card to MF context before retry so VU can SELECT EF_ICC again
+            if (stateBeforeError == SessionState.ApduLoop)
+            {
+                await TryResetCardState();
+            }
+
             await SendDddPacketAsync(stream, DddPacketType.Status);
             TransitionTo(SessionState.WaitingForStatus, "Error received, requesting STATUS");
             return;
