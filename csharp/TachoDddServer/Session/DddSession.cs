@@ -46,6 +46,10 @@ public class DddSession
     private int _crcRetryCount = 0;
     private const int MaxCrcRetries = 3;
 
+    // Authentication retry tracking
+    private int _authRetryCount = 0;
+    private const int MaxAuthRetries = 3;
+
     // Keep alive
 
     // Keep alive
@@ -320,6 +324,23 @@ public class DddSession
             _state != SessionState.DownloadingFile)
         {
             HandleError(data);
+
+            // Check if this is an auth error in ApduLoop — limit retries
+            if (_state == SessionState.ApduLoop)
+            {
+                _authRetryCount++;
+                _logger.LogWarning("🔁 Auth error attempt {Count}/{Max}", _authRetryCount, MaxAuthRetries);
+
+                if (_authRetryCount >= MaxAuthRetries)
+                {
+                    _logger.LogError("❌ Max authentication retries ({Max}) exceeded — aborting session", MaxAuthRetries);
+                    _diagnostics.LogError("Authentication", $"Max retries ({MaxAuthRetries}) exceeded");
+                    _trafficLogger?.LogError("Authentication", $"Max retries exceeded after {_authRetryCount} attempts");
+                    TransitionTo(SessionState.Error, $"Authentication failed after {MaxAuthRetries} attempts");
+                    return;
+                }
+            }
+
             await SendDddPacketAsync(stream, DddPacketType.Status);
             TransitionTo(SessionState.WaitingForStatus, "Error received, requesting STATUS");
             return;
