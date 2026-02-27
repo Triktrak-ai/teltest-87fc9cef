@@ -13,6 +13,7 @@ public class SessionDiagnostics
     public DateTime StartTime { get; } = DateTime.UtcNow;
     public DateTime? EndTime { get; private set; }
     public VuGeneration Generation { get; set; } = VuGeneration.Unknown;
+    public string CardGeneration { get; set; } = "Unknown";
 
     // Counters
     public long BytesSent { get; set; }
@@ -130,6 +131,7 @@ public class SessionDiagnostics
         sb.AppendLine($"  IMEI:        {(string.IsNullOrEmpty(Imei) ? "(not received)" : Imei)}");
         sb.AppendLine($"  Endpoint:    {Endpoint}");
         sb.AppendLine($"  Generation:  {Generation}");
+        sb.AppendLine($"  Card Gen:    {CardGeneration}");
         sb.AppendLine($"  Start:       {StartTime:yyyy-MM-dd HH:mm:ss.fff} UTC");
         sb.AppendLine($"  End:         {EndTime?.ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "(still running)"} UTC");
         sb.AppendLine($"  Duration:    {FormatDuration(duration)}");
@@ -224,6 +226,7 @@ public class SessionDiagnostics
                 imei = Imei,
                 endpoint = Endpoint,
                 generation = Generation.ToString(),
+                cardGeneration = CardGeneration,
                 startTime = StartTime,
                 endTime = EndTime,
                 durationSeconds = ((EndTime ?? DateTime.UtcNow) - StartTime).TotalSeconds,

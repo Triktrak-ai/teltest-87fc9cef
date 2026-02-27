@@ -237,6 +237,7 @@ public class DddSession
             // Generate and save session summary
             _diagnostics.Imei = _imei;
             _diagnostics.Generation = _vuGeneration;
+            _diagnostics.CardGeneration = _cardGeneration;
             _diagnostics.Finish();
 
             var summary = _diagnostics.GenerateSummary();
