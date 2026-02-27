@@ -92,6 +92,11 @@ export interface DddSection {
   data: Uint8Array;
 }
 
+export interface ParserWarning {
+  offset: number;
+  message: string;
+}
+
 export interface DddFileData {
   overview: DddOverview | null;
   activities: ActivityRecord[];
@@ -100,6 +105,9 @@ export interface DddFileData {
   technicalData: TechnicalData | null;
   speedRecords: SpeedRecord[];
   rawSections: DddSection[];
+  warnings: ParserWarning[];
+  fileSize: number;
+  bytesParsed: number;
   generation: 'gen1' | 'gen2' | 'unknown';
 }
 
@@ -230,6 +238,7 @@ class BinaryReader {
 // ─── Main parser ─────────────────────────────────────────────────────────────
 
 export function parseDddFile(buffer: ArrayBuffer): DddFileData {
+  const warnings: ParserWarning[] = [];
   const result: DddFileData = {
     overview: null,
     activities: [],
@@ -238,11 +247,15 @@ export function parseDddFile(buffer: ArrayBuffer): DddFileData {
     technicalData: null,
     speedRecords: [],
     rawSections: [],
+    warnings,
+    fileSize: buffer.byteLength,
+    bytesParsed: 0,
     generation: 'unknown',
   };
 
-  const sections = extractSections(buffer);
+  const sections = extractSections(buffer, warnings);
   result.rawSections = sections;
+  result.bytesParsed = sections.reduce((sum, s) => sum + s.length + 4, 0);
 
   // Determine generation based on tag structure
   if (sections.some(s => s.tagHigh === 0x76)) {
@@ -273,38 +286,39 @@ export function parseDddFile(buffer: ArrayBuffer): DddFileData {
   return result;
 }
 
-function extractSections(buffer: ArrayBuffer): DddSection[] {
+function extractSections(buffer: ArrayBuffer, warnings: ParserWarning[]): DddSection[] {
   const sections: DddSection[] = [];
-  const reader = new BinaryReader(buffer);
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  const MAX_SECTION_SIZE = 500_000;
 
-  while (reader.remaining > 4) {
-    const offset = reader.position;
-    const tagHigh = reader.readUint8();
-
-    // TLV: first byte is tag family (0x76 for VU data), second is section id
-    if (tagHigh === 0x76) {
-      if (reader.remaining < 3) break;
-      const tagLow = reader.readUint8();
-      const length = reader.readUint16();
-      if (length > reader.remaining) {
-        // Try to recover - this might be corrupted
-        reader.position = offset + 1;
-        continue;
+  let pos = 0;
+  while (pos < bytes.length - 3) {
+    if (bytes[pos] === 0x76) {
+      const tagLow = bytes[pos + 1];
+      if (tagLow >= 0x01 && tagLow <= 0x09) {
+        const length = view.getUint16(pos + 2, false);
+        if (length > 0 && length <= MAX_SECTION_SIZE && pos + 4 + length <= bytes.length) {
+          const data = bytes.slice(pos + 4, pos + 4 + length);
+          sections.push({
+            tag: tagLow,
+            tagHigh: 0x76,
+            offset: pos,
+            length,
+            data,
+          });
+          console.log(`[DDD] Section 0x76 0x${tagLow.toString(16).padStart(2, '0')} at offset ${pos}, length ${length}`);
+          pos += 4 + length;
+          continue;
+        } else {
+          warnings.push({ offset: pos, message: `Invalid length ${length} for tag 0x76${tagLow.toString(16).padStart(2, '0')} (max=${MAX_SECTION_SIZE}, remaining=${bytes.length - pos - 4})` });
+        }
       }
-      const data = reader.readBytes(length);
-      sections.push({
-        tag: tagLow,
-        tagHigh: 0x76,
-        offset,
-        length,
-        data,
-      });
-    } else {
-      // Try Gen2 style or skip
-      reader.position = offset + 1;
     }
+    pos += 1;
   }
 
+  console.log(`[DDD] Total sections found: ${sections.length}, file size: ${bytes.length}`);
   return sections;
 }
 
