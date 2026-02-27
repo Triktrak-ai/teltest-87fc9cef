@@ -111,6 +111,43 @@ export interface DddFileData {
   generation: 'gen1' | 'gen2' | 'unknown';
 }
 
+// ─── Multi-file merge ────────────────────────────────────────────────────────
+
+export function mergeDddData(existing: DddFileData, incoming: DddFileData): DddFileData {
+  return {
+    overview: incoming.overview ?? existing.overview,
+    activities: deduplicateActivities([...existing.activities, ...incoming.activities]),
+    events: [...existing.events, ...incoming.events],
+    faults: [...existing.faults, ...incoming.faults],
+    technicalData: incoming.technicalData ?? existing.technicalData,
+    speedRecords: [...existing.speedRecords, ...incoming.speedRecords].sort(
+      (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
+    ),
+    rawSections: [...existing.rawSections, ...incoming.rawSections],
+    warnings: [...existing.warnings, ...incoming.warnings],
+    fileSize: existing.fileSize + incoming.fileSize,
+    bytesParsed: existing.bytesParsed + incoming.bytesParsed,
+    generation: incoming.generation !== 'unknown' ? incoming.generation : existing.generation,
+  };
+}
+
+function deduplicateActivities(records: ActivityRecord[]): ActivityRecord[] {
+  const seen = new Map<string, ActivityRecord>();
+  for (const r of records) {
+    const key = `${r.date.getTime()}-${r.dailyPresenceCounter}`;
+    if (!seen.has(key)) seen.set(key, r);
+  }
+  return Array.from(seen.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
+}
+
+export function emptyDddData(): DddFileData {
+  return {
+    overview: null, activities: [], events: [], faults: [],
+    technicalData: null, speedRecords: [], rawSections: [],
+    warnings: [], fileSize: 0, bytesParsed: 0, generation: 'unknown',
+  };
+}
+
 // ─── Country codes ───────────────────────────────────────────────────────────
 
 const NATION_CODES: Record<number, string> = {
