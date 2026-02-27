@@ -1,7 +1,8 @@
 import { StatsCards } from "@/components/StatsCards";
 import { SessionsTable } from "@/components/SessionsTable";
 import { EventTimeline } from "@/components/EventTimeline";
-import { Radio, RefreshCw } from "lucide-react";
+import { Radio, RefreshCw, FileText } from "lucide-react";
+import { Link } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
@@ -29,6 +30,13 @@ const Index = () => {
             </div>
           </div>
           <div className="flex items-center gap-4">
+            <Link
+              to="/ddd-reader"
+              className="flex items-center gap-1.5 rounded-md bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/20 transition-colors"
+            >
+              <FileText className="h-3.5 w-3.5" />
+              Czytnik DDD
+            </Link>
             <button
               onClick={handleRefresh}
               className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
