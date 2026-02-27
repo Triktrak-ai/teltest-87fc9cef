@@ -97,6 +97,42 @@ export interface ParserWarning {
   message: string;
 }
 
+// ─── Driver Card types ───────────────────────────────────────────────────────
+
+export interface DriverCardIdentification {
+  cardNumber: string;
+  cardIssuingMemberState: string;
+  driverName: { surname: string; firstName: string };
+  cardIssueDate: Date | null;
+  cardExpiryDate: Date | null;
+  cardValidityBegin: Date | null;
+}
+
+export interface VehicleUsedRecord {
+  vehicleRegistrationNumber: string;
+  vehicleRegistrationNation: string;
+  firstUse: Date | null;
+  lastUse: Date | null;
+  odometerBegin: number;
+  odometerEnd: number;
+}
+
+export interface CardPlaceRecord {
+  entryTime: Date | null;
+  dailyWorkPeriodCountry: string;
+  dailyWorkPeriodRegion: string;
+  vehicleOdometerValue: number;
+}
+
+export interface DriverCardData {
+  identification: DriverCardIdentification | null;
+  activities: ActivityRecord[];
+  vehiclesUsed: VehicleUsedRecord[];
+  events: EventRecord[];
+  faults: FaultRecord[];
+  places: CardPlaceRecord[];
+}
+
 export interface DddFileData {
   overview: DddOverview | null;
   activities: ActivityRecord[];
@@ -109,15 +145,17 @@ export interface DddFileData {
   fileSize: number;
   bytesParsed: number;
   generation: 'gen1' | 'gen2' | 'unknown';
+  driverCard: DriverCardData | null;
 }
 
 // ─── File type detection from filename ───────────────────────────────────────
 
-type IndividualFileType = 'overview' | 'activities' | 'events' | 'speed' | 'technical' | null;
+type IndividualFileType = 'overview' | 'activities' | 'events' | 'speed' | 'technical' | 'driver_card' | null;
 
 function detectFileType(fileName?: string): IndividualFileType {
   if (!fileName) return null;
   const lower = fileName.toLowerCase();
+  if (lower.includes('_driver1_') || lower.includes('_driver2_') || lower.includes('driver_card')) return 'driver_card';
   if (lower.includes('_overview_') || lower.includes('overview')) return 'overview';
   if (lower.includes('_activities_') || lower.includes('activities')) return 'activities';
   if (lower.includes('_events_') || lower.includes('events')) return 'events';
@@ -143,6 +181,7 @@ export function mergeDddData(existing: DddFileData, incoming: DddFileData): DddF
     fileSize: existing.fileSize + incoming.fileSize,
     bytesParsed: existing.bytesParsed + incoming.bytesParsed,
     generation: incoming.generation !== 'unknown' ? incoming.generation : existing.generation,
+    driverCard: incoming.driverCard ?? existing.driverCard,
   };
 }
 
@@ -160,6 +199,7 @@ export function emptyDddData(): DddFileData {
     overview: null, activities: [], events: [], faults: [],
     technicalData: null, speedRecords: [], rawSections: [],
     warnings: [], fileSize: 0, bytesParsed: 0, generation: 'unknown',
+    driverCard: null,
   };
 }
 
@@ -316,6 +356,7 @@ export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileDat
     fileSize: buffer.byteLength,
     bytesParsed: 0,
     generation: 'unknown',
+    driverCard: null,
   };
 
   // Check if this is an individual file (detected by filename)
@@ -403,6 +444,12 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         result.bytesParsed = buffer.byteLength;
         console.log(`[DDD] Overview: ${result.overview ? 'parsed' : 'empty (certificates only)'}`);
         break;
+
+      case 'driver_card':
+        result.driverCard = parseDriverCardFile(bytes, result.warnings);
+        result.bytesParsed = buffer.byteLength;
+        console.log(`[DDD] Driver card: ${result.driverCard?.identification?.cardNumber ?? 'no ID'}, ${result.driverCard?.vehiclesUsed.length ?? 0} vehicles`);
+        break;
     }
   } catch (e) {
     console.warn(`[DDD] Error parsing individual ${fileType} file:`, e);
@@ -414,6 +461,274 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
   result.rawSections = sections;
 
   return result;
+}
+
+// ─── Driver Card file parser ─────────────────────────────────────────────────
+
+function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): DriverCardData {
+  const result: DriverCardData = {
+    identification: null,
+    activities: [],
+    vehiclesUsed: [],
+    events: [],
+    faults: [],
+    places: [],
+  };
+
+  // Driver card files use 2-byte tags + 2-byte length TLV structure
+  // Tags are in 0x00xx-0x05xx range
+  const view = new DataView(toArrayBuffer(bytes));
+  let pos = 0;
+
+  while (pos < bytes.length - 4) {
+    const tag = view.getUint16(pos, false);
+    const len = view.getUint16(pos + 2, false);
+
+    if (len === 0 || pos + 4 + len > bytes.length) {
+      pos++;
+      continue;
+    }
+
+    // Validate tag is in expected range for driver cards
+    const tagHigh = (tag >> 8) & 0xFF;
+    if (tagHigh > 0x0C && tag !== 0xC100 && tag !== 0xC108) {
+      pos++;
+      continue;
+    }
+
+    const sectionData = bytes.slice(pos + 4, pos + 4 + len);
+
+    try {
+      switch (tag) {
+        case 0x0002: // CardIdentification
+          result.identification = parseCardIdentification(sectionData);
+          console.log(`[DDD] Driver card identification: ${result.identification?.cardNumber}`);
+          break;
+
+        case 0x0005: // CardDriverActivity
+          result.activities = parseCardActivities(sectionData, warnings);
+          console.log(`[DDD] Driver card activities: ${result.activities.length} days`);
+          break;
+
+        case 0x0006: // VehiclesUsed
+          result.vehiclesUsed = parseVehiclesUsed(sectionData);
+          console.log(`[DDD] Driver card vehicles: ${result.vehiclesUsed.length}`);
+          break;
+
+        case 0x0520: // CardEventData
+          result.events = parseCardEvents(sectionData);
+          console.log(`[DDD] Driver card events: ${result.events.length}`);
+          break;
+
+        case 0x0503: // CardFaultData
+          result.faults = parseCardFaults(sectionData);
+          console.log(`[DDD] Driver card faults: ${result.faults.length}`);
+          break;
+
+        case 0x0508: // CardPlaceDailyWorkPeriod
+          result.places = parseCardPlaces(sectionData);
+          console.log(`[DDD] Driver card places: ${result.places.length}`);
+          break;
+      }
+    } catch (e) {
+      warnings.push({ offset: pos, message: `Driver card tag 0x${tag.toString(16)}: ${e}` });
+    }
+
+    pos += 4 + len;
+  }
+
+  // If TLV parsing found nothing, try pattern-based scanning
+  if (!result.identification && result.vehiclesUsed.length === 0) {
+    warnings.push({ offset: 0, message: 'No TLV sections found in driver card file, trying pattern scan' });
+    tryPatternScanDriverCard(bytes, result, warnings);
+  }
+
+  return result;
+}
+
+function parseCardIdentification(data: Uint8Array): DriverCardIdentification {
+  const r = new BinaryReader(toArrayBuffer(data));
+
+  // CardNumber: 16 bytes
+  const cardNumber = r.remaining >= 16 ? r.readString(16) : '';
+  // CardIssuingMemberState: 1 byte nation code
+  const nationByte = r.remaining >= 1 ? r.readUint8() : 0;
+  const cardIssuingMemberState = NATION_CODES[nationByte] || `0x${nationByte.toString(16)}`;
+  // DriverName: surname (36B) + firstName (36B) — codepage varies
+  const surname = r.remaining >= 36 ? r.readString(36) : '';
+  const firstName = r.remaining >= 36 ? r.readString(36) : '';
+  // Dates
+  const cardIssueDate = r.remaining >= 4 ? r.readTimestamp() : null;
+  const cardExpiryDate = r.remaining >= 4 ? r.readTimestamp() : null;
+  const cardValidityBegin = r.remaining >= 4 ? r.readTimestamp() : null;
+
+  return {
+    cardNumber, cardIssuingMemberState,
+    driverName: { surname, firstName },
+    cardIssueDate, cardExpiryDate, cardValidityBegin,
+  };
+}
+
+function parseCardActivities(data: Uint8Array, warnings: ParserWarning[]): ActivityRecord[] {
+  // Card activity data has similar structure to VU activities
+  // Try reusing the raw activities parser
+  return parseRawActivitiesFile(data, warnings);
+}
+
+function parseVehiclesUsed(data: Uint8Array): VehicleUsedRecord[] {
+  const records: VehicleUsedRecord[] = [];
+  const r = new BinaryReader(toArrayBuffer(data));
+
+  // Skip header: vehiclePointerNewestRecord (2B) if present
+  if (r.remaining < 2) return records;
+  const pointerOrCount = r.readUint16();
+
+  // Each VehicleUsedRecord: odometerBegin(3B) + odometerEnd(3B) + firstUse(4B) + lastUse(4B) + VRN nation(1B) + VRN(14B) = 29 bytes
+  const recordSize = 29;
+  while (r.remaining >= recordSize) {
+    const odometerBegin = (r.readUint8() << 16) | r.readUint16();
+    const odometerEnd = (r.readUint8() << 16) | r.readUint16();
+    const firstUse = r.readTimestamp();
+    const lastUse = r.readTimestamp();
+    const nationByte = r.readUint8();
+    const vrn = r.readString(14);
+
+    // Skip empty records
+    if (!firstUse && !lastUse && !vrn) continue;
+
+    records.push({
+      vehicleRegistrationNumber: vrn,
+      vehicleRegistrationNation: NATION_CODES[nationByte] || `0x${nationByte.toString(16)}`,
+      firstUse, lastUse,
+      odometerBegin, odometerEnd,
+    });
+  }
+
+  return records;
+}
+
+function parseCardEvents(data: Uint8Array): EventRecord[] {
+  const events: EventRecord[] = [];
+  const r = new BinaryReader(toArrayBuffer(data));
+
+  // CardEventRecord: eventType(1B) + beginTime(4B) + endTime(4B) + VRN(15B) = 24B
+  while (r.remaining >= 9) {
+    const eventType = r.readUint8();
+    const eventBeginTime = r.readTimestamp();
+    const eventEndTime = r.readTimestamp();
+
+    // Skip empty records
+    if (!eventBeginTime && !eventEndTime) continue;
+    if (eventType > 0x0D) continue;
+
+    // Try reading VRN if available
+    let cardNumberDriverSlot = '';
+    if (r.remaining >= 15) {
+      const nationByte = r.readUint8();
+      cardNumberDriverSlot = r.readString(14);
+    }
+
+    events.push({
+      eventType,
+      eventTypeName: EVENT_TYPE_NAMES[eventType] || `Nieznany (0x${eventType.toString(16)})`,
+      eventBeginTime, eventEndTime,
+      cardNumberDriverSlot,
+      cardNumberCodriverSlot: '',
+    });
+  }
+
+  return events;
+}
+
+function parseCardFaults(data: Uint8Array): FaultRecord[] {
+  const faults: FaultRecord[] = [];
+  const r = new BinaryReader(toArrayBuffer(data));
+
+  while (r.remaining >= 9) {
+    const faultType = r.readUint8();
+    const faultBeginTime = r.readTimestamp();
+    const faultEndTime = r.readTimestamp();
+
+    if (!faultBeginTime && !faultEndTime) continue;
+    if (faultType > 0x07) continue;
+
+    let cardNumberDriverSlot = '';
+    if (r.remaining >= 15) {
+      const nationByte = r.readUint8();
+      cardNumberDriverSlot = r.readString(14);
+    }
+
+    faults.push({
+      faultType,
+      faultTypeName: FAULT_TYPE_NAMES[faultType] || `Nieznany (0x${faultType.toString(16)})`,
+      faultBeginTime, faultEndTime,
+      cardNumberDriverSlot,
+      cardNumberCodriverSlot: '',
+    });
+  }
+
+  return faults;
+}
+
+function parseCardPlaces(data: Uint8Array): CardPlaceRecord[] {
+  const places: CardPlaceRecord[] = [];
+  const r = new BinaryReader(toArrayBuffer(data));
+
+  // Skip pointer (2B)
+  if (r.remaining >= 2) r.readUint16();
+
+  // CardPlaceDailyWorkPeriod record: entryTime(4B) + country(1B) + region(1B) + odometer(3B) = 9B
+  while (r.remaining >= 9) {
+    const entryTime = r.readTimestamp();
+    const countryByte = r.readUint8();
+    const regionByte = r.readUint8();
+    const vehicleOdometerValue = (r.readUint8() << 16) | r.readUint16();
+
+    if (!entryTime) continue;
+
+    places.push({
+      entryTime,
+      dailyWorkPeriodCountry: NATION_CODES[countryByte] || `0x${countryByte.toString(16)}`,
+      dailyWorkPeriodRegion: `0x${regionByte.toString(16).padStart(2, '0')}`,
+      vehicleOdometerValue,
+    });
+  }
+
+  return places;
+}
+
+function tryPatternScanDriverCard(bytes: Uint8Array, result: DriverCardData, warnings: ParserWarning[]) {
+  // Try to find card number: 16-digit string pattern
+  for (let i = 0; i < bytes.length - 16; i++) {
+    let digitCount = 0;
+    for (let j = 0; j < 16; j++) {
+      if (bytes[i + j] >= 0x30 && bytes[i + j] <= 0x39) digitCount++;
+    }
+    if (digitCount >= 12) {
+      const cardNumber = readStringAt(bytes, i, 16);
+      if (cardNumber.length >= 12) {
+        // Check if followed by a nation byte and name-like ASCII
+        const afterCard = i + 16;
+        if (afterCard + 73 <= bytes.length) {
+          const nationByte = bytes[afterCard];
+          const surname = readStringAt(bytes, afterCard + 1, 36);
+          const firstName = readStringAt(bytes, afterCard + 37, 36);
+          if (surname.length >= 2 || firstName.length >= 2) {
+            result.identification = {
+              cardNumber,
+              cardIssuingMemberState: NATION_CODES[nationByte] || `0x${nationByte.toString(16)}`,
+              driverName: { surname, firstName },
+              cardIssueDate: null,
+              cardExpiryDate: null,
+              cardValidityBegin: null,
+            };
+            console.log(`[DDD] Pattern scan: found card ${cardNumber}, driver ${surname} ${firstName}`);
+            break;
+          }
+        }
+      }
+    }
+  }
 }
 
 // ─── Raw speed file parser ───────────────────────────────────────────────────

@@ -712,6 +712,8 @@ public class DddSession
         _filesToDownload.Add(DddFileType.EventsAndFaults);
         _filesToDownload.Add(DddFileType.DetailedSpeed);
         _filesToDownload.Add(DddFileType.TechnicalData);
+        _filesToDownload.Add(DddFileType.DriverCard1);
+        _filesToDownload.Add(DddFileType.DriverCard2);
 
         _logger.LogDebug("📋 File list built: {Files}", string.Join(", ", _filesToDownload));
     }
