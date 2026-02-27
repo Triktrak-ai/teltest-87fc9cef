@@ -327,10 +327,11 @@ public class DddSession
             _state != SessionState.CheckingInterfaceVersion &&
             _state != SessionState.DownloadingFile)
         {
+            var stateBeforeError = _state;
             HandleError(data);
 
             // Check if this is an auth error in ApduLoop — limit retries
-            if (_state == SessionState.ApduLoop)
+            if (stateBeforeError == SessionState.ApduLoop)
             {
                 _authRetryCount++;
                 _logger.LogWarning("🔁 Auth error attempt {Count}/{Max}", _authRetryCount, MaxAuthRetries);
@@ -584,7 +585,7 @@ public class DddSession
             _logger.LogInformation("🔬 Probing EF_ICC for card generation...");
 
             // 1. SELECT MF (3F00)
-            var selectMf = new byte[] { 0x00, 0xA4, 0x00, 0x0C, 0x02, 0x3F, 0x00 };
+            var selectMf = new byte[] { 0x00, 0xA4, 0x00, 0x00, 0x02, 0x3F, 0x00 };
             var resp = await _bridge.TransmitApduAsync(selectMf);
             if (!IsSwSuccess(resp))
             {
@@ -648,7 +649,7 @@ public class DddSession
     {
         try
         {
-            var selectMf = new byte[] { 0x00, 0xA4, 0x00, 0x0C, 0x02, 0x3F, 0x00 };
+            var selectMf = new byte[] { 0x00, 0xA4, 0x00, 0x00, 0x02, 0x3F, 0x00 };
             await _bridge.TransmitApduAsync(selectMf);
         }
         catch (Exception ex)
