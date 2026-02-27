@@ -1,49 +1,75 @@
 
 
-# Resetowanie stanu karty przed ponowna proba autentykacji
+# Naprawa parsowania czynnosci (Activities) w DDD Reader
 
 ## Problem
 
-Po bledzie autentykacji karta pozostaje w kontekscie DF aplikacji (SMRDT/TACHO). Kolejna proba natychmiast failuje z `6A 82` (file not found) bo VU probuje `SELECT EF_ICC` ktory nie jest dostepny w tym kontekscie. Efekt: 2 z 3 prob sa zmarnowane.
+Parser `parseActivities()` nie waliduje danych, co powoduje:
 
-## Analiza traffic logu
+1. **Daty typu "13.08.1970"** — `readTimestamp()` akceptuje dowolna wartosc != 0 i != 0xFFFFFFFF. Bajty smieci (np. z cyklicznego bufora VU) sa interpretowane jako daty z lat 70-tych/90-tych.
 
-```text
-Proba 1: Pelna autentykacja -> secure messaging 0C B0 -> 6A 88 -> "certificate rejected"
-          Karta zostaje w kontekscie DF SMRDT/TACHO
-Proba 2: VU wysyla SELECT EF_ICC -> 6A 82 (nie istnieje w biezacym DF) -> natychmiastowy fail
-Proba 3: To samo co proba 2
-```
+2. **Godziny typu "68:15"** — pole `minutes` (`word & 0x0FFF`) z danych smieci daje wartosci do 4095 (= 68h 15m). Poprawny zakres to 0-1439 (00:00-23:59).
+
+3. **Brak detekcji konca danych** — bufor czynnosci VU jest cykliczny. Po prawdziwych rekordach jest padding (0xFF) lub stare nadpisane dane. Parser czyta je jako kolejne rekordy.
 
 ## Rozwiazanie
 
-Dodac wywolanie `TryResetCardState()` (SELECT MF) **przed** wyslaniem ATR w kolejnej probie, zeby zresetowac karte do kontekstu Master File.
+### Zmiana 1: Walidacja timestamp w `parseActivities()` (linia 1374)
 
-## Zmiana w pliku
-
-**`csharp/TachoDddServer/Session/DddSession.cs`** — w bloku retry (linie 346-351)
-
-Przed wyslaniem STATUS i przejsciem do `WaitingForStatus`, wywolac `TryResetCardState()`:
+Uzyc istniejacego `isValidTimestamp()` zamiast prostego `readTimestamp()`:
 
 ```text
-// Po sprawdzeniu limitu retry, ale przed wyslaniem STATUS:
-if (stateBeforeError == SessionState.ApduLoop)
-{
-    // Reset card state before retry
-    await TryResetCardState();
-}
+// Zamiast:
+const date = r.readTimestamp();
+if (!date) { r.skip(8); continue; }
 
-await SendDddPacketAsync(stream, DddPacketType.Status);
-TransitionTo(SessionState.WaitingForStatus, "Error received, requesting STATUS");
+// Bedzie:
+const tsValue = r.readUint32();
+if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) {
+  // Skip rest of this "record" — ale nie wiemy ile, wiec break
+  break;
+}
+const date = new Date(tsValue * 1000);
 ```
 
-## Dodatkowa obserwacja
+Break zamiast continue, bo jezeli trafilismy na nieprawidlowy timestamp, to jestesmy juz w smieci i dalsze czytanie nie ma sensu.
 
-Blad `6A 88` (Referenced data not found) podczas secure messaging w pierwszej probie wskazuje na potencjalna niezgodnosc generacyjna — tachograf moze nie obslugiwac certyfikatow Gen2. To jest problem po stronie VU/tachografu, nie po stronie naszego kodu. Ale prawidlowy reset karty zapewni ze kazda proba ma szanse na pelna autentykacje zamiast natychmiastowego failu.
+### Zmiana 2: Walidacja `activityChangeCount` (linia 1378)
+
+Dodac gorny limit na liczbe wpisow czynnosci:
+
+```text
+const activityChangeCount = r.remaining >= 2 ? r.readUint16() : 0;
+if (activityChangeCount > 1440) break; // max 1 zmiana na minute w ciagu doby
+```
+
+### Zmiana 3: Walidacja `minutes` w petli czynnosci (linia 1386)
+
+Odrzucac wpisy z minutami poza zakresem 0-1439:
+
+```text
+const minutes = word & 0x0FFF;
+if (minutes >= 1440) continue; // pomijaj smieci
+```
+
+### Zmiana 4: Walidacja `dayDistance` (linia 1377)
+
+Odrzucac rekordy z nierealistycznym dystansem:
+
+```text
+const dayDistance = r.readUint16();
+if (dayDistance > 9999) break; // max ~10000 km/dzien to juz smieci
+```
+
+## Plik do zmiany
+
+| Plik | Zmiana |
+|------|--------|
+| `src/lib/ddd-parser.ts` linie 1372-1416 | Walidacja timestamp, activityChangeCount, minutes, dayDistance |
 
 ## Oczekiwany efekt
 
-- Kazda z 3 prob bedzie miala pelna sekwencje autentykacji (nie tylko retry 1)
-- Jesli problem jest przejsciowy (np. timing), proba 2 lub 3 moze sie udac
-- Jesli to niezgodnosc generacyjna, sesja i tak zakonczy sie po 3 probach, ale z pelna diagnostyka z kazdej proby
+- Daty z lat 1970/1999 nie beda sie pojawiac — parser przerwie parsowanie przy pierwszym nieprawidlowym timestamp
+- Godziny typu "68:15" znikna — wpisy z minutami >= 1440 beda pomijane
+- Rekordy ze smieciowego cyklicznego bufora nie beda wyswietlane
 
