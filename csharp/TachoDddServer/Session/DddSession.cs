@@ -28,6 +28,7 @@ public class DddSession
     private byte _features = 0;
     private byte _resumeState = 0;
     private uint _lastSequenceNumber = 0;
+    private int _successfulDownloads = 0;
 
     // SID/TREP tracking
     private byte _lastSid = 0;
@@ -118,7 +119,7 @@ public class DddSession
             : 0;
 
         _webReporter?.ReportStatus(
-            webStatus, progress, _currentFileIndex > 0 ? _currentFileIndex : 0,
+            webStatus, progress, _successfulDownloads,
             _filesToDownload.Count,
             _currentFileType.ToString(),
             _diagnostics.BytesSent + _diagnostics.BytesReceived,
@@ -519,8 +520,6 @@ public class DddSession
 
     private async Task StartAuthenticationAsync(NetworkStream stream)
     {
-        TransitionTo(SessionState.ApduLoop, "Starting authentication (ATR)");
-
         try
         {
             byte[] atr = await _bridge.GetAtrAsync();
@@ -530,6 +529,8 @@ public class DddSession
             _cardGeneration = DetectCardGeneration(atr);
             _logger.LogInformation("💳 Detected card generation: {Gen}", _cardGeneration);
             _webReporter?.SetCardGeneration(_cardGeneration);
+
+            TransitionTo(SessionState.ApduLoop, "Starting authentication (ATR)");
 
             await SendDddPacketAsync(stream, DddPacketType.ATR, atr);
             _logger.LogInformation("📤 ATR sent to device");
@@ -983,6 +984,7 @@ public class DddSession
                 if (_fileBuffer.Count > 0)
                 {
                     _downloadedFiles[_currentFileType] = _fileBuffer.ToArray();
+                    _successfulDownloads++;
                 }
 
                 SaveCurrentFile();
