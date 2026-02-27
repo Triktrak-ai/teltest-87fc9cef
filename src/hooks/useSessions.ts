@@ -9,6 +9,7 @@ export interface Session {
   vehicle_plate: string | null;
   status: string;
   generation: string;
+  card_generation: string;
   progress: number;
   files_downloaded: number;
   total_files: number;

@@ -56,6 +56,7 @@ export type Database = {
         Row: {
           apdu_exchanges: number | null
           bytes_downloaded: number | null
+          card_generation: string | null
           completed_at: string | null
           crc_errors: number | null
           created_at: string | null
@@ -76,6 +77,7 @@ export type Database = {
         Insert: {
           apdu_exchanges?: number | null
           bytes_downloaded?: number | null
+          card_generation?: string | null
           completed_at?: string | null
           crc_errors?: number | null
           created_at?: string | null
@@ -96,6 +98,7 @@ export type Database = {
         Update: {
           apdu_exchanges?: number | null
           bytes_downloaded?: number | null
+          card_generation?: string | null
           completed_at?: string | null
           crc_errors?: number | null
           created_at?: string | null
