@@ -90,18 +90,22 @@ public static class Codec12Parser
         return frame;
     }
 
+    /// <summary>
+    /// CRC-16/IBM (reflected) as used by Teltonika Codec 12.
+    /// Polynomial: 0xA001 (reflected form of 0x8005), Init: 0x0000.
+    /// </summary>
     private static ushort Crc16(byte[] data, int offset, int length)
     {
         ushort crc = 0;
         for (int i = offset; i < offset + length; i++)
         {
-            crc ^= (ushort)(data[i] << 8);
+            crc ^= data[i];
             for (int j = 0; j < 8; j++)
             {
-                if ((crc & 0x8000) != 0)
-                    crc = (ushort)((crc << 1) ^ 0x8005);
+                if ((crc & 0x0001) != 0)
+                    crc = (ushort)((crc >> 1) ^ 0xA001);
                 else
-                    crc <<= 1;
+                    crc >>= 1;
             }
         }
         return crc;
