@@ -11,26 +11,49 @@ Console.WriteLine("============================================");
 var logDir = Path.Combine(AppContext.BaseDirectory, "Logs");
 Directory.CreateDirectory(logDir);
 
+// Graceful shutdown on Ctrl+C
+var cts = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true;
+    Console.WriteLine("\n⏹️ Ctrl+C — zamykanie serwisu...");
+    cts.Cancel();
+};
+
 var listener = new HttpListener();
 listener.Prefixes.Add("http://+:5201/");
 listener.Start();
 Console.WriteLine("🚀 WebSocket nasłuchuje na porcie 5201");
+Console.WriteLine("   (Ctrl+C aby zakończyć)");
 
-while (true)
+try
 {
-    var context = await listener.GetContextAsync();
-
-    if (!context.Request.IsWebSocketRequest)
+    while (!cts.Token.IsCancellationRequested)
     {
-        context.Response.StatusCode = 400;
-        context.Response.Close();
-        continue;
+        var contextTask = listener.GetContextAsync();
+        var completedTask = await Task.WhenAny(contextTask, Task.Delay(Timeout.Infinite, cts.Token));
+        if (completedTask != contextTask) break;
+
+        var context = await contextTask;
+
+        if (!context.Request.IsWebSocketRequest)
+        {
+            context.Response.StatusCode = 400;
+            context.Response.Close();
+            continue;
+        }
+
+        var wsContext = await context.AcceptWebSocketAsync(null);
+        Console.WriteLine("🔗 VPS połączony!");
+
+        _ = Task.Run(() => HandleSessionAsync(wsContext.WebSocket));
     }
-
-    var wsContext = await context.AcceptWebSocketAsync(null);
-    Console.WriteLine("🔗 VPS połączony!");
-
-    _ = Task.Run(() => HandleSessionAsync(wsContext.WebSocket));
+}
+catch (OperationCanceledException) { }
+finally
+{
+    listener.Stop();
+    Console.WriteLine("✅ Serwis zakończony.");
 }
 
 static async Task HandleSessionAsync(WebSocket ws)
