@@ -186,7 +186,7 @@ public class DddSession
                         _trafficLogger?.LogWarning($"CRC error (attempt {_crcRetryCount}/{MaxCrcRetries})");
                         _diagnostics.LogWarning($"CRC error (attempt {_crcRetryCount}/{MaxCrcRetries})");
 
-                        if (_crcRetryCount <= MaxCrcRetries)
+                        if (_crcRetryCount < MaxCrcRetries)
                         {
                             await SendDddPacketAsync(stream, DddPacketType.RepeatRequest);
                         }
