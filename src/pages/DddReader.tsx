@@ -1,12 +1,12 @@
 import { useState, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
-import { Radio, Upload, FileText, ArrowLeft, Activity, AlertTriangle, Wrench, Gauge, Search } from "lucide-react";
+import { Radio, Upload, FileText, ArrowLeft, Activity, AlertTriangle, Wrench, Gauge, Search, X, Plus } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { parseDddFile, type DddFileData, type DddSection } from "@/lib/ddd-parser";
+import { parseDddFile, mergeDddData, emptyDddData, type DddFileData, type DddSection } from "@/lib/ddd-parser";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
@@ -48,34 +48,51 @@ const TAG_NAMES: Record<number, string> = {
 
 const DddReader = () => {
   const [data, setData] = useState<DddFileData | null>(null);
-  const [fileName, setFileName] = useState<string>("");
+  const [loadedFiles, setLoadedFiles] = useState<string[]>([]);
   const [error, setError] = useState<string>("");
   const [isDragging, setIsDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const handleFile = useCallback((file: File) => {
+  const processFiles = useCallback((files: FileList | File[]) => {
     setError("");
-    setFileName(file.name);
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const buf = e.target?.result as ArrayBuffer;
-        const parsed = parseDddFile(buf);
-        setData(parsed);
-      } catch (err) {
-        setError(`Błąd parsowania: ${err instanceof Error ? err.message : String(err)}`);
-        setData(null);
-      }
-    };
-    reader.readAsArrayBuffer(file);
+    const fileArray = Array.from(files);
+    
+    let processed = 0;
+    let mergedResult = data ?? emptyDddData();
+    const newNames = [...loadedFiles];
+
+    fileArray.forEach(file => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const buf = e.target?.result as ArrayBuffer;
+          const parsed = parseDddFile(buf);
+          mergedResult = mergeDddData(mergedResult, parsed);
+          newNames.push(file.name);
+        } catch (err) {
+          setError(prev => prev + (prev ? '\n' : '') + `${file.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        processed++;
+        if (processed === fileArray.length) {
+          setData(mergedResult);
+          setLoadedFiles([...newNames]);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    });
+  }, [data, loadedFiles]);
+
+  const clearAll = useCallback(() => {
+    setData(null);
+    setLoadedFiles([]);
+    setError("");
   }, []);
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleFile(file);
-  }, [handleFile]);
+    if (e.dataTransfer.files.length > 0) processFiles(e.dataTransfer.files);
+  }, [processFiles]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -108,15 +125,25 @@ const DddReader = () => {
           }`}
         >
           <Upload className="mx-auto mb-3 h-10 w-10 text-muted-foreground" />
-          <p className="text-sm font-medium">Przeciągnij plik .DDD lub kliknij aby wybrać</p>
-          <p className="mt-1 text-xs text-muted-foreground">Plik jest analizowany lokalnie w przeglądarce</p>
-          {fileName && <Badge variant="secondary" className="mt-3">{fileName}</Badge>}
+          <p className="text-sm font-medium">Przeciągnij pliki .DDD lub kliknij aby wybrać</p>
+          <p className="mt-1 text-xs text-muted-foreground">Można wczytać wiele plików naraz (overview, activities, events, speed, technical)</p>
+          {loadedFiles.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+              {loadedFiles.map((name, i) => (
+                <Badge key={i} variant="secondary" className="text-xs">{name}</Badge>
+              ))}
+              <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={(e) => { e.stopPropagation(); clearAll(); }}>
+                <X className="mr-1 h-3 w-3" />Wyczyść
+              </Button>
+            </div>
+          )}
           <input
             ref={fileRef}
             type="file"
             accept=".ddd,.DDD"
+            multiple
             className="hidden"
-            onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+            onChange={(e) => e.target.files && e.target.files.length > 0 && processFiles(e.target.files)}
           />
         </div>
 
