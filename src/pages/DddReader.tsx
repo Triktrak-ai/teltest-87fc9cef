@@ -1,12 +1,12 @@
 import { useState, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
-import { Radio, Upload, FileText, ArrowLeft, Activity, AlertTriangle, Wrench, Gauge, Search, X, Plus } from "lucide-react";
+import { Radio, Upload, FileText, ArrowLeft, Activity, AlertTriangle, Wrench, Gauge, Search, X, Plus, CreditCard, MapPin, Car } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { parseDddFile, mergeDddData, emptyDddData, type DddFileData, type DddSection } from "@/lib/ddd-parser";
+import { parseDddFile, mergeDddData, emptyDddData, type DddFileData, type DddSection, type DriverCardData } from "@/lib/ddd-parser";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
@@ -104,7 +104,7 @@ const DddReader = () => {
             </div>
             <div>
               <h1 className="text-lg font-bold tracking-tight">Czytnik DDD</h1>
-              <p className="text-xs text-muted-foreground">Analiza plików Vehicle Unit</p>
+              <p className="text-xs text-muted-foreground">Analiza plików DDD (VU / Karta kierowcy)</p>
             </div>
           </div>
           <Link to="/">
@@ -126,7 +126,7 @@ const DddReader = () => {
         >
           <Upload className="mx-auto mb-3 h-10 w-10 text-muted-foreground" />
           <p className="text-sm font-medium">Przeciągnij pliki .DDD lub kliknij aby wybrać</p>
-          <p className="mt-1 text-xs text-muted-foreground">Można wczytać wiele plików naraz (overview, activities, events, speed, technical)</p>
+          <p className="mt-1 text-xs text-muted-foreground">Pliki VU (overview, activities, events, speed, technical) lub karty kierowcy (driver1, driver2)</p>
           {loadedFiles.length > 0 && (
             <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
               {loadedFiles.map((name, i) => (
@@ -162,6 +162,9 @@ const DddReader = () => {
               <TabsTrigger value="technical"><Wrench className="mr-1.5 h-3.5 w-3.5" />Dane techniczne</TabsTrigger>
               {data.speedRecords.length > 0 && (
                 <TabsTrigger value="speed"><Gauge className="mr-1.5 h-3.5 w-3.5" />Prędkość ({data.speedRecords.length})</TabsTrigger>
+              )}
+              {data.driverCard && (
+                <TabsTrigger value="drivercard"><CreditCard className="mr-1.5 h-3.5 w-3.5" />Karta kierowcy</TabsTrigger>
               )}
               <TabsTrigger value="diagnostics"><Search className="mr-1.5 h-3.5 w-3.5" />Diagnostyka ({data.rawSections.length})</TabsTrigger>
             </TabsList>
@@ -379,6 +382,133 @@ const DddReader = () => {
                     </div>
                   </CardContent>
                 </Card>
+              </TabsContent>
+            )}
+            {/* Driver Card */}
+            {data.driverCard && (
+              <TabsContent value="drivercard">
+                <div className="space-y-4">
+                  {/* Identification */}
+                  {data.driverCard.identification && (
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                      {Object.entries({
+                        "Numer karty": data.driverCard.identification.cardNumber || "—",
+                        "Kraj wydania": data.driverCard.identification.cardIssuingMemberState,
+                        "Nazwisko": data.driverCard.identification.driverName.surname || "—",
+                        "Imię": data.driverCard.identification.driverName.firstName || "—",
+                        "Data wydania": formatDate(data.driverCard.identification.cardIssueDate),
+                        "Data ważności": formatDate(data.driverCard.identification.cardExpiryDate),
+                      }).map(([label, value]) => (
+                        <Card key={label}>
+                          <CardContent className="py-4">
+                            <p className="text-xs text-muted-foreground">{label}</p>
+                            <p className="mt-1 font-semibold">{value}</p>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Vehicles Used */}
+                  {data.driverCard.vehiclesUsed.length > 0 && (
+                    <Card>
+                      <CardHeader className="py-3"><CardTitle className="flex items-center gap-2 text-sm"><Car className="h-4 w-4" />Pojazdy używane ({data.driverCard.vehiclesUsed.length})</CardTitle></CardHeader>
+                      <CardContent className="p-0">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Nr rejestracyjny</TableHead>
+                              <TableHead>Kraj</TableHead>
+                              <TableHead>Pierwsze użycie</TableHead>
+                              <TableHead>Ostatnie użycie</TableHead>
+                              <TableHead>Przebieg pocz.</TableHead>
+                              <TableHead>Przebieg końc.</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {data.driverCard.vehiclesUsed.map((v, i) => (
+                              <TableRow key={i}>
+                                <TableCell className="text-xs font-mono">{v.vehicleRegistrationNumber || "—"}</TableCell>
+                                <TableCell className="text-xs">{v.vehicleRegistrationNation}</TableCell>
+                                <TableCell className="text-xs">{formatDateTime(v.firstUse)}</TableCell>
+                                <TableCell className="text-xs">{formatDateTime(v.lastUse)}</TableCell>
+                                <TableCell className="text-xs">{v.odometerBegin > 0 ? `${v.odometerBegin} km` : "—"}</TableCell>
+                                <TableCell className="text-xs">{v.odometerEnd > 0 ? `${v.odometerEnd} km` : "—"}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Places */}
+                  {data.driverCard.places.length > 0 && (
+                    <Card>
+                      <CardHeader className="py-3"><CardTitle className="flex items-center gap-2 text-sm"><MapPin className="h-4 w-4" />Miejsca ({data.driverCard.places.length})</CardTitle></CardHeader>
+                      <CardContent className="p-0">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Data i czas</TableHead>
+                              <TableHead>Kraj</TableHead>
+                              <TableHead>Region</TableHead>
+                              <TableHead>Przebieg</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {data.driverCard.places.map((p, i) => (
+                              <TableRow key={i}>
+                                <TableCell className="text-xs">{formatDateTime(p.entryTime)}</TableCell>
+                                <TableCell className="text-xs">{p.dailyWorkPeriodCountry}</TableCell>
+                                <TableCell className="text-xs font-mono">{p.dailyWorkPeriodRegion}</TableCell>
+                                <TableCell className="text-xs">{p.vehicleOdometerValue > 0 ? `${p.vehicleOdometerValue} km` : "—"}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Card Events/Faults */}
+                  {(data.driverCard.events.length > 0 || data.driverCard.faults.length > 0) && (
+                    <Card>
+                      <CardHeader className="py-3"><CardTitle className="text-sm">Zdarzenia i usterki karty</CardTitle></CardHeader>
+                      <CardContent className="p-0">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Typ</TableHead>
+                              <TableHead>Początek</TableHead>
+                              <TableHead>Koniec</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {data.driverCard.events.map((ev, i) => (
+                              <TableRow key={`e${i}`}>
+                                <TableCell className="text-xs">{ev.eventTypeName}</TableCell>
+                                <TableCell className="text-xs">{formatDateTime(ev.eventBeginTime)}</TableCell>
+                                <TableCell className="text-xs">{formatDateTime(ev.eventEndTime)}</TableCell>
+                              </TableRow>
+                            ))}
+                            {data.driverCard.faults.map((f, i) => (
+                              <TableRow key={`f${i}`}>
+                                <TableCell className="text-xs">{f.faultTypeName}</TableCell>
+                                <TableCell className="text-xs">{formatDateTime(f.faultBeginTime)}</TableCell>
+                                <TableCell className="text-xs">{formatDateTime(f.faultEndTime)}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {!data.driverCard.identification && data.driverCard.vehiclesUsed.length === 0 && data.driverCard.places.length === 0 && (
+                    <Card><CardContent className="py-8 text-center text-muted-foreground">Nie udało się odczytać danych z karty kierowcy</CardContent></Card>
+                  )}
+                </div>
               </TabsContent>
             )}
             {/* Diagnostics */}
