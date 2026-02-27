@@ -35,6 +35,7 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
+    console.log("INCOMING PAYLOAD keys:", Object.keys(body), "card_generation:", body.card_generation, "session_id:", body.session_id);
 
     // Validate required fields
     if (!body.session_id) {
@@ -89,6 +90,8 @@ Deno.serve(async (req) => {
     if (body.status === "completed") {
       sessionData.completed_at = new Date().toISOString();
     }
+
+    console.log("UPSERT sessionData:", JSON.stringify(sessionData));
 
     const { error: sessionError } = await supabase
       .from("sessions")
