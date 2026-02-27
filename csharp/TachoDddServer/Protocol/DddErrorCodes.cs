@@ -24,6 +24,7 @@ public static class DddErrorCodes
             (0x02, 0x03) => "Authentication failed — card blocked",
             (0x02, 0x04) => "Authentication failed — card expired",
             (0x02, 0x05) => "Authentication failed — wrong PIN",
+            (0x02, 0x06) => "Authentication failed — card data inaccessible (possible generation mismatch)",
             (0x02, 0x0A) => "Authentication failed — certificate rejected",
             (0x02, 0x0B) => "Authentication failed — card expired (alt)",
 
