@@ -1,6 +1,7 @@
 import { StatsCards } from "@/components/StatsCards";
 import { SessionsTable } from "@/components/SessionsTable";
 import { EventTimeline } from "@/components/EventTimeline";
+import { CompatibilityMatrix } from "@/components/CompatibilityMatrix";
 import { Radio, RefreshCw, FileText } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -64,7 +65,8 @@ const Index = () => {
           <div className="xl:col-span-2">
             <SessionsTable />
           </div>
-          <div>
+          <div className="space-y-6">
+            <CompatibilityMatrix />
             <EventTimeline />
           </div>
         </div>
