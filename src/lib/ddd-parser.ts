@@ -258,24 +258,35 @@ export function parseDddFile(buffer: ArrayBuffer): DddFileData {
   result.bytesParsed = sections.reduce((sum, s) => sum + s.length + 4, 0);
 
   // Determine generation based on tag structure
-  if (sections.some(s => s.tagHigh === 0x76)) {
+  if (sections.some(s => s.tag >= 0x31 && s.tag <= 0x39)) {
+    result.generation = 'gen2';
+  } else if (sections.some(s => s.tag >= 0x21 && s.tag <= 0x29)) {
+    result.generation = 'gen2';
+  } else if (sections.some(s => s.tagHigh === 0x76)) {
     result.generation = 'gen1';
   }
 
+  // Normalize tags: map Gen2/Gen2v2 tags to Gen1 equivalents for section parsing
+  const normalizeTag = (tag: number): number => {
+    if (tag >= 0x31 && tag <= 0x39) return tag - 0x30; // Gen2v2 -> Gen1
+    if (tag >= 0x21 && tag <= 0x29) return tag - 0x20; // Gen2 -> Gen1
+    return tag;
+  };
+
   for (const section of sections) {
     try {
-      const tag = section.tag;
-      if (tag === 0x05 || tag === 0x7605) {
+      const nTag = normalizeTag(section.tag);
+      if (nTag === 0x05) {
         result.overview = parseOverview(section.data);
-      } else if (tag === 0x06 || tag === 0x7606) {
+      } else if (nTag === 0x06) {
         result.activities = parseActivities(section.data);
-      } else if (tag === 0x07 || tag === 0x7607) {
+      } else if (nTag === 0x07) {
         const ef = parseEventsAndFaults(section.data);
         result.events = ef.events;
         result.faults = ef.faults;
-      } else if (tag === 0x09 || tag === 0x7609) {
+      } else if (nTag === 0x09) {
         result.technicalData = parseTechnicalData(section.data);
-      } else if (tag === 0x08 || tag === 0x7608) {
+      } else if (nTag === 0x08) {
         result.speedRecords = parseDetailedSpeed(section.data);
       }
     } catch (e) {
@@ -296,7 +307,8 @@ function extractSections(buffer: ArrayBuffer, warnings: ParserWarning[]): DddSec
   while (pos < bytes.length - 3) {
     if (bytes[pos] === 0x76) {
       const tagLow = bytes[pos + 1];
-      if (tagLow >= 0x01 && tagLow <= 0x09) {
+      const isValidTag = (tagLow >= 0x01 && tagLow <= 0x09) || (tagLow >= 0x21 && tagLow <= 0x29) || (tagLow >= 0x31 && tagLow <= 0x39);
+      if (isValidTag) {
         const length = view.getUint16(pos + 2, false);
         if (length > 0 && length <= MAX_SECTION_SIZE && pos + 4 + length <= bytes.length) {
           const data = bytes.slice(pos + 4, pos + 4 + length);

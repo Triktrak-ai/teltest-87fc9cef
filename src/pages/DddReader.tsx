@@ -35,14 +35,15 @@ const hexDump = (data: Uint8Array, maxBytes = 32): string => {
 };
 
 const TAG_NAMES: Record<number, string> = {
-  0x01: 'MF_IC_Card / Cert CA',
-  0x02: 'Card Certificate / Cert VU',
-  0x03: 'CA Certificate',
-  0x05: 'Overview',
-  0x06: 'Activities',
-  0x07: 'Events & Faults',
-  0x08: 'Detailed Speed',
-  0x09: 'Technical Data',
+  0x01: 'Cert Member State (G1)', 0x02: 'Cert VU (G1)', 0x03: 'Cert CA (G1)',
+  0x05: 'Overview (G1)', 0x06: 'Activities (G1)', 0x07: 'Events & Faults (G1)',
+  0x08: 'Detailed Speed (G1)', 0x09: 'Technical Data (G1)',
+  0x21: 'Cert Member State (G2)', 0x22: 'Cert VU (G2)', 0x23: 'Cert CA (G2)',
+  0x25: 'Overview (G2)', 0x26: 'Activities (G2)', 0x27: 'Events & Faults (G2)',
+  0x28: 'Detailed Speed (G2)', 0x29: 'Technical Data (G2)',
+  0x31: 'Cert CA (G2v2)', 0x32: 'Cert VU (G2v2)', 0x33: 'Cert Link (G2v2)',
+  0x35: 'Overview (G2v2)', 0x36: 'Activities (G2v2)', 0x37: 'Events & Faults (G2v2)',
+  0x38: 'Detailed Speed (G2v2)', 0x39: 'Technical Data (G2v2)',
 };
 
 const DddReader = () => {
