@@ -1,1 +1,7 @@
 project_id = "exyjnmtxacpydoeaqcti"
+
+[functions.check-download]
+verify_jwt = false
+
+[functions.reset-download-schedule]
+verify_jwt = false

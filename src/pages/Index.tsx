@@ -2,6 +2,7 @@ import { StatsCards } from "@/components/StatsCards";
 import { SessionsTable } from "@/components/SessionsTable";
 import { EventTimeline } from "@/components/EventTimeline";
 import { CompatibilityMatrix } from "@/components/CompatibilityMatrix";
+import { DownloadScheduleTable } from "@/components/DownloadScheduleTable";
 import { Radio, RefreshCw, FileText } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -62,8 +63,9 @@ const Index = () => {
       <main className="mx-auto max-w-7xl space-y-6 px-6 py-6">
         <StatsCards />
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
-          <div className="xl:col-span-2">
+          <div className="xl:col-span-2 space-y-6">
             <SessionsTable />
+            <DownloadScheduleTable />
           </div>
           <div className="space-y-6">
             <CompatibilityMatrix />

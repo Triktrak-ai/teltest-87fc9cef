@@ -280,6 +280,22 @@ public class DddSession
             _logger.LogInformation("📱 IMEI: {Imei}", _imei);
             _trafficLogger?.LogDecoded("RX", "IMEI", 15, $"IMEI={_imei}");
 
+            // ── Download gate: check if already downloaded today ──
+            if (_webReporter != null)
+            {
+                var shouldDownload = await _webReporter.CheckDownloadScheduleAsync();
+                if (!shouldDownload)
+                {
+                    _logger.LogInformation("⏭️ IMEI {Imei} already downloaded today — skipping", _imei);
+                    _webReporter.ReportStatus("skipped", 0, 0, 0, null, 0, 0, 0,
+                        "info", $"Download skipped — already completed today for {_imei}", "DownloadSkipped");
+                    await SendRawAsync(stream, new byte[] { 0x01 }); // ACK IMEI
+                    _trafficLogger?.LogDecoded("TX", "IMEI_ACK", 1, "Accepted (but skipping download)");
+                    TransitionTo(SessionState.Complete, "Already downloaded today — skipped");
+                    return;
+                }
+            }
+
             await SendRawAsync(stream, new byte[] { 0x01 });
             _trafficLogger?.LogDecoded("TX", "IMEI_ACK", 1, "Accepted");
             TransitionTo(SessionState.WaitingForStatus, "IMEI accepted");

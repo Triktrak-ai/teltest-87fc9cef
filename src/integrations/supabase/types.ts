@@ -14,6 +14,42 @@ export type Database = {
   }
   public: {
     Tables: {
+      download_schedule: {
+        Row: {
+          attempts_today: number | null
+          created_at: string | null
+          id: string
+          imei: string
+          last_attempt_at: string | null
+          last_error: string | null
+          last_success_at: string | null
+          status: string
+          updated_at: string | null
+        }
+        Insert: {
+          attempts_today?: number | null
+          created_at?: string | null
+          id?: string
+          imei: string
+          last_attempt_at?: string | null
+          last_error?: string | null
+          last_success_at?: string | null
+          status?: string
+          updated_at?: string | null
+        }
+        Update: {
+          attempts_today?: number | null
+          created_at?: string | null
+          id?: string
+          imei?: string
+          last_attempt_at?: string | null
+          last_error?: string | null
+          last_success_at?: string | null
+          status?: string
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
       session_events: {
         Row: {
           context: string | null
@@ -123,7 +159,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      increment_attempts_today: { Args: { p_imei: string }; Returns: undefined }
     }
     Enums: {
       [_ in never]: never

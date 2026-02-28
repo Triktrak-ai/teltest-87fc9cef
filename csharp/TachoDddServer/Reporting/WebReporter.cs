@@ -151,6 +151,33 @@ public class WebReporter : IDisposable
         }
     }
 
+    /// <summary>
+    /// Check if this IMEI should download today. Returns true if download should proceed.
+    /// On any error, returns true (fail-open — always allow download if uncertain).
+    /// </summary>
+    public async Task<bool> CheckDownloadScheduleAsync()
+    {
+        if (!_enabled) return true;
+        try
+        {
+            var checkUrl = _url.Replace("/report-session", "/check-download");
+            var response = await _http.GetAsync($"{checkUrl}?imei={_imei}");
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("CheckDownloadSchedule: HTTP {Status}", (int)response.StatusCode);
+                return true;
+            }
+            var json = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.GetProperty("should_download").GetBoolean();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("CheckDownloadSchedule error: {Error}", ex.Message);
+            return true; // Fail-open
+        }
+    }
+
     public void Dispose()
     {
         _http.Dispose();
