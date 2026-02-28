@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { Check, X, Shield, Trash2, Plus } from "lucide-react";
+import { Check, X, Shield, Trash2, Plus, UserPlus, Loader2 } from "lucide-react";
 
 interface UserRow {
   id: string;
@@ -25,6 +25,14 @@ export function AdminPanel() {
   const [newVehiclePlate, setNewVehiclePlate] = useState<Record<string, string>>({});
   const [newSimNumber, setNewSimNumber] = useState<Record<string, string>>({});
   const [newComment, setNewComment] = useState<Record<string, string>>({});
+
+  // New user form
+  const [showAddUser, setShowAddUser] = useState(false);
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [newUserName, setNewUserName] = useState("");
+  const [newUserPhone, setNewUserPhone] = useState("");
+  const [creatingUser, setCreatingUser] = useState(false);
 
   const fetchUsers = async () => {
     setLoading(true);
@@ -107,11 +115,66 @@ export function AdminPanel() {
     fetchUsers();
   };
 
+  const createUser = async () => {
+    if (!newUserEmail.trim() || !newUserPassword.trim()) {
+      toast({ title: "Błąd", description: "Email i hasło są wymagane", variant: "destructive" });
+      return;
+    }
+    setCreatingUser(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("create-user", {
+        body: {
+          email: newUserEmail.trim(),
+          password: newUserPassword.trim(),
+          full_name: newUserName.trim(),
+          phone: newUserPhone.trim() || null,
+        },
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      toast({ title: "Użytkownik utworzony", description: data?.email });
+      setNewUserEmail("");
+      setNewUserPassword("");
+      setNewUserName("");
+      setNewUserPhone("");
+      setShowAddUser(false);
+      fetchUsers();
+    } catch (err: any) {
+      toast({ title: "Błąd", description: err.message, variant: "destructive" });
+    } finally {
+      setCreatingUser(false);
+    }
+  };
+
   if (loading) return <div className="text-sm text-muted-foreground">Ładowanie użytkowników...</div>;
 
   return (
     <div className="space-y-4">
-      <h2 className="text-lg font-semibold">Panel administracyjny</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Panel administracyjny</h2>
+        <Button size="sm" variant="outline" onClick={() => setShowAddUser(!showAddUser)}>
+          <UserPlus className="h-3.5 w-3.5 mr-1" />
+          {showAddUser ? "Anuluj" : "Dodaj użytkownika"}
+        </Button>
+      </div>
+
+      {showAddUser && (
+        <div className="rounded-lg border bg-card p-4 space-y-3">
+          <h3 className="text-sm font-semibold">Nowy użytkownik</h3>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <Input placeholder="Email *" type="email" value={newUserEmail} onChange={(e) => setNewUserEmail(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder="Hasło *" type="password" value={newUserPassword} onChange={(e) => setNewUserPassword(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder="Imię i nazwisko" value={newUserName} onChange={(e) => setNewUserName(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder="Telefon (opcj.)" value={newUserPhone} onChange={(e) => setNewUserPhone(e.target.value)} className="h-8 text-xs" />
+          </div>
+          <Button size="sm" onClick={createUser} disabled={creatingUser}>
+            {creatingUser ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Plus className="h-3.5 w-3.5 mr-1" />}
+            Utwórz konto
+          </Button>
+          <p className="text-xs text-muted-foreground">Konto zostanie automatycznie zatwierdzone i email potwierdzony.</p>
+        </div>
+      )}
+
       <div className="space-y-4">
         {users.map((u) => (
           <div key={u.id} className="rounded-lg border bg-card p-4 space-y-3">
