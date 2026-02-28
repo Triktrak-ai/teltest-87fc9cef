@@ -14,6 +14,10 @@ public class SessionDiagnostics
     public DateTime? EndTime { get; private set; }
     public VuGeneration Generation { get; set; } = VuGeneration.Unknown;
     public string CardGeneration { get; set; } = "Unknown";
+    public string DetectedVuGenFromApdu { get; set; } = "Unknown";
+
+    // Card probe diagnostics
+    public CardProbeResult? CardProbe { get; set; }
 
     // Counters
     public long BytesSent { get; set; }
@@ -132,10 +136,27 @@ public class SessionDiagnostics
         sb.AppendLine($"  Endpoint:    {Endpoint}");
         sb.AppendLine($"  Generation:  {Generation}");
         sb.AppendLine($"  Card Gen:    {CardGeneration}");
+        sb.AppendLine($"  VU Gen APDU: {DetectedVuGenFromApdu}");
         sb.AppendLine($"  Start:       {StartTime:yyyy-MM-dd HH:mm:ss.fff} UTC");
         sb.AppendLine($"  End:         {EndTime?.ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "(still running)"} UTC");
         sb.AppendLine($"  Duration:    {FormatDuration(duration)}");
         sb.AppendLine();
+
+        // Card probe
+        if (CardProbe != null)
+        {
+            sb.AppendLine("── Card Probe (EF_ICC) ─────────────────────────────────────");
+            sb.AppendLine($"  SELECT MF:       SW={CardProbe.SelectMfSw}");
+            sb.AppendLine($"  SELECT DF 0007:  SW={CardProbe.SelectDfSw}");
+            sb.AppendLine($"  SELECT EF_ICC:   SW={CardProbe.SelectEfIccSw}");
+            sb.AppendLine($"  READ BINARY:     SW={CardProbe.ReadBinarySw} ({CardProbe.ReadBinaryLen}B)");
+            if (CardProbe.EfIccHex != null)
+                sb.AppendLine($"  EF_ICC data:     {CardProbe.EfIccHex}");
+            sb.AppendLine($"  Gen byte @25:    0x{CardProbe.GenByte:X2} → {CardProbe.Result}");
+            if (CardProbe.Error != null)
+                sb.AppendLine($"  Probe error:     {CardProbe.Error}");
+            sb.AppendLine();
+        }
 
         // State flow
         sb.AppendLine("── State Flow ──────────────────────────────────────────────");
@@ -227,6 +248,19 @@ public class SessionDiagnostics
                 endpoint = Endpoint,
                 generation = Generation.ToString(),
                 cardGeneration = CardGeneration,
+                detectedVuGenFromApdu = DetectedVuGenFromApdu,
+                cardProbe = CardProbe != null ? new
+                {
+                    selectMfSw = CardProbe.SelectMfSw,
+                    selectDfSw = CardProbe.SelectDfSw,
+                    selectEfIccSw = CardProbe.SelectEfIccSw,
+                    readBinarySw = CardProbe.ReadBinarySw,
+                    readBinaryLen = CardProbe.ReadBinaryLen,
+                    efIccHex = CardProbe.EfIccHex,
+                    genByte = CardProbe.GenByte,
+                    result = CardProbe.Result,
+                    error = CardProbe.Error
+                } : null,
                 startTime = StartTime,
                 endTime = EndTime,
                 durationSeconds = ((EndTime ?? DateTime.UtcNow) - StartTime).TotalSeconds,
@@ -289,4 +323,17 @@ public class SessionDiagnostics
     public record ErrorEntry(DateTime Timestamp, string Context, string Message, string? StackTrace);
     public record WarningEntry(DateTime Timestamp, string Message);
     public record FileDownloadEntry(DddFileType FileType, int SizeBytes, TimeSpan Duration, bool Success, string? Error);
+
+    public class CardProbeResult
+    {
+        public string SelectMfSw { get; set; } = "-";
+        public string SelectDfSw { get; set; } = "-";
+        public string SelectEfIccSw { get; set; } = "-";
+        public string ReadBinarySw { get; set; } = "-";
+        public int ReadBinaryLen { get; set; }
+        public string? EfIccHex { get; set; }
+        public byte GenByte { get; set; }
+        public string Result { get; set; } = "Unknown";
+        public string? Error { get; set; }
+    }
 }
