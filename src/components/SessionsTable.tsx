@@ -4,6 +4,7 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AlertTriangle } from "lucide-react";
+import { useMemo } from "react";
 
 type SessionStatus = Session["status"];
 
@@ -31,19 +32,10 @@ function isGenerationMismatch(s: Session): { mismatch: boolean; culprit?: "card"
   const card = s.card_generation ?? "Unknown";
   const vu = s.generation ?? "Unknown";
   if (card === "Unknown" || vu === "Unknown") return { mismatch: false };
-
-  // Gen1 card works with everything
   if (card === "Gen1") return { mismatch: false };
-
-  // Gen2/Gen2v1/Gen2v2 card in Gen1 tachograph = mismatch (card too new)
   if (vu === "Gen1") return { mismatch: true, culprit: "card" };
-
-  // Gen2v2 VU requires Gen2v2 card for full access — Gen2/Gen2v1 card = mismatch
   if (vu === "Gen2v2" && (card === "Gen2" || card === "Gen2v1")) return { mismatch: true, culprit: "card" };
-
-  // Gen2v2 card in Gen2v1 tachograph = mismatch
   if (card === "Gen2v2" && (vu === "Gen2v1" || vu === "Gen2")) return { mismatch: true, culprit: "card" };
-
   return { mismatch: false };
 }
 
@@ -58,8 +50,18 @@ function isActive(status: string): boolean {
   return status !== "completed" && status !== "error" && status !== "partial" && status !== "skipped";
 }
 
-export function SessionsTable() {
+interface SessionsTableProps {
+  filterImeis?: string[] | null;
+}
+
+export function SessionsTable({ filterImeis }: SessionsTableProps) {
   const { data: sessions, isLoading } = useSessions();
+
+  const filtered = useMemo(() => {
+    if (!sessions) return undefined;
+    if (!filterImeis) return sessions;
+    return sessions.filter((s) => filterImeis.includes(s.imei));
+  }, [sessions, filterImeis]);
 
   return (
     <div className="rounded-lg border bg-card">
@@ -67,7 +69,7 @@ export function SessionsTable() {
         <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
           Sesje pobierania DDD
         </h2>
-        {sessions && sessions.some((s) => isActive(s.status)) && (
+        {filtered && filtered.some((s) => isActive(s.status)) && (
           <span className="flex items-center gap-1.5 text-xs text-primary">
             <span className="relative flex h-2 w-2">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
@@ -109,14 +111,14 @@ export function SessionsTable() {
                 ))}
               </>
             )}
-            {!isLoading && sessions && sessions.length === 0 && (
+            {!isLoading && filtered && filtered.length === 0 && (
               <tr>
                 <td colSpan={12} className="px-5 py-12 text-center text-muted-foreground">
                   Brak aktywnych sesji
                 </td>
               </tr>
             )}
-            {sessions?.map((s) => {
+            {filtered?.map((s) => {
               const sc = statusConfig[s.status] ?? statusConfig.connecting;
               const active = isActive(s.status);
               const stale = isStaleSession(s);

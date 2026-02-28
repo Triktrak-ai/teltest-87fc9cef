@@ -5,23 +5,29 @@ import { CompatibilityMatrix } from "@/components/CompatibilityMatrix";
 import { DownloadScheduleTable } from "@/components/DownloadScheduleTable";
 import { DeviceManagement } from "@/components/DeviceManagement";
 import { AdminPanel } from "@/components/AdminPanel";
+import { AdminFilter } from "@/components/AdminFilter";
 import { useAuth } from "@/contexts/AuthContext";
 import { Radio, RefreshCw, FileText, LogOut, ShieldCheck } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, useCallback } from "react";
 
 const Index = () => {
   const queryClient = useQueryClient();
   const { isAdmin, signOut, profile } = useAuth();
   const [lastRefresh, setLastRefresh] = useState(new Date());
   const [showAdmin, setShowAdmin] = useState(false);
+  const [filterImeis, setFilterImeis] = useState<string[] | null>(null);
 
   const handleRefresh = () => {
     queryClient.invalidateQueries({ queryKey: ["sessions"] });
     queryClient.invalidateQueries({ queryKey: ["session_events"] });
     setLastRefresh(new Date());
   };
+
+  const handleFilterChange = useCallback((imeis: string[] | null) => {
+    setFilterImeis(imeis);
+  }, []);
 
   return (
     <div className="min-h-screen bg-background">
@@ -88,16 +94,21 @@ const Index = () => {
           <AdminPanel />
         ) : (
           <>
-            <StatsCards />
+            {isAdmin && (
+              <div className="flex items-center justify-end">
+                <AdminFilter onFilterChange={handleFilterChange} />
+              </div>
+            )}
+            <StatsCards filterImeis={filterImeis} />
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
               <div className="xl:col-span-2 space-y-6">
-                <SessionsTable />
-                <DownloadScheduleTable />
+                <SessionsTable filterImeis={filterImeis} />
+                <DownloadScheduleTable filterImeis={filterImeis} />
               </div>
               <div className="space-y-6">
                 {!isAdmin && <DeviceManagement />}
                 <CompatibilityMatrix />
-                <EventTimeline />
+                <EventTimeline filterImeis={filterImeis} />
               </div>
             </div>
           </>
