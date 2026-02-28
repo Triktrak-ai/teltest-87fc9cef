@@ -16,7 +16,7 @@ interface Device {
 }
 
 export function DeviceManagement() {
-  const { user } = useAuth();
+  const { user, isAdmin } = useAuth();
   const { toast } = useToast();
   const [devices, setDevices] = useState<Device[]>([]);
   const [newImei, setNewImei] = useState("");
@@ -34,6 +34,7 @@ export function DeviceManagement() {
   useEffect(() => { fetchDevices(); }, [user]);
 
   const addDevice = async () => {
+    if (!isAdmin) return;
     const imei = newImei.trim();
     if (!imei || !user) return;
     try {
@@ -58,6 +59,7 @@ export function DeviceManagement() {
   };
 
   const removeDevice = async (id: string) => {
+    if (!isAdmin) return;
     await supabase.from("user_devices").delete().eq("id", id);
     fetchDevices();
   };
@@ -79,27 +81,35 @@ export function DeviceManagement() {
                 {d.sim_number && <span className="text-xs text-muted-foreground">📱 {d.sim_number}</span>}
                 {d.comment && <span className="text-xs text-muted-foreground italic">({d.comment})</span>}
               </div>
-              <button onClick={() => removeDevice(d.id)} className="text-destructive hover:text-destructive/80">
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
+              {isAdmin && (
+                <button onClick={() => removeDevice(d.id)} className="text-destructive hover:text-destructive/80">
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
           ))}
         </div>
       ) : (
-        <p className="text-xs text-muted-foreground">Brak przypisanych urządzeń. Dodaj IMEI, aby widzieć sesje.</p>
+        <p className="text-xs text-muted-foreground">
+          {isAdmin
+            ? "Brak przypisanych urządzeń. Dodaj IMEI, aby widzieć sesje."
+            : "Brak przypisanych urządzeń. Skontaktuj się z administratorem, aby przypisać IMEI."}
+        </p>
       )}
-      <div className="grid grid-cols-[1fr_auto] gap-2">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          <Input placeholder="IMEI" value={newImei} onChange={(e) => setNewImei(e.target.value)} className="h-8 text-xs" />
-          <Input placeholder="Etykieta (opcj.)" value={newLabel} onChange={(e) => setNewLabel(e.target.value)} className="h-8 text-xs" />
-          <Input placeholder="Nr rejestracyjny" value={newVehiclePlate} onChange={(e) => setNewVehiclePlate(e.target.value)} className="h-8 text-xs" />
-          <Input placeholder="Nr SIM" value={newSimNumber} onChange={(e) => setNewSimNumber(e.target.value)} className="h-8 text-xs" />
-          <Input placeholder="Komentarz" value={newComment} onChange={(e) => setNewComment(e.target.value)} className="h-8 text-xs" />
+      {isAdmin && (
+        <div className="grid grid-cols-[1fr_auto] gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <Input placeholder="IMEI" value={newImei} onChange={(e) => setNewImei(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder="Etykieta (opcj.)" value={newLabel} onChange={(e) => setNewLabel(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder="Nr rejestracyjny" value={newVehiclePlate} onChange={(e) => setNewVehiclePlate(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder="Nr SIM" value={newSimNumber} onChange={(e) => setNewSimNumber(e.target.value)} className="h-8 text-xs" />
+            <Input placeholder="Komentarz" value={newComment} onChange={(e) => setNewComment(e.target.value)} className="h-8 text-xs" />
+          </div>
+          <Button size="sm" variant="outline" onClick={addDevice} className="h-8 self-end">
+            <Plus className="h-3.5 w-3.5" />
+          </Button>
         </div>
-        <Button size="sm" variant="outline" onClick={addDevice} className="h-8 self-end">
-          <Plus className="h-3.5 w-3.5" />
-        </Button>
-      </div>
+      )}
     </div>
   );
 }
