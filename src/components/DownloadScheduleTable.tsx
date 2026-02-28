@@ -3,27 +3,15 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Switch } from "@/components/ui/switch";
 import { RotateCcw, FileDown, ShieldOff, Shield } from "lucide-react";
 import { toast } from "sonner";
 import { useState, useMemo } from "react";
-import { apiFetch } from "@/lib/api-client";
+import { supabase } from "@/integrations/supabase/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useImeiOwners } from "@/hooks/useImeiOwners";
 
@@ -39,16 +27,21 @@ function useLatestSessionsWithLogs() {
   return useQuery({
     queryKey: ["sessions-with-logs"],
     queryFn: async () => {
-      const sessions = await apiFetch<{ id: string; imei: string; log_uploaded: boolean; created_at: string }[]>("/api/sessions");
-      return sessions.filter((s) => s.log_uploaded);
+      const { data, error } = await supabase
+        .from("sessions")
+        .select("id, imei, log_uploaded, created_at")
+        .eq("log_uploaded", true)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return data;
     },
     refetchInterval: 30000,
   });
 }
 
 function getLogDownloadUrl(sessionId: string, fileName: string): string {
-  const apiBase = import.meta.env.VITE_API_BASE_URL ?? "";
-  return `${apiBase}/api/session-logs/${sessionId}/${fileName}`;
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  return `${supabaseUrl}/storage/v1/object/public/session-logs/${sessionId}/${fileName}`;
 }
 
 function useDevMode() {
@@ -57,15 +50,18 @@ function useDevMode() {
   const query = useQuery({
     queryKey: ["app_settings", "download_block_disabled"],
     queryFn: async () => {
-      const setting = await apiFetch<{ key: string; value: string }>("/api/app-settings/download_block_disabled").catch(() => null);
-      return setting?.value === "true";
+      const { data } = await supabase
+        .from("app_settings")
+        .select("value")
+        .eq("key", "download_block_disabled")
+        .single();
+      return data?.value === "true";
     },
   });
 
   const toggle = async (disabled: boolean) => {
-    await apiFetch("/api/toggle-download-block", {
-      method: "POST",
-      body: JSON.stringify({ disabled }),
+    await supabase.functions.invoke("toggle-download-block", {
+      body: { disabled },
     });
     await queryClient.invalidateQueries({ queryKey: ["app_settings", "download_block_disabled"] });
   };
@@ -153,32 +149,27 @@ export function DownloadScheduleTable({ filterImeis }: DownloadScheduleTableProp
               title="Tryb deweloperski — wyłącza blokadę pobierania 1x/dzień"
             />
           </div>
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-xs gap-1.5"
-              disabled={resetting === "__all__"}
-            >
-              <RotateCcw className="h-3 w-3" />
-              Resetuj wszystkie
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Resetuj wszystkie harmonogramy</AlertDialogTitle>
-              <AlertDialogDescription>
-                Wszystkie urządzenia zostaną oznaczone jako oczekujące na pobranie. Przy następnym
-                połączeniu pliki DDD zostaną pobrane ponownie.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Anuluj</AlertDialogCancel>
-              <AlertDialogAction onClick={() => handleReset()}>Resetuj</AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-7 text-xs gap-1.5" disabled={resetting === "__all__"}>
+                <RotateCcw className="h-3 w-3" />
+                Resetuj wszystkie
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Resetuj wszystkie harmonogramy</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Wszystkie urządzenia zostaną oznaczone jako oczekujące na pobranie. Przy następnym
+                  połączeniu pliki DDD zostaną pobrane ponownie.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Anuluj</AlertDialogCancel>
+                <AlertDialogAction onClick={() => handleReset()}>Resetuj</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </div>
       <div className="overflow-x-auto">
@@ -201,9 +192,7 @@ export function DownloadScheduleTable({ filterImeis }: DownloadScheduleTableProp
                 {[1, 2, 3].map((i) => (
                   <tr key={i} className="border-b border-border/50">
                     {Array.from({ length: 7 }).map((_, j) => (
-                      <td key={j} className="px-5 py-3">
-                        <Skeleton className="h-4 w-full" />
-                      </td>
+                      <td key={j} className="px-5 py-3"><Skeleton className="h-4 w-full" /></td>
                     ))}
                   </tr>
                 ))}
@@ -228,62 +217,32 @@ export function DownloadScheduleTable({ filterImeis }: DownloadScheduleTableProp
                   )}
                   <td className="px-5 py-3 font-mono text-xs">{s.imei}</td>
                   <td className="px-5 py-3">
-                    <Badge variant="outline" className={sc.className}>
-                      {sc.label}
-                    </Badge>
+                    <Badge variant="outline" className={sc.className}>{sc.label}</Badge>
                   </td>
                   <td className="px-5 py-3 text-xs text-muted-foreground">
-                    {s.last_success_at
-                      ? new Date(s.last_success_at).toLocaleString("pl-PL", {
-                          day: "2-digit",
-                          month: "2-digit",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })
-                      : "—"}
+                    {s.last_success_at ? new Date(s.last_success_at).toLocaleString("pl-PL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"}
                   </td>
                   <td className="px-5 py-3 text-xs text-muted-foreground">
-                    {s.last_attempt_at
-                      ? new Date(s.last_attempt_at).toLocaleString("pl-PL", {
-                          day: "2-digit",
-                          month: "2-digit",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })
-                      : "—"}
+                    {s.last_attempt_at ? new Date(s.last_attempt_at).toLocaleString("pl-PL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"}
                   </td>
                   <td className="px-5 py-3 font-mono text-xs">{s.attempts_today}</td>
-                  <td className="px-5 py-3 text-xs text-destructive max-w-[200px] truncate">
-                    {s.last_error ?? "—"}
-                  </td>
+                  <td className="px-5 py-3 text-xs text-destructive max-w-[200px] truncate">{s.last_error ?? "—"}</td>
                   <td className="px-5 py-3 text-right flex items-center justify-end gap-1">
                     {logSession && (
                       <TooltipProvider>
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-6 w-6 p-0"
-                              onClick={() => handleDownloadLogs(logSession.id)}
-                            >
+                            <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handleDownloadLogs(logSession.id)}>
                               <FileDown className="h-3.5 w-3.5 text-primary" />
                             </Button>
                           </TooltipTrigger>
-                          <TooltipContent>
-                            <p>Pobierz logi sesji</p>
-                          </TooltipContent>
+                          <TooltipContent><p>Pobierz logi sesji</p></TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
                     )}
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-2 text-xs gap-1"
-                          disabled={resetting === s.imei}
-                        >
+                        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs gap-1" disabled={resetting === s.imei}>
                           <RotateCcw className="h-3 w-3" />
                           Resetuj
                         </Button>
@@ -292,15 +251,12 @@ export function DownloadScheduleTable({ filterImeis }: DownloadScheduleTableProp
                         <AlertDialogHeader>
                           <AlertDialogTitle>Resetuj harmonogram</AlertDialogTitle>
                           <AlertDialogDescription>
-                            IMEI {s.imei} zostanie oznaczone jako oczekujące. Przy następnym
-                            połączeniu pliki DDD zostaną pobrane ponownie.
+                            IMEI {s.imei} zostanie oznaczone jako oczekujące. Przy następnym połączeniu pliki DDD zostaną pobrane ponownie.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
                           <AlertDialogCancel>Anuluj</AlertDialogCancel>
-                          <AlertDialogAction onClick={() => handleReset(s.imei)}>
-                            Resetuj
-                          </AlertDialogAction>
+                          <AlertDialogAction onClick={() => handleReset(s.imei)}>Resetuj</AlertDialogAction>
                         </AlertDialogFooter>
                       </AlertDialogContent>
                     </AlertDialog>

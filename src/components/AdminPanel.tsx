@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { apiFetch } from "@/lib/api-client";
+import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
@@ -26,7 +26,6 @@ export function AdminPanel() {
   const [newSimNumber, setNewSimNumber] = useState<Record<string, string>>({});
   const [newComment, setNewComment] = useState<Record<string, string>>({});
 
-  // New user form
   const [showAddUser, setShowAddUser] = useState(false);
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
@@ -37,8 +36,32 @@ export function AdminPanel() {
   const fetchUsers = async () => {
     setLoading(true);
     try {
-      const data = await apiFetch<UserRow[]>("/api/admin/users");
-      setUsers(data);
+      const { data: profiles, error } = await supabase
+        .from("profiles")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+
+      const { data: allRoles } = await supabase.from("user_roles").select("*");
+      const { data: allDevices } = await supabase.from("user_devices").select("*");
+
+      const rows: UserRow[] = (profiles ?? []).map((p) => ({
+        id: p.id,
+        full_name: p.full_name,
+        phone: p.phone,
+        approved: p.approved,
+        created_at: p.created_at,
+        is_admin: allRoles?.some((r) => r.user_id === p.id && r.role === "admin") ?? false,
+        devices: (allDevices ?? []).filter((d) => d.user_id === p.id).map((d) => ({
+          id: d.id,
+          imei: d.imei,
+          label: d.label,
+          vehicle_plate: d.vehicle_plate,
+          sim_number: d.sim_number,
+          comment: d.comment,
+        })),
+      }));
+      setUsers(rows);
     } catch (err: any) {
       toast({ title: "Błąd", description: err.message, variant: "destructive" });
     }
@@ -49,7 +72,8 @@ export function AdminPanel() {
 
   const toggleApproval = async (userId: string, approved: boolean) => {
     try {
-      await apiFetch(`/api/admin/users/${userId}/approve`, { method: "PATCH" });
+      const { error } = await supabase.from("profiles").update({ approved: !approved }).eq("id", userId);
+      if (error) throw error;
       toast({ title: approved ? "Konto dezaktywowane" : "Konto zatwierdzone" });
       fetchUsers();
     } catch (err: any) {
@@ -59,7 +83,13 @@ export function AdminPanel() {
 
   const toggleAdmin = async (userId: string, isAdmin: boolean) => {
     try {
-      await apiFetch(`/api/admin/roles/${userId}/toggle-admin`, { method: "POST" });
+      if (isAdmin) {
+        const { error } = await supabase.from("user_roles").delete().eq("user_id", userId).eq("role", "admin");
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from("user_roles").insert({ user_id: userId, role: "admin" });
+        if (error) throw error;
+      }
       toast({ title: isAdmin ? "Rola admin usunięta" : "Rola admin nadana" });
       fetchUsers();
     } catch (err: any) {
@@ -71,17 +101,15 @@ export function AdminPanel() {
     const imei = newImei[userId]?.trim();
     if (!imei) return;
     try {
-      await apiFetch("/api/user-devices", {
-        method: "POST",
-        body: JSON.stringify({
-          imei,
-          label: newLabel[userId]?.trim() || null,
-          vehicle_plate: newVehiclePlate[userId]?.trim() || null,
-          sim_number: newSimNumber[userId]?.trim() || null,
-          comment: newComment[userId]?.trim() || null,
-          user_id: userId,
-        }),
+      const { error } = await supabase.from("user_devices").insert({
+        imei,
+        label: newLabel[userId]?.trim() || null,
+        vehicle_plate: newVehiclePlate[userId]?.trim() || null,
+        sim_number: newSimNumber[userId]?.trim() || null,
+        comment: newComment[userId]?.trim() || null,
+        user_id: userId,
       });
+      if (error) throw error;
       setNewImei((p) => ({ ...p, [userId]: "" }));
       setNewLabel((p) => ({ ...p, [userId]: "" }));
       setNewVehiclePlate((p) => ({ ...p, [userId]: "" }));
@@ -94,7 +122,7 @@ export function AdminPanel() {
   };
 
   const removeDevice = async (deviceId: string) => {
-    await apiFetch(`/api/user-devices/${deviceId}`, { method: "DELETE" });
+    await supabase.from("user_devices").delete().eq("id", deviceId);
     fetchUsers();
   };
 
@@ -105,15 +133,15 @@ export function AdminPanel() {
     }
     setCreatingUser(true);
     try {
-      const data = await apiFetch<{ id: string; email: string }>("/api/auth/admin/create-user", {
-        method: "POST",
-        body: JSON.stringify({
+      const { data, error } = await supabase.functions.invoke("create-user", {
+        body: {
           email: newUserEmail.trim(),
           password: newUserPassword.trim(),
           full_name: newUserName.trim(),
           phone: newUserPhone.trim() || null,
-        }),
+        },
       });
+      if (error) throw error;
       toast({ title: "Użytkownik utworzony", description: data.email });
       setNewUserEmail("");
       setNewUserPassword("");
@@ -185,7 +213,6 @@ export function AdminPanel() {
               </div>
             </div>
 
-            {/* Devices */}
             <div className="space-y-2">
               <span className="text-xs font-medium text-muted-foreground">Urządzenia (IMEI):</span>
               {u.devices.length > 0 ? (

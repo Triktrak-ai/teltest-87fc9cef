@@ -1,7 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback } from "react";
-import { apiFetch } from "@/lib/api-client";
-import { useSignalR } from "@/hooks/useSignalR";
+import { useCallback, useEffect } from "react";
+import { supabase } from "@/integrations/supabase/client";
 
 export interface DownloadSchedule {
   id: string;
@@ -20,22 +19,33 @@ export function useDownloadSchedule() {
 
   const query = useQuery({
     queryKey: ["download_schedule"],
-    queryFn: () => apiFetch<DownloadSchedule[]>("/api/download-schedule"),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("download_schedule")
+        .select("*")
+        .order("updated_at", { ascending: false });
+      if (error) throw error;
+      return data as DownloadSchedule[];
+    },
     refetchInterval: 30000,
   });
 
-  useSignalR("SessionUpdated", () => {
-    queryClient.invalidateQueries({ queryKey: ["download_schedule"] });
-  });
+  useEffect(() => {
+    const channel = supabase
+      .channel("schedule-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "download_schedule" }, () => {
+        queryClient.invalidateQueries({ queryKey: ["download_schedule"] });
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [queryClient]);
 
   const resetSchedule = useCallback(async (imei?: string) => {
     const body = imei ? { imei } : { all: true };
-    const result = await apiFetch<{ ok: boolean; reset_count: number }>("/api/reset-download-schedule", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    const { data, error } = await supabase.functions.invoke("reset-download-schedule", { body });
+    if (error) throw error;
     queryClient.invalidateQueries({ queryKey: ["download_schedule"] });
-    return result;
+    return data as { ok: boolean; reset_count: number };
   }, [queryClient]);
 
   return { ...query, resetSchedule };

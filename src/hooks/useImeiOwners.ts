@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { apiFetch } from "@/lib/api-client";
+import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 
 interface ImeiOwner {
@@ -16,10 +16,11 @@ export function useImeiOwners() {
     if (!isAdmin) return;
     const load = async () => {
       try {
-        const [devs, profs] = await Promise.all([
-          apiFetch<{ imei: string; vehicle_plate: string | null; user_id: string }[]>("/api/user-devices"),
-          apiFetch<{ id: string; full_name: string }[]>("/api/admin/users"),
+        const [{ data: devs }, { data: profs }] = await Promise.all([
+          supabase.from("user_devices").select("imei, vehicle_plate, user_id"),
+          supabase.from("profiles").select("id, full_name"),
         ]);
+        if (!devs || !profs) return;
         const profMap = new Map(profs.map((p) => [p.id, p.full_name || "Brak nazwy"]));
         const m = new Map<string, ImeiOwner>();
         for (const d of devs) {
@@ -31,7 +32,7 @@ export function useImeiOwners() {
         }
         setMap(m);
       } catch {
-        // Non-admin or error — ignore
+        // ignore
       }
     };
     load();

@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { apiFetch } from "@/lib/api-client";
+import { supabase } from "@/integrations/supabase/client";
 import { Input } from "@/components/ui/input";
 import { Search, X } from "lucide-react";
 
@@ -22,20 +22,20 @@ export function AdminFilter({ onFilterChange }: AdminFilterProps) {
   useEffect(() => {
     const load = async () => {
       try {
-        const users = await apiFetch<{ id: string; full_name: string; devices: { imei: string; label: string | null; vehicle_plate: string | null }[] }[]>("/api/admin/users");
-        const devs: DeviceInfo[] = [];
-        for (const u of users) {
-          for (const d of u.devices) {
-            devs.push({
-              imei: d.imei,
-              label: d.label,
-              vehicle_plate: d.vehicle_plate,
-              user_id: u.id,
-              user_name: u.full_name || "Brak nazwy",
-            });
-          }
-        }
-        setDevices(devs);
+        const [{ data: devs }, { data: profs }] = await Promise.all([
+          supabase.from("user_devices").select("imei, label, vehicle_plate, user_id"),
+          supabase.from("profiles").select("id, full_name"),
+        ]);
+        if (!devs || !profs) return;
+        const profMap = new Map(profs.map((p) => [p.id, p.full_name || "Brak nazwy"]));
+        const items: DeviceInfo[] = devs.map((d) => ({
+          imei: d.imei,
+          label: d.label,
+          vehicle_plate: d.vehicle_plate,
+          user_id: d.user_id,
+          user_name: profMap.get(d.user_id) ?? "Brak nazwy",
+        }));
+        setDevices(items);
       } catch {
         // ignore
       }
