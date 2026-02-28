@@ -1021,9 +1021,52 @@ public class DddSession
 
             if (_currentFileIndex >= _filesToDownload.Count)
             {
-                _logger.LogInformation("🎉 All {Count} files downloaded!", _filesToDownload.Count);
                 MergeVuFiles();
-                await SendTerminateAsync(stream, "All files downloaded");
+
+                // Determine completion status based on successful downloads
+                // VU files (5): Overview, Activities, Events, Speed, Technical
+                // Driver cards (2): DriverCard1, DriverCard2 (slot 2 may be empty — not an error)
+                var vuFileTypes = new[] { DddFileType.Overview, DddFileType.Activities,
+                    DddFileType.EventsAndFaults, DddFileType.DetailedSpeed, DddFileType.TechnicalData };
+                int vuDownloaded = vuFileTypes.Count(ft => _downloadedFiles.ContainsKey(ft) && _downloadedFiles[ft].Length > 0);
+                int driverCardsDownloaded = (new[] { DddFileType.DriverCard1, DddFileType.DriverCard2 })
+                    .Count(ft => _downloadedFiles.ContainsKey(ft) && _downloadedFiles[ft].Length > 0);
+
+                // At least 1 driver card is expected (slot 2 may be empty)
+                bool allVuFiles = vuDownloaded >= 5;
+                bool hasDriverCard = driverCardsDownloaded >= 1;
+
+                if (allVuFiles && hasDriverCard)
+                {
+                    // Full success: all VU files + at least 1 driver card
+                    _logger.LogInformation("🎉 All files downloaded successfully! ({Successful}/{Total})",
+                        _successfulDownloads, _filesToDownload.Count);
+                    await SendTerminateAsync(stream, "All files downloaded");
+                }
+                else if (_successfulDownloads == 0)
+                {
+                    // Complete failure: no files downloaded at all
+                    _logger.LogError("❌ No files downloaded successfully (0/{Total})", _filesToDownload.Count);
+                    TransitionTo(SessionState.Error, $"No files downloaded (0/{_filesToDownload.Count})");
+                    await SendDddPacketAsync(stream, DddPacketType.Terminate);
+                }
+                else
+                {
+                    // Partial success: some files missing
+                    _logger.LogWarning("⚠️ Partial download: {Downloaded}/{Total} files (VU: {Vu}/5, Cards: {Cards})",
+                        _successfulDownloads, _filesToDownload.Count, vuDownloaded, driverCardsDownloaded);
+                    await SendDddPacketAsync(stream, DddPacketType.Terminate);
+                    TransitionTo(SessionState.Complete, 
+                        $"Partial: {_successfulDownloads}/{_filesToDownload.Count} files (VU: {vuDownloaded}/5)");
+
+                    // Report as partial instead of completed
+                    _webReporter?.ReportStatus(
+                        "partial", 100, _successfulDownloads, _filesToDownload.Count,
+                        null, _diagnostics.BytesSent + _diagnostics.BytesReceived,
+                        _diagnostics.ApduExchanges, _diagnostics.CrcErrors,
+                        "warning", $"Partial download: {_successfulDownloads}/{_filesToDownload.Count} files", "PartialComplete");
+                }
+
                 return;
             }
 
