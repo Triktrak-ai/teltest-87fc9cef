@@ -54,6 +54,10 @@ public class DddSession
     private int _authRetryCount = 0;
     private const int MaxAuthRetries = 3;
 
+    // Driver card retry tracking (two-phase download)
+    private bool _driverCardRetried = false;
+    private readonly Dictionary<DddFileType, DateTime> _fileRequestTimestamps = new();
+
     // Keep alive
 
     // Keep alive
@@ -1137,6 +1141,7 @@ public class DddSession
             _fileBuffer.Clear();
             _lastSid = 0;
             _lastTrep = 0;
+            _driverCardRetried = false; // Reset per-file retry flag
 
             // Start file timer
             _diagnostics.StartFileTimer(_currentFileType);
@@ -1160,6 +1165,9 @@ public class DddSession
 
     private async Task RequestFileAsync(NetworkStream stream, DddFileType fileType, VuGeneration? genOverride = null)
     {
+        // Track request timestamp for diagnostics (empty slot vs access denied)
+        _fileRequestTimestamps[fileType] = DateTime.UtcNow;
+
         byte trtp = GetTrtp(fileType, genOverride);
         byte[] payload;
 
@@ -1291,10 +1299,60 @@ public class DddSession
 
                 var errorDesc = data.Length >= 2 ? DddErrorCodes.Format(data[0], data[1]) : "unknown";
 
-                // Check if this is an auth/access error (0x02:0x06) and we can retry with Gen1 TRTP
+                // Diagnose driver card failures: empty slot vs access denied
+                bool isDriverCard = _currentFileType == DddFileType.DriverCard1 ||
+                                    _currentFileType == DddFileType.DriverCard2;
                 bool isAuthError = data.Length >= 2 && data[0] == 0x02 && data[1] == 0x06;
-                bool isVuFile = _currentFileType != DddFileType.DriverCard1 &&
-                                _currentFileType != DddFileType.DriverCard2 &&
+
+                if (isDriverCard && isAuthError)
+                {
+                    // Measure response time to distinguish empty slot (<2s) vs access denied (>2s)
+                    var responseTime = _fileRequestTimestamps.TryGetValue(_currentFileType, out var reqTime)
+                        ? DateTime.UtcNow - reqTime
+                        : TimeSpan.Zero;
+                    bool likelyEmptySlot = responseTime.TotalSeconds < 2.0;
+
+                    var diagReason = likelyEmptySlot ? "empty_slot" : "access_denied";
+                    var diagMsg = $"DRIVER CARD FAIL ({_currentFileType}): {diagReason} — response in {responseTime.TotalSeconds:F1}s, error={errorDesc}";
+                    _logger.LogWarning("🃏 {Msg}", diagMsg);
+                    _trafficLogger?.LogWarning(diagMsg);
+                    _diagnostics.LogWarning(diagMsg);
+
+                    // Report detailed driver card diagnostic to dashboard
+                    _webReporter?.ReportStatus(
+                        "downloading", 0, _successfulDownloads, _filesToDownload.Count,
+                        _currentFileType.ToString(),
+                        _diagnostics.BytesSent + _diagnostics.BytesReceived,
+                        _diagnostics.ApduExchanges, _diagnostics.CrcErrors,
+                        "warning", diagMsg, $"DriverCard_{diagReason}");
+
+                    // Two-phase: if access denied (not empty slot), try card reset + retry once
+                    if (!likelyEmptySlot && !_driverCardRetried)
+                    {
+                        _driverCardRetried = true;
+                        var retryMsg = $"TWO-PHASE RETRY: {_currentFileType} access denied, resetting card state and retrying...";
+                        _logger.LogWarning("🔄 {Msg}", retryMsg);
+                        _trafficLogger?.LogWarning(retryMsg);
+                        _diagnostics.LogWarning(retryMsg);
+
+                        await TryResetCardState();
+                        _fileBuffer.Clear();
+                        _currentSequenceNumber = 0;
+                        _diagnostics.StartFileTimer(_currentFileType);
+                        await RequestFileAsync(stream, _currentFileType);
+                        return;
+                    }
+
+                    // Stop file timer with detailed failure reason
+                    _diagnostics.StopFileTimer(_currentFileType, _fileBuffer.Count, false,
+                        $"{diagReason}: {errorDesc}");
+                    _driverCardRetried = false;
+                    await RequestNextFileAsync(stream);
+                    return;
+                }
+
+                // Check if this is an auth/access error (0x02:0x06) and we can retry with Gen1 TRTP
+                bool isVuFile = !isDriverCard &&
                                 _currentFileType != DddFileType.InterfaceVersion;
                 bool canRetryGen1 = isAuthError && isVuFile && !_retryingWithGen1 &&
                                     _vuGeneration != VuGeneration.Gen1;
@@ -1319,6 +1377,7 @@ public class DddSession
                     $"Error during download: {errorDesc}");
 
                 _retryingWithGen1 = false; // reset for next file
+                _driverCardRetried = false;
                 _logger.LogWarning("⚠️ Error downloading {Type}, skipping", _currentFileType);
                 await RequestNextFileAsync(stream);
             }
