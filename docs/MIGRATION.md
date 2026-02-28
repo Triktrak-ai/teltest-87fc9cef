@@ -1,6 +1,6 @@
-# Migracja TachoDDD Monitor — z Lovable na własny serwer
+# Migracja TachoDDD Monitor — instalacja TachoWebApi na Windows Server
 
-> **Cel dokumentu:** Krok po kroku przenieść część webową (frontend React + backend Supabase) z serwerów Lovable na Twój prywatny serwer, zachowując pełną funkcjonalność.
+> **Cel dokumentu:** Krok po kroku zainstalować backend ASP.NET Web API (`TachoWebApi`) na serwerze Windows, zastępując Lovable Cloud (Supabase) własnym lokalnym backendem z PostgreSQL, JWT auth, SignalR i plikowym storage.
 
 ---
 
@@ -8,671 +8,322 @@
 
 1. [Architektura obecna vs docelowa](#1-architektura-obecna-vs-docelowa)
 2. [Wymagania](#2-wymagania)
-3. [Krok 1 — Pobranie kodu źródłowego](#krok-1--pobranie-kodu-źródłowego)
-4. [Krok 2 — Własna instancja Supabase](#krok-2--własna-instancja-supabase)
-5. [Krok 3 — Migracja bazy danych](#krok-3--migracja-bazy-danych)
-6. [Krok 4 — Edge Functions → Deno / Node.js](#krok-4--edge-functions--deno--nodejs)
-7. [Krok 5 — Storage (session-logs)](#krok-5--storage-session-logs)
-8. [Krok 6 — Sekrety i zmienne środowiskowe](#krok-6--sekrety-i-zmienne-środowiskowe)
-9. [Krok 7 — Build i deploy frontendu](#krok-7--build-i-deploy-frontendu)
-10. [Krok 8 — Konfiguracja C# serwera](#krok-8--konfiguracja-c-serwera)
-11. [Krok 9 — Reverse proxy (Nginx/Caddy)](#krok-9--reverse-proxy-nginxcaddy)
-12. [Krok 10 — DNS i SSL](#krok-10--dns-i-ssl)
-13. [Krok 11 — Weryfikacja](#krok-11--weryfikacja)
-14. [Diagram docelowej architektury](#diagram-docelowej-architektury)
+3. [Krok 1 — Instalacja PostgreSQL](#krok-1--instalacja-postgresql)
+4. [Krok 2 — Pobranie kodu źródłowego](#krok-2--pobranie-kodu-źródłowego)
+5. [Krok 3 — Konfiguracja TachoWebApi](#krok-3--konfiguracja-tachowebapi)
+6. [Krok 4 — Migracja bazy danych (EF Core)](#krok-4--migracja-bazy-danych-ef-core)
+7. [Krok 5 — Pierwsze uruchomienie i test](#krok-5--pierwsze-uruchomienie-i-test)
+8. [Krok 6 — Tworzenie pierwszego admina](#krok-6--tworzenie-pierwszego-admina)
+9. [Krok 7 — Konfiguracja TachoDddServer](#krok-7--konfiguracja-tachodddserver)
+10. [Krok 8 — Build i deploy frontendu](#krok-8--build-i-deploy-frontendu)
+11. [Krok 9 — Instalacja jako Windows Service](#krok-9--instalacja-jako-windows-service)
+12. [Krok 10 — Reverse proxy (IIS / Caddy)](#krok-10--reverse-proxy-iis--caddy)
+13. [Krok 11 — SSL i firewall](#krok-11--ssl-i-firewall)
+14. [Krok 12 — Weryfikacja](#krok-12--weryfikacja)
+15. [Krok 13 — Backup bazy danych](#krok-13--backup-bazy-danych)
+16. [Diagram docelowej architektury](#diagram-docelowej-architektury)
+17. [FAQ](#faq)
 
 ---
 
 ## 1. Architektura obecna vs docelowa
 
-### Obecna (Lovable)
+### Obecna (Lovable Cloud)
 
 ```
-┌─────────────────────────────────────────────────┐
-│ Lovable Cloud                                   │
-│  ├─ Frontend React (hosting Lovable)            │
-│  ├─ Supabase (baza danych, auth, storage)       │
-│  └─ Edge Functions (Deno Deploy)                │
-│     ├─ report-session                           │
-│     ├─ check-download                           │
-│     ├─ upload-session-log                       │
-│     ├─ reset-download-schedule                  │
-│     ├─ toggle-download-block                    │
-│     └─ create-user                              │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│ Lovable Cloud                                │
+│  ├─ Frontend React (hosting Lovable)         │
+│  ├─ Supabase (baza, auth, storage, realtime) │
+│  └─ Edge Functions (Deno)                    │
+└──────────────────────────────────────────────┘
          ▲                          ▲
-         │ HTTPS                    │ HTTPS (API)
-    Przeglądarka              TachoDddServer (C#)
-    użytkownika               na Twoim VPS
+    Przeglądarka              TachoDddServer
 ```
 
-### Docelowa (Twój serwer)
+### Docelowa (Twój Windows Server)
 
 ```
-┌─────────────────────────────────────────────────┐
-│ Twój VPS / serwer                               │
-│  ├─ Nginx reverse proxy (port 80/443)           │
-│  │   ├─ / → Frontend (pliki statyczne)          │
-│  │   └─ /functions/v1/* → Supabase Edge Func.   │
-│  ├─ Supabase self-hosted (Docker)               │
-│  │   ├─ PostgreSQL (port 5432)                  │
-│  │   ├─ GoTrue (auth, port 9999)                │
-│  │   ├─ PostgREST (API, port 3000)              │
-│  │   ├─ Storage API (port 5000)                 │
-│  │   └─ Edge Functions (Deno, port 8000)        │
-│  ├─ TachoDddServer (port 5200)                  │
-│  └─ CardBridge ← ngrok ← Laptop                │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ Windows Server 2025 (OVH VPS)                            │
+│                                                          │
+│  ├─ IIS / Caddy (reverse proxy, port 80/443)             │
+│  │   ├─ /              → Frontend React (pliki statyczne)│
+│  │   └─ /api/*, /hubs/ → TachoWebApi (Kestrel :5100)    │
+│  │                                                       │
+│  ├─ TachoWebApi (.NET 8, port 5100)                      │
+│  │   ├─ JWT Auth (rejestracja, login, refresh)           │
+│  │   ├─ REST API (sesje, urządzenia, harmonogram)        │
+│  │   ├─ SignalR Hub /hubs/dashboard (realtime)           │
+│  │   ├─ File Storage (C:\TachoDDD\SessionLogs\)          │
+│  │   └─ PostgreSQL (Npgsql / EF Core)                   │
+│  │                                                       │
+│  ├─ TachoDddServer (.NET 8, port 5200 TCP)               │
+│  │   └─ raportuje do TachoWebApi /api/report-session     │
+│  │                                                       │
+│  └─ PostgreSQL 16 (port 5432)                            │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## 2. Wymagania
 
-| Komponent | Minimalne wymagania |
-|-----------|-------------------|
-| **OS** | Linux (Ubuntu 22.04+) lub Windows Server 2025 |
-| **Docker** | Docker Engine 24+ i Docker Compose v2 |
-| **RAM** | min. 4 GB (Supabase self-hosted potrzebuje ~2 GB) |
-| **Dysk** | min. 20 GB wolnego miejsca |
+| Komponent | Wymaganie |
+|-----------|-----------|
+| **OS** | Windows Server 2019+ (testowane na 2025) |
+| **.NET** | .NET 8 Runtime (na serwerze), .NET 8 SDK (do kompilacji) |
+| **PostgreSQL** | 15+ (zalecany 16) |
 | **Node.js** | 18+ (do budowania frontendu) |
-| **Deno** | 1.40+ (do Edge Functions, opcjonalnie) |
-| **Domena** | Opcjonalnie, do SSL i ładnego adresu |
+| **RAM** | min. 2 GB wolnego |
+| **Dysk** | min. 10 GB wolnego |
+| **Porty** | 5100 (API), 5200 (TCP urządzenia), 80/443 (web) |
 
 ---
 
-## Krok 1 — Pobranie kodu źródłowego
+## Krok 1 — Instalacja PostgreSQL
 
-### Opcja A: GitHub (zalecana)
+### 1.1. Pobranie i instalacja
 
-Jeśli projekt jest połączony z GitHub:
+1. Pobierz instalator z https://www.postgresql.org/download/windows/
+2. Uruchom instalator, zainstaluj z domyślnymi ustawieniami
+3. Zapamiętaj hasło użytkownika `postgres`
 
-```bash
+### 1.2. Utworzenie bazy i użytkownika
+
+Otwórz **pgAdmin** lub **psql** (w terminalu PowerShell):
+
+```powershell
+# Uruchom psql jako użytkownik postgres
+& "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres
+```
+
+```sql
+-- Utwórz użytkownika aplikacji
+CREATE USER tachoddd WITH PASSWORD 'TWOJE_SILNE_HASLO';
+
+-- Utwórz bazę danych
+CREATE DATABASE tachoddd OWNER tachoddd;
+
+-- Nadaj uprawnienia
+GRANT ALL PRIVILEGES ON DATABASE tachoddd TO tachoddd;
+
+-- Połącz się z nową bazą i nadaj uprawnienia do schema public
+\c tachoddd
+GRANT ALL ON SCHEMA public TO tachoddd;
+
+\q
+```
+
+### 1.3. Weryfikacja połączenia
+
+```powershell
+& "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U tachoddd -d tachoddd -h localhost
+# Powinno się połączyć bez błędów
+\q
+```
+
+---
+
+## Krok 2 — Pobranie kodu źródłowego
+
+```powershell
+# Sklonuj repozytorium
 git clone https://github.com/TWOJ_USER/TWOJ_REPO.git
 cd TWOJ_REPO
 ```
 
-### Opcja B: Eksport z Lovable
-
-1. W Lovable → Settings → GitHub → Connect & Create Repository
-2. Po synchronizacji sklonuj repozytorium jak wyżej
-
 ### Struktura po pobraniu
 
 ```
-├── src/                    ← Frontend React
-├── supabase/
-│   ├── functions/          ← Edge Functions (6 funkcji)
-│   ├── migrations/         ← Migracje SQL
-│   └── config.toml         ← Konfiguracja Supabase
-├── csharp/                 ← Serwer C# (już na Twoim serwerze)
-├── public/                 ← Zasoby statyczne
+├── src/                         ← Frontend React
+├── csharp/
+│   ├── TachoWebApi/             ← Backend ASP.NET Web API ← TO INSTALUJEMY
+│   ├── TachoDddServer/          ← Serwer TCP (już działa)
+│   └── CardBridgeService/       ← Serwis czytnika kart
+├── public/
+├── docs/
 ├── package.json
-├── vite.config.ts
-└── docs/
+└── vite.config.ts
 ```
 
 ---
 
-## Krok 2 — Własna instancja Supabase
-
-### Opcja A: Supabase Self-Hosted (Docker) — pełna kontrola
-
-```bash
-# Sklonuj oficjalny Supabase Docker setup
-git clone --depth 1 https://github.com/supabase/supabase
-cd supabase/docker
-
-# Skopiuj i skonfiguruj plik .env
-cp .env.example .env
-```
-
-Edytuj `.env` w katalogu `supabase/docker`:
-
-```env
-# WAŻNE: Zmień te wartości!
-POSTGRES_PASSWORD=twoje_silne_haslo_db
-JWT_SECRET=twoj_jwt_secret_min_32_znaki_losowe
-ANON_KEY=wygeneruj_nowy_anon_key
-SERVICE_ROLE_KEY=wygeneruj_nowy_service_role_key
-
-# URL twojego serwera
-SITE_URL=https://tachoddd.twojadomena.pl
-API_EXTERNAL_URL=https://api.tachoddd.twojadomena.pl
-
-# SMTP do wysyłki emaili (weryfikacja, reset hasła)
-SMTP_HOST=smtp.twojprovider.pl
-SMTP_PORT=587
-SMTP_USER=noreply@twojadomena.pl
-SMTP_PASS=haslo_smtp
-SMTP_SENDER_NAME=TachoDDD
-```
-
-#### Generowanie kluczy JWT
-
-```bash
-# Zainstaluj narzędzie supabase CLI
-npm install -g supabase
-
-# Lub wygeneruj klucze ręcznie:
-# 1. Wygeneruj JWT_SECRET (min. 32 znaki)
-openssl rand -base64 32
-
-# 2. Wygeneruj ANON_KEY i SERVICE_ROLE_KEY
-# Użyj https://supabase.com/docs/guides/self-hosting#api-keys
-# lub narzędzia: https://jwt.io/
-# Payload dla ANON_KEY:
-# {
-#   "role": "anon",
-#   "iss": "supabase",
-#   "iat": 1700000000,
-#   "exp": 2000000000
-# }
-# Payload dla SERVICE_ROLE_KEY:
-# {
-#   "role": "service_role",
-#   "iss": "supabase",
-#   "iat": 1700000000,
-#   "exp": 2000000000
-# }
-```
-
-Uruchom Supabase:
-
-```bash
-docker compose up -d
-```
-
-Supabase będzie dostępny na:
-- **Studio (panel admina):** `http://localhost:8000`
-- **API (PostgREST):** `http://localhost:3000`
-- **Auth (GoTrue):** `http://localhost:9999`
-- **Storage:** `http://localhost:5000`
-- **Edge Functions:** `http://localhost:8000/functions/v1/`
-
-### Opcja B: Supabase Cloud (własne konto)
-
-1. Załóż konto na https://supabase.com
-2. Utwórz nowy projekt
-3. Zapisz: `Project URL`, `anon key`, `service_role key`
-4. Pomiń Docker — Supabase hostuje za Ciebie
-
----
-
-## Krok 3 — Migracja bazy danych
-
-### 3.1. Schemat tabel
-
-Utwórz poniższy SQL w swojej nowej bazie (Supabase Studio → SQL Editor lub `psql`):
-
-```sql
--- ═══════════════════════════════════════════════
--- ENUM
--- ═══════════════════════════════════════════════
-CREATE TYPE public.app_role AS ENUM ('admin', 'user');
-
--- ═══════════════════════════════════════════════
--- TABELE
--- ═══════════════════════════════════════════════
-
--- Ustawienia aplikacji
-CREATE TABLE public.app_settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL DEFAULT '',
-    updated_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Profile użytkowników
-CREATE TABLE public.profiles (
-    id UUID PRIMARY KEY, -- references auth.users(id)
-    full_name TEXT NOT NULL DEFAULT '',
-    phone TEXT,
-    approved BOOLEAN NOT NULL DEFAULT false,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- Role użytkowników
-CREATE TABLE public.user_roles (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL, -- references auth.users(id)
-    role app_role NOT NULL
-);
-
--- Urządzenia użytkowników
-CREATE TABLE public.user_devices (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL,
-    imei TEXT NOT NULL,
-    label TEXT,
-    vehicle_plate TEXT,
-    sim_number TEXT,
-    comment TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- Sesje DDD
-CREATE TABLE public.sessions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    imei TEXT NOT NULL,
-    vehicle_plate TEXT,
-    status TEXT NOT NULL DEFAULT 'connecting',
-    generation TEXT DEFAULT 'Unknown',
-    progress INTEGER DEFAULT 0,
-    files_downloaded INTEGER DEFAULT 0,
-    total_files INTEGER DEFAULT 0,
-    current_file TEXT,
-    error_code TEXT,
-    error_message TEXT,
-    bytes_downloaded BIGINT DEFAULT 0,
-    apdu_exchanges INTEGER DEFAULT 0,
-    crc_errors INTEGER DEFAULT 0,
-    card_generation TEXT,
-    started_at TIMESTAMPTZ DEFAULT now(),
-    completed_at TIMESTAMPTZ,
-    last_activity TIMESTAMPTZ,
-    log_uploaded BOOLEAN DEFAULT false,
-    created_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Zdarzenia sesji
-CREATE TABLE public.session_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    session_id UUID REFERENCES public.sessions(id),
-    imei TEXT NOT NULL,
-    type TEXT NOT NULL DEFAULT 'info',
-    message TEXT NOT NULL,
-    context TEXT,
-    created_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Harmonogram pobierania
-CREATE TABLE public.download_schedule (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    imei TEXT NOT NULL UNIQUE,
-    last_success_at TIMESTAMPTZ,
-    last_attempt_at TIMESTAMPTZ,
-    status TEXT NOT NULL DEFAULT 'pending',
-    last_error TEXT,
-    attempts_today INTEGER DEFAULT 0,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
-);
-
--- ═══════════════════════════════════════════════
--- FUNKCJE
--- ═══════════════════════════════════════════════
-
-CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public' AS $$
-BEGIN
-  INSERT INTO public.profiles (id, full_name, phone)
-  VALUES (
-    NEW.id,
-    COALESCE(NEW.raw_user_meta_data ->> 'full_name', ''),
-    NEW.raw_user_meta_data ->> 'phone'
-  );
-  RETURN NEW;
-END;
-$$;
-
--- Trigger: auto-tworzenie profilu po rejestracji
-CREATE TRIGGER on_auth_user_created
-  AFTER INSERT ON auth.users
-  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
-
-CREATE OR REPLACE FUNCTION public.has_role(_user_id UUID, _role app_role)
-RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER SET search_path TO 'public' AS $$
-  SELECT EXISTS (
-    SELECT 1 FROM public.user_roles
-    WHERE user_id = _user_id AND role = _role
-  )
-$$;
-
-CREATE OR REPLACE FUNCTION public.is_approved(_user_id UUID)
-RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER SET search_path TO 'public' AS $$
-  SELECT COALESCE(
-    (SELECT approved FROM public.profiles WHERE id = _user_id),
-    false
-  )
-$$;
-
-CREATE OR REPLACE FUNCTION public.get_user_imeis(_user_id UUID)
-RETURNS SETOF TEXT LANGUAGE sql STABLE SECURITY DEFINER SET search_path TO 'public' AS $$
-  SELECT imei FROM public.user_devices WHERE user_id = _user_id
-$$;
-
-CREATE OR REPLACE FUNCTION public.increment_attempts_today(p_imei TEXT)
-RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public' AS $$
-BEGIN
-  UPDATE download_schedule
-  SET attempts_today = COALESCE(attempts_today, 0) + 1,
-      updated_at = now()
-  WHERE imei = p_imei;
-END;
-$$;
-
--- ═══════════════════════════════════════════════
--- RLS (Row Level Security)
--- ═══════════════════════════════════════════════
-
-ALTER TABLE public.app_settings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.user_roles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.user_devices ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.sessions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.session_events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.download_schedule ENABLE ROW LEVEL SECURITY;
-
--- app_settings: publiczny odczyt
-CREATE POLICY "Allow anonymous read app_settings" ON public.app_settings
-  FOR SELECT TO anon, authenticated USING (true);
-
--- profiles: użytkownik widzi swój, admin widzi wszystkie
-CREATE POLICY "Users read own profile" ON public.profiles
-  FOR SELECT TO authenticated
-  USING (id = auth.uid() OR has_role(auth.uid(), 'admin'));
-
-CREATE POLICY "Users update own profile" ON public.profiles
-  FOR UPDATE TO authenticated
-  USING (id = auth.uid()) WITH CHECK (id = auth.uid());
-
--- user_roles
-CREATE POLICY "Users read own roles" ON public.user_roles
-  FOR SELECT TO authenticated USING (user_id = auth.uid());
-
-CREATE POLICY "Admin manages roles" ON public.user_roles
-  FOR ALL TO authenticated USING (has_role(auth.uid(), 'admin'));
-
--- user_devices
-CREATE POLICY "Users manage own devices" ON public.user_devices
-  FOR ALL TO authenticated USING (user_id = auth.uid());
-
-CREATE POLICY "Admin manages all devices" ON public.user_devices
-  FOR ALL TO authenticated USING (has_role(auth.uid(), 'admin'));
-
--- sessions: admin widzi wszystko, user widzi swoje IMEI
-CREATE POLICY "Authenticated read sessions" ON public.sessions
-  FOR SELECT TO authenticated
-  USING (
-    has_role(auth.uid(), 'admin')
-    OR (is_approved(auth.uid()) AND imei IN (SELECT get_user_imeis(auth.uid())))
-  );
-
--- session_events
-CREATE POLICY "Authenticated read session_events" ON public.session_events
-  FOR SELECT TO authenticated
-  USING (
-    has_role(auth.uid(), 'admin')
-    OR (is_approved(auth.uid()) AND imei IN (SELECT get_user_imeis(auth.uid())))
-  );
-
--- download_schedule
-CREATE POLICY "Authenticated read download_schedule" ON public.download_schedule
-  FOR SELECT TO authenticated
-  USING (
-    has_role(auth.uid(), 'admin')
-    OR (is_approved(auth.uid()) AND imei IN (SELECT get_user_imeis(auth.uid())))
-  );
-
--- ═══════════════════════════════════════════════
--- STORAGE
--- ═══════════════════════════════════════════════
--- Utwórz bucket "session-logs" jako publiczny
--- (w Supabase Studio → Storage → New Bucket → "session-logs", public=true)
--- Lub via SQL:
-INSERT INTO storage.buckets (id, name, public) VALUES ('session-logs', 'session-logs', true)
-ON CONFLICT (id) DO NOTHING;
-```
-
-### 3.2. Migracja istniejących danych
-
-Jeśli chcesz przenieść dane z obecnej bazy Lovable Cloud:
-
-```bash
-# Eksportuj dane z obecnej bazy (w Lovable Cloud → Database → Export)
-# Lub jeśli masz dostęp do connection string:
-
-# Eksport
-pg_dump --data-only --no-owner --no-privileges \
-  -t public.sessions \
-  -t public.session_events \
-  -t public.download_schedule \
-  -t public.user_devices \
-  -t public.profiles \
-  -t public.user_roles \
-  -t public.app_settings \
-  "postgresql://postgres:PASSWORD@db.exyjnmtxacpydoeaqcti.supabase.co:5432/postgres" \
-  > data_export.sql
-
-# Import do nowej bazy
-psql "postgresql://postgres:TWOJE_HASLO@localhost:5432/postgres" < data_export.sql
-```
-
-### 3.3. Migracja użytkowników (auth.users)
-
-**UWAGA:** Tabela `auth.users` jest zarządzana przez GoTrue. Musisz:
-
-1. Wyeksportować użytkowników z obecnej bazy:
-```sql
--- Na obecnej bazie (Lovable Cloud)
-SELECT id, email, encrypted_password, raw_user_meta_data, created_at
-FROM auth.users;
-```
-
-2. Zaimportować do nowej bazy:
-```sql
--- Na nowej bazie
-INSERT INTO auth.users (
-  instance_id, id, aud, role, email, encrypted_password,
-  raw_user_meta_data, created_at, updated_at,
-  email_confirmed_at, confirmation_sent_at
-)
-VALUES (
-  '00000000-0000-0000-0000-000000000000',
-  'UUID_USERA',
-  'authenticated',
-  'authenticated',
-  'email@example.com',
-  '$2a$10$HASH_Z_EKSPORTU',
-  '{"full_name":"Jan Kowalski"}'::jsonb,
-  now(), now(), now(), now()
-);
-```
-
-Lub prościej — po uruchomieniu nowej instancji utwórz użytkowników na nowo przez formularz rejestracji lub Edge Function `create-user`.
-
----
-
-## Krok 4 — Edge Functions → Deno / Node.js
-
-Masz 6 Edge Functions do przeniesienia. Masz **3 opcje**:
-
-### Opcja A: Supabase CLI (self-hosted z Edge Functions)
-
-Jeśli używasz Supabase self-hosted, Edge Functions działają przez `supabase functions serve`:
-
-```bash
-# Zainstaluj Supabase CLI
-npm install -g supabase
-
-# W katalogu projektu
-supabase functions serve --env-file ./supabase/.env.local
-```
-
-Plik `supabase/.env.local`:
-```env
-SUPABASE_URL=http://localhost:8000
-SUPABASE_ANON_KEY=twoj_anon_key
-SUPABASE_SERVICE_ROLE_KEY=twoj_service_role_key
-REPORT_API_KEY=twoj_report_api_key
-```
-
-### Opcja B: Supabase Cloud (nowe konto)
-
-```bash
-# Linkuj do nowego projektu
-supabase link --project-ref TWOJ_NOWY_PROJECT_ID
-
-# Wgraj sekrety
-supabase secrets set REPORT_API_KEY=twoj_klucz
-
-# Deploy wszystkich funkcji
-supabase functions deploy report-session
-supabase functions deploy check-download
-supabase functions deploy upload-session-log
-supabase functions deploy reset-download-schedule
-supabase functions deploy toggle-download-block
-supabase functions deploy create-user
-```
-
-### Opcja C: Standalone Deno server (bez Supabase Functions)
-
-Jeśli nie chcesz używać Supabase Edge Functions, możesz uruchomić te same pliki TypeScript jako standalone Deno server:
-
-```bash
-# Zainstaluj Deno
-curl -fsSL https://deno.land/install.sh | sh
-
-# Uruchom każdą funkcję osobno lub jako router
-deno run --allow-net --allow-env supabase/functions/report-session/index.ts
-```
-
-Ale łatwiej jest stworzić jeden router:
-
-```typescript
-// server.ts — Deno HTTP router dla wszystkich funkcji
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-
-// Importuj handlery z istniejących plików
-// (wymagają minimalnej adaptacji — zamień Deno.serve na export)
-
-serve(async (req) => {
-  const url = new URL(req.url);
-  const path = url.pathname;
-
-  if (path.startsWith("/functions/v1/report-session")) {
-    // forward do report-session handler
+## Krok 3 — Konfiguracja TachoWebApi
+
+### 3.1. Edytuj `csharp/TachoWebApi/appsettings.json`
+
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Host=localhost;Port=5432;Database=tachoddd;Username=tachoddd;Password=TWOJE_SILNE_HASLO"
+  },
+  "Jwt": {
+    "Key": "WYGENERUJ_MIN_32_ZNAKOWY_LOSOWY_SEKRET_JWT",
+    "Issuer": "TachoWebApi",
+    "Audience": "TachoDDD",
+    "AccessTokenMinutes": 60,
+    "RefreshTokenDays": 7
+  },
+  "ApiKey": "WYGENERUJ_LOSOWY_KLUCZ_API_DLA_SERWERA",
+  "FileStorage": {
+    "SessionLogsDir": "C:\\TachoDDD\\SessionLogs"
+  },
+  "Email": {
+    "Enabled": false,
+    "SmtpHost": "smtp.example.com",
+    "SmtpPort": 587,
+    "SmtpUser": "",
+    "SmtpPass": "",
+    "FromAddress": "noreply@example.com",
+    "FromName": "TachoDDD"
+  },
+  "Cors": {
+    "AllowedOrigins": [
+      "http://localhost:5173",
+      "https://tachoddd.twojadomena.pl"
+    ]
+  },
+  "Urls": "http://0.0.0.0:5100",
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information"
+    }
   }
-  // ... analogicznie dla pozostałych
-}, { port: 8000 });
+}
 ```
 
-### Lista Edge Functions i ich zastosowanie
+### 3.2. Co zmienić
 
-| Funkcja | Wywołuje | Metoda | Auth |
-|---------|----------|--------|------|
-| `report-session` | TachoDddServer (C#) | POST | x-api-key (REPORT_API_KEY) |
-| `check-download` | TachoDddServer (C#) | GET | x-api-key (REPORT_API_KEY) |
-| `upload-session-log` | TachoDddServer (C#) | POST (multipart) | x-api-key (REPORT_API_KEY) |
-| `reset-download-schedule` | Dashboard (frontend) | POST | Bearer JWT lub x-api-key |
-| `toggle-download-block` | Dashboard (frontend) | POST | Bearer JWT |
-| `create-user` | Dashboard (frontend) | POST | Bearer JWT (admin) |
+| Pole | Opis | Jak wygenerować |
+|------|------|-----------------|
+| `ConnectionStrings:DefaultConnection` | Connection string do PostgreSQL | Wstaw hasło z kroku 1.2 |
+| `Jwt:Key` | Sekret JWT (min. 32 znaki) | PowerShell: `[Convert]::ToBase64String((1..32 \| %{Get-Random -Max 256}) -as [byte[]])` |
+| `ApiKey` | Klucz API dla TachoDddServer | PowerShell: `[guid]::NewGuid().ToString("N")` |
+| `Cors:AllowedOrigins` | Dozwolone originy frontendu | Adres Twojej domeny |
+| `Email:*` | Ustawienia SMTP (opcjonalne) | Skonfiguruj gdy chcesz wysyłać e-maile (reset hasła) |
 
----
+### 3.3. Utworzenie katalogów
 
-## Krok 5 — Storage (session-logs)
-
-### Migracja plików z obecnego Storage
-
-```bash
-# Listuj i pobierz pliki z obecnego bucketa
-# Użyj Supabase JS lub curl:
-
-curl -H "Authorization: Bearer SERVICE_ROLE_KEY" \
-  "https://exyjnmtxacpydoeaqcti.supabase.co/storage/v1/object/list/session-logs" \
-  | jq -r '.[].name'
-
-# Pobierz każdy plik i wgraj do nowego Storage
-# (lub pomiń jeśli logi historyczne nie są potrzebne)
-```
-
-### Konfiguracja Storage na nowej instancji
-
-Bucket `session-logs` musi być publiczny (ustawione w SQL z kroku 3.1).
-
----
-
-## Krok 6 — Sekrety i zmienne środowiskowe
-
-### 6.1. Sekrety (Edge Functions / backend)
-
-| Sekret | Opis | Gdzie ustawić |
-|--------|------|---------------|
-| `SUPABASE_URL` | URL Twojej instancji Supabase | Auto (self-hosted) lub `.env.local` |
-| `SUPABASE_ANON_KEY` | Klucz anonimowy | Wygenerowany w kroku 2 |
-| `SUPABASE_SERVICE_ROLE_KEY` | Klucz service role | Wygenerowany w kroku 2 |
-| `REPORT_API_KEY` | Klucz API dla C# serwera | Wygeneruj: `openssl rand -hex 32` |
-
-### 6.2. Zmienne frontendu
-
-Utwórz plik `.env` w katalogu projektu:
-
-```env
-VITE_SUPABASE_URL=https://api.tachoddd.twojadomena.pl
-VITE_SUPABASE_PUBLISHABLE_KEY=twoj_nowy_anon_key
-VITE_SUPABASE_PROJECT_ID=twoj_project_id
-```
-
-**WAŻNE:** Klient Supabase w `src/integrations/supabase/client.ts` czyta te zmienne automatycznie. Nie musisz edytować tego pliku.
-
----
-
-## Krok 7 — Build i deploy frontendu
-
-### 7.1. Budowanie
-
-```bash
-# Zainstaluj zależności
-npm install
-
-# Zbuduj produkcyjną wersję
-npm run build
-```
-
-Wynik: katalog `dist/` z plikami statycznymi.
-
-### 7.2. Usunięcie zależności Lovable (opcjonalne)
-
-Edytuj `vite.config.ts` — usuń `lovable-tagger`:
-
-```typescript
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react-swc";
-import path from "path";
-
-export default defineConfig({
-  server: {
-    host: "::",
-    port: 8080,
-  },
-  plugins: [react()],
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-    },
-  },
-});
-```
-
-Usuń pakiet:
-```bash
-npm uninstall lovable-tagger
-```
-
-### 7.3. Deploy plików statycznych
-
-Skopiuj zawartość `dist/` na serwer:
-
-```bash
-scp -r dist/* user@twoj-serwer:/var/www/tachoddd/
+```powershell
+# Katalog na logi sesji
+New-Item -ItemType Directory -Force -Path "C:\TachoDDD\SessionLogs"
 ```
 
 ---
 
-## Krok 8 — Konfiguracja C# serwera
+## Krok 4 — Migracja bazy danych (EF Core)
 
-Zaktualizuj `appsettings.json` na serwerze C#:
+### 4.1. Zainstaluj .NET SDK 8 (jeśli nie masz)
+
+Pobierz z https://dotnet.microsoft.com/download/dotnet/8.0 i zainstaluj.
+
+### 4.2. Zainstaluj narzędzie EF Core
+
+```powershell
+dotnet tool install --global dotnet-ef
+```
+
+### 4.3. Utwórz migrację i zastosuj schemat
+
+```powershell
+cd csharp\TachoWebApi
+
+# Utwórz migrację (generuje pliki C# z definicją schematu)
+dotnet ef migrations add Initial
+
+# Zastosuj migrację — tworzy tabele w bazie
+dotnet ef database update
+```
+
+### 4.4. Weryfikacja tabel
+
+```powershell
+& "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U tachoddd -d tachoddd -c "\dt"
+```
+
+Powinny pojawić się tabele:
+- `auth_users`
+- `profiles`
+- `user_roles`
+- `user_devices`
+- `sessions`
+- `session_events`
+- `download_schedules`
+- `app_settings`
+- `__EFMigrationsHistory`
+
+---
+
+## Krok 5 — Pierwsze uruchomienie i test
+
+### 5.1. Uruchomienie
+
+```powershell
+cd csharp\TachoWebApi
+dotnet run
+```
+
+Powinno wyświetlić:
+```
+info: Microsoft.Hosting.Lifetime[14]
+      Now listening on: http://0.0.0.0:5100
+```
+
+### 5.2. Test endpointów
+
+W nowym oknie PowerShell:
+
+```powershell
+# Test health — powinno zwrócić ustawienia aplikacji (pusta lista [])
+Invoke-RestMethod -Uri "http://localhost:5100/api/settings" -Method Get
+
+# Test rejestracji
+$body = @{
+    email = "admin@example.com"
+    password = "MojeSilneHaslo123!"
+    full_name = "Administrator"
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri "http://localhost:5100/api/auth/signup" -Method Post `
+  -ContentType "application/json" -Body $body
+```
+
+### 5.3. Zatrzymanie
+
+`Ctrl+C` w konsoli.
+
+---
+
+## Krok 6 — Tworzenie pierwszego admina
+
+Po rejestracji pierwszego użytkownika (krok 5.2), nadaj mu rolę admina bezpośrednio w bazie:
+
+```powershell
+& "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U tachoddd -d tachoddd
+```
+
+```sql
+-- Znajdź ID użytkownika
+SELECT id, email FROM auth_users;
+
+-- Nadaj rolę admin (wstaw UUID z powyższego zapytania)
+INSERT INTO user_roles (id, user_id, role)
+VALUES (gen_random_uuid(), 'WSTAW_UUID_USERA', 'admin');
+
+-- Zatwierdź konto (aby mógł się logować)
+UPDATE profiles SET approved = true WHERE id = 'WSTAW_UUID_USERA';
+
+\q
+```
+
+Kolejnych użytkowników admin może tworzyć z poziomu dashboardu (panel admina → Utwórz użytkownika).
+
+---
+
+## Krok 7 — Konfiguracja TachoDddServer
+
+Zaktualizuj `csharp/TachoDddServer/appsettings.json` — ustaw `WebReport.Url` na lokalny TachoWebApi:
 
 ```json
 {
@@ -683,140 +334,295 @@ Zaktualizuj `appsettings.json` na serwerze C#:
   "LogTraffic": true,
   "WebReport": {
     "Enabled": true,
-    "Url": "https://api.tachoddd.twojadomena.pl/functions/v1/report-session",
-    "ApiKey": "TWOJ_NOWY_REPORT_API_KEY"
+    "Url": "http://localhost:5100/api/report-session",
+    "ApiKey": "TEN_SAM_KLUCZ_CO_W_TACHOWEBAPI_APPSETTINGS"
   }
 }
 ```
 
-**Zmienić:**
-- `WebReport.Url` — na adres Twojej nowej instancji Supabase + ścieżka Edge Function
-- `WebReport.ApiKey` — na nowy `REPORT_API_KEY` (ten sam co w sekretach Edge Functions)
+**WAŻNE:** `ApiKey` musi być identyczny jak `ApiKey` w `TachoWebApi/appsettings.json`.
 
 ---
 
-## Krok 9 — Reverse proxy (Nginx/Caddy)
+## Krok 8 — Build i deploy frontendu
 
-### Nginx
+### 8.1. Konfiguracja zmiennych środowiskowych
 
-```nginx
-# /etc/nginx/sites-available/tachoddd
-server {
-    listen 80;
-    server_name tachoddd.twojadomena.pl;
+Utwórz plik `.env` w katalogu głównym projektu:
 
-    # Frontend - pliki statyczne
-    root /var/www/tachoddd;
-    index index.html;
-
-    # SPA fallback
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-
-    # Proxy do Supabase API (jeśli self-hosted na tym samym serwerze)
-    location /rest/ {
-        proxy_pass http://localhost:3000/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-
-    location /auth/ {
-        proxy_pass http://localhost:9999/;
-        proxy_set_header Host $host;
-    }
-
-    location /storage/ {
-        proxy_pass http://localhost:5000/;
-        proxy_set_header Host $host;
-    }
-
-    location /functions/ {
-        proxy_pass http://localhost:8000/functions/;
-        proxy_set_header Host $host;
-    }
-}
+```env
+VITE_API_BASE_URL=https://tachoddd.twojadomena.pl
 ```
 
-### Caddy (prostsza alternatywa z auto-SSL)
+> Jeśli testujesz lokalnie, użyj `VITE_API_BASE_URL=http://localhost:5100`
+
+### 8.2. Budowanie
+
+```powershell
+# W katalogu głównym projektu
+npm install
+npm run build
+```
+
+Wynik: katalog `dist/` z plikami statycznymi.
+
+### 8.3. Deploy plików statycznych
+
+Skopiuj zawartość `dist/` do katalogu serwera web:
+
+```powershell
+# Przykład dla IIS
+Copy-Item -Recurse -Force dist\* C:\inetpub\wwwroot\tachoddd\
+```
+
+---
+
+## Krok 9 — Instalacja jako Windows Service
+
+### 9.1. Publikacja TachoWebApi
+
+```powershell
+cd csharp\TachoWebApi
+dotnet publish -c Release -o C:\TachoDDD\WebApi
+```
+
+### 9.2. Rejestracja jako Windows Service
+
+```powershell
+# Utwórz serwis
+sc.exe create TachoWebApi `
+  binPath= "C:\TachoDDD\WebApi\TachoWebApi.exe" `
+  start= auto `
+  DisplayName= "TachoDDD Web API"
+
+# Ustaw opis
+sc.exe description TachoWebApi "Backend API dla TachoDDD Monitor (REST + SignalR + JWT)"
+
+# Uruchom serwis
+sc.exe start TachoWebApi
+```
+
+### 9.3. Analogicznie dla TachoDddServer
+
+```powershell
+cd csharp\TachoDddServer
+dotnet publish -c Release -o C:\TachoDDD\DddServer
+
+sc.exe create TachoDddServer `
+  binPath= "C:\TachoDDD\DddServer\TachoDddServer.exe" `
+  start= auto `
+  DisplayName= "TachoDDD TCP Server"
+
+sc.exe start TachoDddServer
+```
+
+### 9.4. Zarządzanie serwisami
+
+```powershell
+# Status
+sc.exe query TachoWebApi
+sc.exe query TachoDddServer
+
+# Restart
+sc.exe stop TachoWebApi && sc.exe start TachoWebApi
+
+# Logi (Event Viewer → Windows Logs → Application)
+# Lub skonfiguruj Serilog do logowania do pliku
+```
+
+---
+
+## Krok 10 — Reverse proxy (IIS / Caddy)
+
+### Opcja A: IIS z URL Rewrite + ARR
+
+1. Zainstaluj **URL Rewrite** i **Application Request Routing** (ARR) w IIS
+2. Utwórz stronę IIS `tachoddd.twojadomena.pl`
+3. Physical path: `C:\inetpub\wwwroot\tachoddd\` (pliki z `dist/`)
+
+Dodaj `web.config` do katalogu strony:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <system.webServer>
+    <!-- SPA fallback -->
+    <rewrite>
+      <rules>
+        <!-- Proxy /api/* do Kestrel -->
+        <rule name="API Proxy" stopProcessing="true">
+          <match url="^api/(.*)" />
+          <action type="Rewrite" url="http://localhost:5100/api/{R:1}" />
+        </rule>
+        <!-- Proxy /hubs/* do Kestrel (SignalR) -->
+        <rule name="SignalR Proxy" stopProcessing="true">
+          <match url="^hubs/(.*)" />
+          <action type="Rewrite" url="http://localhost:5100/hubs/{R:1}" />
+        </rule>
+        <!-- SPA: wszystko inne → index.html -->
+        <rule name="SPA Fallback" stopProcessing="true">
+          <match url=".*" />
+          <conditions logicalGrouping="MatchAll">
+            <add input="{REQUEST_FILENAME}" matchType="IsFile" negate="true" />
+            <add input="{REQUEST_FILENAME}" matchType="IsDirectory" negate="true" />
+          </conditions>
+          <action type="Rewrite" url="/index.html" />
+        </rule>
+      </rules>
+    </rewrite>
+    <!-- Włącz WebSocket dla SignalR -->
+    <webSocket enabled="true" />
+  </system.webServer>
+</configuration>
+```
+
+### Opcja B: Caddy (prostsze z auto-SSL)
+
+Pobierz Caddy z https://caddyserver.com/download (Windows amd64).
+
+Utwórz `Caddyfile`:
 
 ```
 tachoddd.twojadomena.pl {
-    root * /var/www/tachoddd
-    try_files {path} /index.html
-    file_server
+    # Proxy API i SignalR do Kestrel
+    handle /api/* {
+        reverse_proxy localhost:5100
+    }
+    handle /hubs/* {
+        reverse_proxy localhost:5100
+    }
 
-    handle_path /rest/* {
-        reverse_proxy localhost:3000
-    }
-    handle_path /auth/* {
-        reverse_proxy localhost:9999
-    }
-    handle_path /storage/* {
-        reverse_proxy localhost:5000
-    }
-    handle_path /functions/* {
-        reverse_proxy localhost:8000
+    # Frontend — pliki statyczne + SPA fallback
+    handle {
+        root * C:\inetpub\wwwroot\tachoddd
+        try_files {path} /index.html
+        file_server
     }
 }
 ```
 
----
-
-## Krok 10 — DNS i SSL
-
-### DNS
-
-Dodaj rekord A w panelu DNS Twojej domeny:
-
-```
-tachoddd.twojadomena.pl  →  A  →  IP_TWOJEGO_VPS
+Uruchom:
+```powershell
+caddy.exe run --config Caddyfile
 ```
 
-Jeśli używasz osobnej subdomeny dla API:
-```
-api.tachoddd.twojadomena.pl  →  A  →  IP_TWOJEGO_VPS
-```
-
-### SSL
-
-- **Caddy:** Automatyczny (Let's Encrypt)
-- **Nginx:** Użyj Certbot:
-
-```bash
-sudo apt install certbot python3-certbot-nginx
-sudo certbot --nginx -d tachoddd.twojadomena.pl
+Zainstaluj jako serwis:
+```powershell
+caddy.exe install --config C:\TachoDDD\Caddyfile
+sc.exe start caddy
 ```
 
 ---
 
-## Krok 11 — Weryfikacja
+## Krok 11 — SSL i firewall
+
+### 11.1. SSL
+
+- **Caddy:** Automatyczny certyfikat Let's Encrypt (wymaga portów 80 i 443 otwartych)
+- **IIS:** Użyj win-acme (https://www.win-acme.com/) do automatycznego SSL z Let's Encrypt
+
+```powershell
+# win-acme
+wacs.exe --target iis --siteid 1 --installation iis
+```
+
+### 11.2. Firewall
+
+```powershell
+# Otwórz porty w Windows Firewall
+netsh advfirewall firewall add rule name="HTTP" dir=in action=allow protocol=TCP localport=80
+netsh advfirewall firewall add rule name="HTTPS" dir=in action=allow protocol=TCP localport=443
+netsh advfirewall firewall add rule name="TachoDddServer TCP" dir=in action=allow protocol=TCP localport=5200
+
+# Port 5100 NIE otwieraj z zewnątrz — Kestrel powinien być dostępny tylko przez reverse proxy
+```
+
+### 11.3. Porty w panelu OVH
+
+W panelu OVH VPS sprawdź czy porty 80, 443 i 5200 są otwarte w firewallu zewnętrznym.
+
+---
+
+## Krok 12 — Weryfikacja
 
 ### Checklist
 
-- [ ] **Baza danych:** Tabele i funkcje istnieją (`\dt` w psql)
-- [ ] **Auth:** Można się zalogować i zarejestrować
-- [ ] **RLS:** Zwykły user widzi tylko swoje IMEI, admin widzi wszystko
-- [ ] **Edge Functions:** `curl -X POST https://TWOJ_URL/functions/v1/report-session -H "x-api-key: TWOJ_KEY" -d '{"session_id":"test","imei":"123"}'` → `{"ok":true}`
-- [ ] **Frontend:** Otwórz `https://tachoddd.twojadomena.pl` — dashboard się ładuje
-- [ ] **C# Server:** Sesja DDD raportuje do nowej bazy (sprawdź tabelę `sessions`)
-- [ ] **Storage:** Logi sesji uploadują się do bucketa `session-logs`
-- [ ] **HTTPS:** Certyfikat SSL jest ważny
+- [ ] **PostgreSQL:** `psql -U tachoddd -d tachoddd -c "\dt"` → lista tabel
+- [ ] **TachoWebApi uruchomiony:** `Invoke-RestMethod http://localhost:5100/api/settings` → `[]`
+- [ ] **Rejestracja:** POST `/api/auth/signup` → `{"access_token": "...", ...}`
+- [ ] **Logowanie:** POST `/api/auth/login` → JWT token
+- [ ] **Admin rola:** GET `/api/admin/users` z JWT → lista użytkowników
+- [ ] **Frontend:** `https://tachoddd.twojadomena.pl` → dashboard ładuje się
+- [ ] **SignalR:** Otwórz DevTools → Network → WS → `/hubs/dashboard` → connected
+- [ ] **TachoDddServer:** Sesja DDD raportuje do bazy (sprawdź `SELECT * FROM sessions;`)
+- [ ] **API Key:** `report-session` działa z x-api-key, zwraca 401 bez klucza
+- [ ] **SSL:** Certyfikat ważny (https://tachoddd.twojadomena.pl)
 
-### Testowanie Edge Functions
+### Testy endpointów
 
-```bash
-# report-session
-curl -X POST https://TWOJ_URL/functions/v1/report-session \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: TWOJ_REPORT_API_KEY" \
-  -d '{"session_id":"test-migration","imei":"000000000000000","status":"connecting"}'
+```powershell
+# Login
+$login = Invoke-RestMethod -Uri "http://localhost:5100/api/auth/login" `
+  -Method Post -ContentType "application/json" `
+  -Body '{"email":"admin@example.com","password":"MojeSilneHaslo123!"}'
 
-# check-download
-curl "https://TWOJ_URL/functions/v1/check-download?imei=000000000000000" \
-  -H "x-api-key: TWOJ_REPORT_API_KEY"
+$token = $login.access_token
 
+# Sesje (jako admin)
+Invoke-RestMethod -Uri "http://localhost:5100/api/sessions" `
+  -Headers @{ Authorization = "Bearer $token" }
+
+# Report-session (z API key)
+Invoke-RestMethod -Uri "http://localhost:5100/api/report-session" `
+  -Method Post -ContentType "application/json" `
+  -Headers @{ "x-api-key" = "TWOJ_API_KEY" } `
+  -Body '{"session_id":"test-001","imei":"358480081630115","status":"connecting"}'
+
+# Check-download
+Invoke-RestMethod -Uri "http://localhost:5100/api/check-download?imei=358480081630115" `
+  -Headers @{ "x-api-key" = "TWOJ_API_KEY" }
 # Oczekiwany wynik: {"should_download":true}
+```
+
+---
+
+## Krok 13 — Backup bazy danych
+
+### Automatyczny backup (Task Scheduler)
+
+Utwórz skrypt `C:\TachoDDD\backup.ps1`:
+
+```powershell
+$date = Get-Date -Format "yyyyMMdd_HHmmss"
+$backupDir = "C:\TachoDDD\Backups"
+$pgDump = "C:\Program Files\PostgreSQL\16\bin\pg_dump.exe"
+
+if (!(Test-Path $backupDir)) { New-Item -ItemType Directory -Path $backupDir }
+
+# Dump bazy
+& $pgDump -U tachoddd -d tachoddd -F c -f "$backupDir\tachoddd_$date.backup"
+
+# Usuń backupy starsze niż 30 dni
+Get-ChildItem "$backupDir\*.backup" | Where-Object {
+    $_.LastWriteTime -lt (Get-Date).AddDays(-30)
+} | Remove-Item -Force
+```
+
+Dodaj do **Task Scheduler** (co noc o 3:00):
+
+```powershell
+$action = New-ScheduledTaskAction -Execute "powershell.exe" `
+  -Argument "-ExecutionPolicy Bypass -File C:\TachoDDD\backup.ps1"
+$trigger = New-ScheduledTaskTrigger -Daily -At 3am
+Register-ScheduledTask -TaskName "TachoDDD Backup" -Action $action -Trigger $trigger `
+  -User "SYSTEM" -RunLevel Highest
+```
+
+### Przywracanie backupu
+
+```powershell
+& "C:\Program Files\PostgreSQL\16\bin\pg_restore.exe" `
+  -U tachoddd -d tachoddd -c "C:\TachoDDD\Backups\tachoddd_20260228.backup"
 ```
 
 ---
@@ -825,19 +631,18 @@ curl "https://TWOJ_URL/functions/v1/check-download?imei=000000000000000" \
 
 ```mermaid
 graph TB
-    subgraph "Twój VPS"
-        NGINX["Nginx/Caddy<br/>:80/:443"]
+    subgraph "Windows Server 2025 (OVH VPS)"
+        PROXY["IIS / Caddy<br/>:80/:443"]
         FRONTEND["React SPA<br/>(pliki statyczne)"]
         
-        subgraph "Supabase Self-Hosted (Docker)"
-            PG["PostgreSQL<br/>:5432"]
-            GOTRUE["GoTrue (Auth)<br/>:9999"]
-            POSTGREST["PostgREST (API)<br/>:3000"]
-            STORAGE["Storage API<br/>:5000"]
-            EDGE["Edge Functions<br/>:8000"]
+        subgraph "TachoWebApi (.NET 8)"
+            API["REST Controllers<br/>JWT Auth"]
+            SIGNALR["SignalR Hub<br/>/hubs/dashboard"]
+            STORAGE["File Storage<br/>C:\TachoDDD\SessionLogs"]
         end
         
-        TACHO["TachoDddServer<br/>(C# .NET 8)<br/>:5200"]
+        PG["PostgreSQL 16<br/>:5432"]
+        TACHO["TachoDddServer<br/>(.NET 8)<br/>:5200 TCP"]
     end
     
     subgraph "Laptop (lokalnie)"
@@ -845,50 +650,66 @@ graph TB
         READER["Czytnik kart<br/>PC/SC"]
     end
     
-    BROWSER["Przeglądarka<br/>użytkownika"] --> NGINX
-    NGINX --> FRONTEND
-    NGINX --> POSTGREST
-    NGINX --> GOTRUE
-    NGINX --> STORAGE
-    NGINX --> EDGE
+    BROWSER["Przeglądarka<br/>użytkownika"] -->|"HTTPS"| PROXY
+    PROXY -->|"static files"| FRONTEND
+    PROXY -->|"/api/*, /hubs/*"| API
+    PROXY -->|"/hubs/*"| SIGNALR
     
     FMB["Teltonika FMB640<br/>urządzenia"] -->|"TCP :5200"| TACHO
-    TACHO -->|"HTTPS API"| EDGE
+    TACHO -->|"HTTP /api/report-session<br/>x-api-key"| API
     TACHO -->|"WSS (ngrok)"| CB
     CB --> READER
     
-    EDGE --> PG
-    POSTGREST --> PG
-    GOTRUE --> PG
+    API --> PG
+    API --> STORAGE
+    SIGNALR --> PG
 ```
 
 ---
 
-## Podsumowanie kosztów operacyjnych
+## Podsumowanie — porównanie kosztów
 
-| Komponent | Lovable (obecne) | Self-hosted |
-|-----------|-----------------|-------------|
-| Frontend hosting | Wliczone w plan Lovable | Twój serwer (0 zł) |
-| Baza danych | Wliczone (Lovable Cloud) | Twój serwer (0 zł) |
-| Edge Functions | Wliczone | Twój serwer (0 zł) |
-| SSL | Automatyczny | Certbot / Caddy (0 zł) |
-| Serwer VPS | Już opłacany (OVH) | Już opłacany |
+| Komponent | Lovable Cloud (obecne) | TachoWebApi (docelowe) |
+|-----------|----------------------|----------------------|
+| Frontend hosting | Plan Lovable | Twój serwer (0 zł) |
+| Baza danych | Lovable Cloud | PostgreSQL (0 zł) |
+| Auth | Lovable Cloud | JWT w .NET (0 zł) |
+| Realtime | Lovable Cloud | SignalR (0 zł) |
+| Storage | Lovable Cloud | Dysk (0 zł) |
+| Edge Functions | Lovable Cloud | Kontrolery C# (0 zł) |
+| SSL | Automatyczny | Let's Encrypt (0 zł) |
 | **Łącznie** | **Plan Lovable** | **0 zł dodatkowe** |
 
 ---
 
 ## FAQ
 
-**P: Czy mogę nadal używać Lovable do developmentu?**
-O: Tak! Możesz rozwijać frontend w Lovable, pushować do GitHub, a potem budować i deployować z GitHub na swoim serwerze.
+**P: Czy mogę nadal używać Lovable do developmentu frontendu?**
+O: Tak! Rozwijaj frontend w Lovable, pushuj na GitHub, potem buduj na serwerze (`git pull && npm run build`).
 
-**P: Co jeśli chcę użyć Supabase Cloud zamiast self-hosted?**
-O: Załóż konto na supabase.com, utwórz nowy projekt, i zmień zmienne `VITE_SUPABASE_URL` i `VITE_SUPABASE_PUBLISHABLE_KEY`. Edge Functions deployujesz przez `supabase functions deploy`.
-
-**P: Jak backupować bazę danych?**
-O: Na self-hosted: `pg_dump` z crona. Na Supabase Cloud: automatyczne backupy wliczone w plan.
-
-```bash
-# Cron backup (co noc o 3:00)
-0 3 * * * pg_dump -U postgres -d postgres > /backups/tachoddd_$(date +\%Y\%m\%d).sql
+**P: Jak zaktualizować TachoWebApi po zmianach w kodzie?**
+O: 
+```powershell
+cd TWOJ_REPO\csharp\TachoWebApi
+git pull
+dotnet publish -c Release -o C:\TachoDDD\WebApi
+sc.exe stop TachoWebApi
+sc.exe start TachoWebApi
 ```
+
+**P: Jak dodać nową migrację bazy po zmianie modeli?**
+O:
+```powershell
+cd csharp\TachoWebApi
+dotnet ef migrations add NazwaMigracji
+dotnet ef database update
+```
+
+**P: Jak przenieść istniejących użytkowników z Lovable Cloud?**
+O: Niestety nie ma bezpośredniej migracji auth. Utwórz użytkowników na nowo (rejestracja lub admin panel). Dane sesji/urządzeń możesz wyeksportować z bazy Lovable Cloud i zaimportować do nowej bazy PostgreSQL.
+
+**P: Czy mogę uruchomić TachoWebApi na Linuxie?**
+O: Tak, .NET 8 jest cross-platform. Zamiast `sc.exe` użyj `systemd` do rejestracji serwisu.
+
+**P: Jak włączyć e-maile (reset hasła)?**
+O: W `appsettings.json` ustaw `Email:Enabled` na `true` i skonfiguruj dane SMTP. Popularne opcje: smtp.gmail.com (port 587), smtp.mailgun.org, Amazon SES.
