@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
 import { useEffect, useMemo } from "react";
+import { apiFetch } from "@/lib/api-client";
+import { useSignalR } from "@/hooks/useSignalR";
 
 // Types matching the DB schema
 export interface Session {
@@ -40,33 +41,14 @@ export function useSessions() {
 
   const query = useQuery({
     queryKey: ["sessions"],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("sessions")
-        .select("*")
-        .order("last_activity", { ascending: false });
-      if (error) throw error;
-      return (data ?? []) as Session[];
-    },
+    queryFn: () => apiFetch<Session[]>("/api/sessions"),
     refetchInterval: 30000,
   });
 
-  useEffect(() => {
-    const channel = supabase
-      .channel("sessions-realtime")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "sessions" },
-        () => {
-          queryClient.invalidateQueries({ queryKey: ["sessions"] });
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [queryClient]);
+  // SignalR realtime
+  useSignalR("SessionUpdated", () => {
+    queryClient.invalidateQueries({ queryKey: ["sessions"] });
+  });
 
   return query;
 }
@@ -76,34 +58,13 @@ export function useSessionEvents() {
 
   const query = useQuery({
     queryKey: ["session_events"],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("session_events")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(100);
-      if (error) throw error;
-      return (data ?? []) as SessionEvent[];
-    },
+    queryFn: () => apiFetch<SessionEvent[]>("/api/session-events"),
     refetchInterval: 30000,
   });
 
-  useEffect(() => {
-    const channel = supabase
-      .channel("events-realtime")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "session_events" },
-        () => {
-          queryClient.invalidateQueries({ queryKey: ["session_events"] });
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [queryClient]);
+  useSignalR("EventCreated", () => {
+    queryClient.invalidateQueries({ queryKey: ["session_events"] });
+  });
 
   return query;
 }

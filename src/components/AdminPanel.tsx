@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
@@ -12,7 +12,7 @@ interface UserRow {
   approved: boolean;
   created_at: string;
   email?: string;
-  isAdmin: boolean;
+  is_admin: boolean;
   devices: { id: string; imei: string; label: string | null; vehicle_plate: string | null; sim_number: string | null; comment: string | null }[];
 }
 
@@ -36,82 +36,65 @@ export function AdminPanel() {
 
   const fetchUsers = async () => {
     setLoading(true);
-    const [profilesRes, rolesRes, devicesRes] = await Promise.all([
-      supabase.from("profiles").select("*"),
-      supabase.from("user_roles").select("*"),
-      supabase.from("user_devices").select("*"),
-    ]);
-
-    const profiles = profilesRes.data ?? [];
-    const roles = rolesRes.data ?? [];
-    const devices = devicesRes.data ?? [];
-
-    const merged: UserRow[] = profiles.map((p: any) => ({
-      id: p.id,
-      full_name: p.full_name,
-      phone: p.phone,
-      approved: p.approved,
-      created_at: p.created_at,
-      isAdmin: roles.some((r: any) => r.user_id === p.id && r.role === "admin"),
-      devices: devices
-        .filter((d: any) => d.user_id === p.id)
-        .map((d: any) => ({
-          id: d.id,
-          imei: d.imei,
-          label: d.label,
-          vehicle_plate: d.vehicle_plate,
-          sim_number: d.sim_number,
-          comment: d.comment,
-        })),
-    }));
-
-    setUsers(merged);
+    try {
+      const data = await apiFetch<UserRow[]>("/api/admin/users");
+      setUsers(data);
+    } catch (err: any) {
+      toast({ title: "Błąd", description: err.message, variant: "destructive" });
+    }
     setLoading(false);
   };
 
   useEffect(() => { fetchUsers(); }, []);
 
   const toggleApproval = async (userId: string, approved: boolean) => {
-    await supabase.from("profiles").update({ approved: !approved }).eq("id", userId);
-    toast({ title: approved ? "Konto dezaktywowane" : "Konto zatwierdzone" });
-    fetchUsers();
+    try {
+      await apiFetch(`/api/admin/users/${userId}/approve`, { method: "PATCH" });
+      toast({ title: approved ? "Konto dezaktywowane" : "Konto zatwierdzone" });
+      fetchUsers();
+    } catch (err: any) {
+      toast({ title: "Błąd", description: err.message, variant: "destructive" });
+    }
   };
 
   const toggleAdmin = async (userId: string, isAdmin: boolean) => {
-    if (isAdmin) {
-      await supabase.from("user_roles").delete().eq("user_id", userId).eq("role", "admin");
-    } else {
-      await supabase.from("user_roles").insert({ user_id: userId, role: "admin" as any });
+    try {
+      await apiFetch(`/api/admin/roles/${userId}/toggle-admin`, { method: "POST" });
+      toast({ title: isAdmin ? "Rola admin usunięta" : "Rola admin nadana" });
+      fetchUsers();
+    } catch (err: any) {
+      toast({ title: "Błąd", description: err.message, variant: "destructive" });
     }
-    toast({ title: isAdmin ? "Rola admin usunięta" : "Rola admin nadana" });
-    fetchUsers();
   };
 
   const addDevice = async (userId: string) => {
     const imei = newImei[userId]?.trim();
     if (!imei) return;
-    const { error } = await supabase.from("user_devices").insert({
-      user_id: userId,
-      imei,
-      label: newLabel[userId]?.trim() || null,
-      vehicle_plate: newVehiclePlate[userId]?.trim() || null,
-      sim_number: newSimNumber[userId]?.trim() || null,
-      comment: newComment[userId]?.trim() || null,
-    } as any);
-    if (error) {
-      toast({ title: "Błąd", description: error.message, variant: "destructive" });
-    } else {
+    try {
+      await apiFetch("/api/user-devices", {
+        method: "POST",
+        body: JSON.stringify({
+          imei,
+          label: newLabel[userId]?.trim() || null,
+          vehicle_plate: newVehiclePlate[userId]?.trim() || null,
+          sim_number: newSimNumber[userId]?.trim() || null,
+          comment: newComment[userId]?.trim() || null,
+          user_id: userId,
+        }),
+      });
       setNewImei((p) => ({ ...p, [userId]: "" }));
       setNewLabel((p) => ({ ...p, [userId]: "" }));
       setNewVehiclePlate((p) => ({ ...p, [userId]: "" }));
       setNewSimNumber((p) => ({ ...p, [userId]: "" }));
       setNewComment((p) => ({ ...p, [userId]: "" }));
       fetchUsers();
+    } catch (err: any) {
+      toast({ title: "Błąd", description: err.message, variant: "destructive" });
     }
   };
 
   const removeDevice = async (deviceId: string) => {
-    await supabase.from("user_devices").delete().eq("id", deviceId);
+    await apiFetch(`/api/user-devices/${deviceId}`, { method: "DELETE" });
     fetchUsers();
   };
 
@@ -122,17 +105,16 @@ export function AdminPanel() {
     }
     setCreatingUser(true);
     try {
-      const { data, error } = await supabase.functions.invoke("create-user", {
-        body: {
+      const data = await apiFetch<{ id: string; email: string }>("/api/auth/admin/create-user", {
+        method: "POST",
+        body: JSON.stringify({
           email: newUserEmail.trim(),
           password: newUserPassword.trim(),
           full_name: newUserName.trim(),
           phone: newUserPhone.trim() || null,
-        },
+        }),
       });
-      if (error) throw error;
-      if (data?.error) throw new Error(data.error);
-      toast({ title: "Użytkownik utworzony", description: data?.email });
+      toast({ title: "Użytkownik utworzony", description: data.email });
       setNewUserEmail("");
       setNewUserPassword("");
       setNewUserName("");
@@ -186,7 +168,7 @@ export function AdminPanel() {
                   <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${u.approved ? "bg-primary/10 text-primary" : "bg-destructive/10 text-destructive"}`}>
                     {u.approved ? "Zatwierdzony" : "Oczekuje"}
                   </span>
-                  {u.isAdmin && (
+                  {u.is_admin && (
                     <span className="inline-flex items-center rounded-full bg-accent px-2 py-0.5 text-xs font-medium">Admin</span>
                   )}
                 </div>
@@ -196,9 +178,9 @@ export function AdminPanel() {
                   {u.approved ? <X className="h-3.5 w-3.5 mr-1" /> : <Check className="h-3.5 w-3.5 mr-1" />}
                   {u.approved ? "Dezaktywuj" : "Zatwierdź"}
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => toggleAdmin(u.id, u.isAdmin)}>
+                <Button size="sm" variant="outline" onClick={() => toggleAdmin(u.id, u.is_admin)}>
                   <Shield className="h-3.5 w-3.5 mr-1" />
-                  {u.isAdmin ? "Usuń admin" : "Nadaj admin"}
+                  {u.is_admin ? "Usuń admin" : "Nadaj admin"}
                 </Button>
               </div>
             </div>
@@ -225,36 +207,11 @@ export function AdminPanel() {
                 <p className="text-xs text-muted-foreground">Brak przypisanych urządzeń</p>
               )}
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                <Input
-                  placeholder="IMEI"
-                  value={newImei[u.id] || ""}
-                  onChange={(e) => setNewImei((p) => ({ ...p, [u.id]: e.target.value }))}
-                  className="h-8 text-xs"
-                />
-                <Input
-                  placeholder="Etykieta (opcj.)"
-                  value={newLabel[u.id] || ""}
-                  onChange={(e) => setNewLabel((p) => ({ ...p, [u.id]: e.target.value }))}
-                  className="h-8 text-xs"
-                />
-                <Input
-                  placeholder="Nr rejestracyjny"
-                  value={newVehiclePlate[u.id] || ""}
-                  onChange={(e) => setNewVehiclePlate((p) => ({ ...p, [u.id]: e.target.value }))}
-                  className="h-8 text-xs"
-                />
-                <Input
-                  placeholder="Nr SIM"
-                  value={newSimNumber[u.id] || ""}
-                  onChange={(e) => setNewSimNumber((p) => ({ ...p, [u.id]: e.target.value }))}
-                  className="h-8 text-xs"
-                />
-                <Input
-                  placeholder="Komentarz"
-                  value={newComment[u.id] || ""}
-                  onChange={(e) => setNewComment((p) => ({ ...p, [u.id]: e.target.value }))}
-                  className="h-8 text-xs"
-                />
+                <Input placeholder="IMEI" value={newImei[u.id] || ""} onChange={(e) => setNewImei((p) => ({ ...p, [u.id]: e.target.value }))} className="h-8 text-xs" />
+                <Input placeholder="Etykieta (opcj.)" value={newLabel[u.id] || ""} onChange={(e) => setNewLabel((p) => ({ ...p, [u.id]: e.target.value }))} className="h-8 text-xs" />
+                <Input placeholder="Nr rejestracyjny" value={newVehiclePlate[u.id] || ""} onChange={(e) => setNewVehiclePlate((p) => ({ ...p, [u.id]: e.target.value }))} className="h-8 text-xs" />
+                <Input placeholder="Nr SIM" value={newSimNumber[u.id] || ""} onChange={(e) => setNewSimNumber((p) => ({ ...p, [u.id]: e.target.value }))} className="h-8 text-xs" />
+                <Input placeholder="Komentarz" value={newComment[u.id] || ""} onChange={(e) => setNewComment((p) => ({ ...p, [u.id]: e.target.value }))} className="h-8 text-xs" />
                 <Button size="sm" variant="outline" onClick={() => addDevice(u.id)} className="h-8">
                   <Plus className="h-3.5 w-3.5" />
                 </Button>

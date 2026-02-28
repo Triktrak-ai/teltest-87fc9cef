@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import { useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { apiResetPassword } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,37 +9,33 @@ import { useToast } from "@/hooks/use-toast";
 const ResetPassword = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const [searchParams] = useSearchParams();
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [ready, setReady] = useState(false);
 
-  useEffect(() => {
-    // Listen for PASSWORD_RECOVERY event
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "PASSWORD_RECOVERY") setReady(true);
-    });
-    // Check if already in recovery via hash
-    if (window.location.hash.includes("type=recovery")) setReady(true);
-    return () => subscription.unsubscribe();
-  }, []);
+  const token = searchParams.get("token");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
-    const { error } = await supabase.auth.updateUser({ password });
-    setLoading(false);
-    if (error) {
-      toast({ title: "Błąd", description: error.message, variant: "destructive" });
-    } else {
-      toast({ title: "Hasło zmienione", description: "Możesz się teraz zalogować." });
-      navigate("/");
+    if (!token) {
+      toast({ title: "Błąd", description: "Brak tokena resetowania", variant: "destructive" });
+      return;
     }
+    setLoading(true);
+    try {
+      await apiResetPassword(token, password);
+      toast({ title: "Hasło zmienione", description: "Możesz się teraz zalogować." });
+      navigate("/auth");
+    } catch (err: any) {
+      toast({ title: "Błąd", description: err.message, variant: "destructive" });
+    }
+    setLoading(false);
   };
 
-  if (!ready) {
+  if (!token) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
-        <p className="text-muted-foreground">Weryfikacja linku resetowania hasła...</p>
+        <p className="text-muted-foreground">Nieprawidłowy link resetowania hasła.</p>
       </div>
     );
   }

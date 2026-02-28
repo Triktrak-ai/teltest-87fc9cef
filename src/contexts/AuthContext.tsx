@@ -1,6 +1,5 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { User, Session } from "@supabase/supabase-js";
-import { supabase } from "@/integrations/supabase/client";
+import { createContext, useContext, useEffect, useState, ReactNode, useCallback } from "react";
+import { apiFetch, getAccessToken, clearTokens, type AuthResponse } from "@/lib/api-client";
 
 interface Profile {
   id: string;
@@ -11,85 +10,94 @@ interface Profile {
   updated_at: string;
 }
 
+interface AuthUser {
+  id: string;
+  email: string;
+}
+
 interface AuthContextType {
-  user: User | null;
-  session: Session | null;
+  user: AuthUser | null;
   profile: Profile | null;
   isAdmin: boolean;
   isApproved: boolean;
   loading: boolean;
-  signOut: () => Promise<void>;
+  signOut: () => void;
   refreshProfile: () => Promise<void>;
+  /** Called after successful login to set user state */
+  onLoginSuccess: (authRes: AuthResponse) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [session, setSession] = useState<Session | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const fetchProfileAndRole = async (userId: string) => {
-    const [profileRes, roleRes] = await Promise.all([
-      supabase.from("profiles").select("*").eq("id", userId).single(),
-      supabase.from("user_roles").select("role").eq("user_id", userId).eq("role", "admin").maybeSingle(),
-    ]);
-    if (profileRes.data) setProfile(profileRes.data as Profile);
-    setIsAdmin(!!roleRes.data);
-  };
-
-  const refreshProfile = async () => {
-    if (user) await fetchProfileAndRole(user.id);
-  };
-
-  useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, newSession) => {
-        setSession(newSession);
-        setUser(newSession?.user ?? null);
-        if (newSession?.user) {
-          // Defer to avoid deadlock with Supabase client
-          setTimeout(() => fetchProfileAndRole(newSession.user.id), 0);
-        } else {
-          setProfile(null);
-          setIsAdmin(false);
-        }
-        setLoading(false);
-      }
-    );
-
-    supabase.auth.getSession().then(({ data: { session: s } }) => {
-      setSession(s);
-      setUser(s?.user ?? null);
-      if (s?.user) {
-        fetchProfileAndRole(s.user.id).finally(() => setLoading(false));
-      } else {
-        setLoading(false);
-      }
-    });
-
-    return () => subscription.unsubscribe();
+  const fetchProfileAndRole = useCallback(async () => {
+    try {
+      const [prof, roles] = await Promise.all([
+        apiFetch<Profile>("/api/profiles/me"),
+        apiFetch<{ role: string }[]>("/api/profiles/user-roles"),
+      ]);
+      setProfile(prof);
+      setIsAdmin(roles.some((r) => r.role === "admin"));
+    } catch {
+      // Token invalid — clear
+      clearTokens();
+      setUser(null);
+      setProfile(null);
+      setIsAdmin(false);
+    }
   }, []);
 
-  const signOut = async () => {
-    await supabase.auth.signOut();
+  const refreshProfile = useCallback(async () => {
+    if (getAccessToken()) await fetchProfileAndRole();
+  }, [fetchProfileAndRole]);
+
+  // Bootstrap: check if we already have a token
+  useEffect(() => {
+    const token = getAccessToken();
+    if (!token) {
+      setLoading(false);
+      return;
+    }
+
+    // Decode user id/email from JWT payload (no verification — server validates)
+    try {
+      const payload = JSON.parse(atob(token.split(".")[1]));
+      setUser({ id: payload.sub, email: payload.email });
+      fetchProfileAndRole().finally(() => setLoading(false));
+    } catch {
+      clearTokens();
+      setLoading(false);
+    }
+  }, [fetchProfileAndRole]);
+
+  const signOut = () => {
+    clearTokens();
+    setUser(null);
     setProfile(null);
     setIsAdmin(false);
+  };
+
+  const onLoginSuccess = async (authRes: AuthResponse) => {
+    setUser(authRes.user);
+    await fetchProfileAndRole();
   };
 
   return (
     <AuthContext.Provider
       value={{
         user,
-        session,
         profile,
         isAdmin,
         isApproved: profile?.approved ?? false,
         loading,
         signOut,
         refreshProfile,
+        onLoginSuccess,
       }}
     >
       {children}

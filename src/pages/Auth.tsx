@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Navigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
+import { apiLogin, apiSignup, apiForgotPassword } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,7 +9,7 @@ import { Radio } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 const Auth = () => {
-  const { user } = useAuth();
+  const { user, onLoginSuccess } = useAuth();
   const { toast } = useToast();
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -24,30 +24,25 @@ const Auth = () => {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
-    if (error) {
-      toast({ title: "Błąd logowania", description: error.message, variant: "destructive" });
+    try {
+      const data = await apiLogin(email, password);
+      await onLoginSuccess(data);
+    } catch (err: any) {
+      toast({ title: "Błąd logowania", description: err.message, variant: "destructive" });
     }
+    setLoading(false);
   };
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        emailRedirectTo: window.location.origin,
-        data: { full_name: fullName, phone: phone || null },
-      },
-    });
-    setLoading(false);
-    if (error) {
-      toast({ title: "Błąd rejestracji", description: error.message, variant: "destructive" });
-    } else {
+    try {
+      await apiSignup(email, password, fullName, phone || undefined);
       setRegistered(true);
+    } catch (err: any) {
+      toast({ title: "Błąd rejestracji", description: err.message, variant: "destructive" });
     }
+    setLoading(false);
   };
 
   const handleForgotPassword = async () => {
@@ -55,13 +50,11 @@ const Auth = () => {
       toast({ title: "Podaj adres email", variant: "destructive" });
       return;
     }
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset-password`,
-    });
-    if (error) {
-      toast({ title: "Błąd", description: error.message, variant: "destructive" });
-    } else {
+    try {
+      await apiForgotPassword(email);
       toast({ title: "Link wysłany", description: "Sprawdź swoją skrzynkę email." });
+    } catch (err: any) {
+      toast({ title: "Błąd", description: err.message, variant: "destructive" });
     }
   };
 
