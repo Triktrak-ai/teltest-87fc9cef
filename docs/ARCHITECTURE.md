@@ -396,10 +396,10 @@ stateDiagram-v2
         ReceiveChunks --> ReceiveChunks : More chunks
         ReceiveChunks --> SaveFile : FileDataEOF
         SaveFile --> RequestFile : Next file
-        RequestFile --> Gen1Fallback : Error 0x02:0x06 VU file
+        RequestFile --> Gen1Fallback : Auth error on VU file
         Gen1Fallback --> ReceiveChunks : Retry with Gen1 TRTP
-        RequestFile --> EmptySlotSkip : Error 0x02:0x06 DriverCard less than 2s
-        RequestFile --> CardResetRetry : Error 0x02:0x06 DriverCard gte 2s
+        RequestFile --> EmptySlotSkip : DriverCard error under 2s
+        RequestFile --> CardResetRetry : DriverCard error over 2s
         CardResetRetry --> RequestFile : One retry
     }
     DownloadingFile --> Complete : All files done
