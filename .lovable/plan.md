@@ -1,55 +1,104 @@
 
-# TachoDDD — Plan rozwoju
 
-## ✅ Zrealizowane
+# Panel logowania z rolami (admin + użytkownik) i zatwierdzaniem kont
 
-### Infrastruktura
-- Serwer TCP (TachoDddServer) z maszyną stanów DDD
-- CardBridgeService (WebSocket ↔ PC/SC)
-- Protokół Codec 12 z weryfikacją CRC
-- Detekcja generacji VU (Gen1/Gen2v1/Gen2v2) przez InterfaceVersion
-- Post-download korekta generacji na podstawie tagów sekcji Overview
-- Łączenie plików VU w jeden .ddd
-- Dwufazowe pobieranie: segmenty VU (1-5) z Gen1 TRTP fallback, karty kierowcy (6-7) zawsze natywnym TRTP
-- Diagnostyka slotów kart kierowcy: rozróżnienie empty_slot (<2s) vs access_denied (≥2s) na podstawie czasu odpowiedzi VU
-- Jednorazowy retry karty kierowcy z TryResetCardState przy access_denied (≥2s)
+## Cel
+System autentykacji gdzie administrator widzi wszystkie dane i zarządza kontami, a zwykli użytkownicy widzą tylko sesje powiązane ze swoimi IMEI. Użytkownik może się sam zarejestrować, ale konto wymaga zatwierdzenia przez admina.
 
-### Logowanie i diagnostyka
-- TrafficLogger (hex dump + dekodowane pakiety)
-- SessionDiagnostics (raport TXT + JSON)
-- WebReporter (raportowanie statusu do dashboardu)
-- Upload logów sesji do storage (traffic.log, session.txt, session.json)
+## Architektura
 
-### Web Dashboard
-- Tabela sesji z real-time aktualizacją
-- Timeline zdarzeń sesji
-- Harmonogram pobierania (download_schedule) z resetem
-- Macierz kompatybilności karta/tachograf (dwie zakładki: firmowa + kierowcy)
-- DDD Reader (parsowanie plików .ddd w przeglądarce)
-- Karty statystyk
+```text
++------------------+       +------------------+       +------------------+
+|   /auth          | ----> |   AuthProvider   | ----> |   Dashboard      |
+|  login/signup    |       |  + ProtectedRoute|       |  (filtrowane     |
+|                  |       |  + rola + approved|       |   przez RLS)     |
++------------------+       +------------------+       +------------------+
+                                    |
+                    +---------------+---------------+
+                    |               |               |
+              profiles        user_roles       user_devices
+              (dane osobowe)  (admin/user)     (IMEI mapping)
+```
 
-### Edge Functions
-- `report-session` — raportowanie statusu z C# serwera
-- `check-download` — download gate (1x/dzień per IMEI)
-- `reset-download-schedule` — reset harmonogramu (z dashboardu lub C#)
-- `upload-session-log` — upload logów do bucketu session-logs
-- `toggle-download-block` — włączanie/wyłączanie blokady pobierania
+## Zmiany w bazie danych (4 migracje)
 
-### Kluczowe naprawy
-- Auth w edge functions: `SUPABASE_ANON_KEY` w Lovable Cloud ma format `sb_publishable_...` ≠ JWT publishable key. Rozwiązanie: walidacja tokenu przez próbne zapytanie do bazy.
+### 1. Tabela `profiles`
+- `id` (uuid, PK, FK -> auth.users.id ON DELETE CASCADE)
+- `full_name` (text)
+- `phone` (text, nullable)
+- `approved` (boolean, default false) -- klucz: nowe konto wymaga zatwierdzenia
+- `created_at`, `updated_at`
+- Trigger: automatyczne tworzenie profilu przy rejestracji (approved = false)
+- RLS: użytkownik czyta/edytuje swój profil; admin czyta wszystkie
 
-## 🔜 Do zrobienia
+### 2. Tabela `user_roles` (zgodnie z wytycznymi bezpieczenstwa)
+- `id` (uuid, PK)
+- `user_id` (uuid, FK -> auth.users.id ON DELETE CASCADE)
+- `role` (app_role enum: admin, user)
+- UNIQUE (user_id, role)
+- Funkcja `has_role(uuid, app_role)` -- SECURITY DEFINER
+- RLS: admin widzi wszystkie role
 
-### Priorytet wysoki
-- Ikony pobierania logów na dashboardzie (czeka na pierwsze `log_uploaded = true` z C# serwera)
-- Detekcja typu karty (kierowcy vs firmowa) na podstawie EF_ICC cardType
-- Wyświetlanie diagnostyki slotów (empty_slot/access_denied) na dashboardzie
+### 3. Tabela `user_devices`
+- `id` (uuid, PK)
+- `user_id` (uuid, FK -> auth.users.id ON DELETE CASCADE, NOT NULL)
+- `imei` (text, UNIQUE)
+- `label` (text, nullable)
+- `created_at`
+- RLS: użytkownik zarządza swoimi; admin zarządza wszystkimi
 
-### Priorytet średni
-- Alert kompatybilności na dashboardzie (ostrzeżenie gdy karta+VU wypada jako 'warn')
-- Filtrowanie sesji po IMEI/statusie/dacie
-- Eksport danych sesji do CSV
+### 4. Zmiana polityk RLS na istniejacych tabelach
+- Funkcja `get_user_imeis(uuid)` SECURITY DEFINER -- zwraca IMEI usera
+- Funkcja `is_approved(uuid)` SECURITY DEFINER -- sprawdza czy konto zatwierdzone
+- `sessions` SELECT: admin widzi wszystko; zatwierdzony user widzi tylko swoje IMEI
+- `session_events` SELECT: jak wyzej
+- `download_schedule` SELECT: jak wyzej
+- Dotychczasowe polityki "Allow anonymous read" zostana zastapione
+- Polityki INSERT/UPDATE dla service_role pozostaja bez zmian (serwer C# raportuje dalej)
 
-### Priorytet niski
-- Obsługa wielu czytników kart (wiele CardBridge)
-- Automatyczne retry po utracie połączenia
+## Nowe komponenty frontendowe
+
+### 1. `src/contexts/AuthContext.tsx`
+- Kontekst sesji z `onAuthStateChange`
+- Pobiera profil i role zalogowanego usera
+- Udostepnia: `user`, `profile`, `isAdmin`, `isApproved`, `signOut`
+
+### 2. `src/components/ProtectedRoute.tsx`
+- Niezalogowany -> przekierowanie na `/auth`
+- Zalogowany ale niezatwierdzony -> ekran "Twoje konto oczekuje na zatwierdzenie"
+
+### 3. `src/pages/Auth.tsx`
+- Zakladki: Logowanie / Rejestracja
+- Rejestracja: email, haslo, imie, telefon (opcjonalnie)
+- Po rejestracji: komunikat "Konto utworzone, oczekuje na zatwierdzenie administratora"
+
+### 4. `src/pages/ResetPassword.tsx`
+- Formularz ustawiania nowego hasla po kliknieciu linku z emaila
+
+### 5. `src/components/AdminPanel.tsx`
+- Widoczny tylko dla admina (w headerze lub osobna zakladka)
+- Lista uzytkownikow z przyciskami: Zatwierdz / Odrzuc / Nadaj role admin
+- Zarzadzanie przypisaniami IMEI do uzytkownikow
+
+### 6. `src/components/DeviceManagement.tsx`
+- Sekcja na dashboardzie: "Moje urzadzenia"
+- Dodawanie/usuwanie IMEI (z opcjonalna etykieta np. "MAN TGX AB1234")
+- Admin moze przypisywac IMEI do dowolnego usera
+
+## Zmiany w istniejacym kodzie
+
+- **App.tsx**: AuthProvider wrapper, ProtectedRoute na `/` i `/ddd-reader`, publiczne trasy `/auth` i `/reset-password`
+- **Index.tsx**: przycisk wylogowania, link do panelu admina (warunkowo), sekcja DeviceManagement
+- **useSessions.ts**: bez zmian w kodzie -- RLS automatycznie filtruje dane
+
+## Pierwszy administrator
+
+Pierwszego admina trzeba utworzyc recznie: zarejestruj konto, potem wstaw rekord do `user_roles` i ustaw `approved = true` w `profiles`. Kolejnych adminow moze juz dodawac z poziomu panelu.
+
+## Przeplyw
+
+1. Uzytkownik rejestruje sie na `/auth` -> profil tworzony z `approved = false`
+2. Admin widzi nowe konto w panelu -> klika "Zatwierdz"
+3. Uzytkownik loguje sie -> widzi dashboard z danymi tylko ze swoich IMEI
+4. Admin loguje sie -> widzi wszystkie sesje + panel administracyjny
+
