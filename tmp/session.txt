@@ -1,0 +1,57 @@
+╔══════════════════════════════════════════════════════════╗
+║              SESSION DIAGNOSTIC SUMMARY                 ║
+╚══════════════════════════════════════════════════════════╝
+  SessionId:   2d32a55f-6637-4763-abd5-a76c3df3aba5
+  IMEI:        358480081630115
+  Endpoint:    37.47.140.49:7650
+  Generation:  Gen2v2
+  Card Gen:    Gen2
+  Start:       2026-02-28 11:49:02.604 UTC
+  End:         2026-02-28 11:59:56.359 UTC
+  Duration:    10m 53s
+
+── State Flow ──────────────────────────────────────────────
+  [  24,478s] WaitingForImei -> WaitingForStatus [IMEI accepted]
+  [  25,845s] WaitingForStatus -> ApduLoop [Starting authentication (ATR)]
+  [  63,362s] ApduLoop -> CheckingInterfaceVersion [Auth OK, checking interface version]
+  [  63,736s] CheckingInterfaceVersion -> WaitingForDownloadListAck [Sending download list]
+  [  64,321s] WaitingForDownloadListAck -> DownloadingFile [Requesting file 1/7: Overview]
+  [  69,216s] DownloadingFile -> DownloadingFile [Requesting file 2/7: Activities]
+  [  72,970s] DownloadingFile -> DownloadingFile [Requesting file 3/7: EventsAndFaults]
+  [  73,479s] DownloadingFile -> DownloadingFile [Requesting file 4/7: DetailedSpeed]
+  [  73,975s] DownloadingFile -> DownloadingFile [Requesting file 5/7: TechnicalData]
+  [  74,464s] DownloadingFile -> DownloadingFile [Requesting file 6/7: DriverCard1]
+  [ 653,276s] DownloadingFile -> DownloadingFile [Requesting file 7/7: DriverCard2]
+  [ 653,755s] DownloadingFile -> Complete [Partial: 2/7 files (VU: 1/5)]
+
+── File Downloads ──────────────────────────────────────────
+  ✓ Overview                  865B     4,9s  (0,2 KB/s)
+  ✓ Activities                  0B     3,8s  (0,0 KB/s)
+  ✗ EventsAndFaults             0B     0,5s  (0,0 KB/s)  ERR: Error during download: [0x02:0x06] Authentication failed — card data inaccessible (possible generation mismatch)
+  ✗ DetailedSpeed               0B     0,5s  (0,0 KB/s)  ERR: Error during download: [0x02:0x06] Authentication failed — card data inaccessible (possible generation mismatch)
+  ✗ TechnicalData               0B     0,5s  (0,0 KB/s)  ERR: Error during download: [0x02:0x06] Authentication failed — card data inaccessible (possible generation mismatch)
+  ✓ DriverCard1            123195B   578,8s  (0,2 KB/s)
+  ✗ DriverCard2                 0B     0,5s  (0,0 KB/s)  ERR: Error during download: [0x02:0x06] Authentication failed — card data inaccessible (possible generation mismatch)
+  Total: 3/7 successful
+
+── Counters ────────────────────────────────────────────────
+  Packets TX:       151
+  Packets RX:       151
+  Bytes TX:         3 747
+  Bytes RX:         127 893
+  APDU exchanges:   17
+  CRC errors:       0
+
+── Errors ──────────────────────────────────────────────────
+  [  63,735s] [DddProtocol] [0x03:0x02] File access denied, state=0x0004
+  [  73,479s] [DddProtocol] [0x02:0x06] Authentication failed — card data inaccessible (possible generation mismatch), state=0x0303
+  [  73,975s] [DddProtocol] [0x02:0x06] Authentication failed — card data inaccessible (possible generation mismatch), state=0x0303
+  [  74,464s] [DddProtocol] [0x02:0x06] Authentication failed — card data inaccessible (possible generation mismatch), state=0x0303
+  [ 653,750s] [DddProtocol] [0x02:0x06] Authentication failed — card data inaccessible (possible generation mismatch), state=0x0303
+
+── Warnings ────────────────────────────────────────────────
+  [  63,735s] InterfaceVersion error — defaulting to Gen1
+  [  69,213s] POST-DOWNLOAD CORRECTION: VU generation Gen1 → Gen2v2 (Overview section tags)
+
+  Total errors:   5
+  Total warnings: 2
