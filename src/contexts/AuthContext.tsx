@@ -48,20 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user, fetchProfileAndRole]);
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
-        if (session?.user) {
-          setUser(session.user);
-          await fetchProfileAndRole(session.user.id);
-        } else {
-          setUser(null);
-          setProfile(null);
-          setIsAdmin(false);
-        }
-        setLoading(false);
-      }
-    );
-
+    // Get initial session first
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) {
         setUser(session.user);
@@ -70,6 +57,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setLoading(false);
       }
     });
+
+    // Listen for subsequent auth changes (sign in/out/token refresh)
+    // IMPORTANT: Never await inside onAuthStateChange to avoid deadlocks
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        if (session?.user) {
+          setUser(session.user);
+          // Use setTimeout to avoid blocking the auth callback
+          setTimeout(() => {
+            fetchProfileAndRole(session.user.id);
+          }, 0);
+        } else {
+          setUser(null);
+          setProfile(null);
+          setIsAdmin(false);
+          setLoading(false);
+        }
+      }
+    );
 
     return () => subscription.unsubscribe();
   }, [fetchProfileAndRole]);
