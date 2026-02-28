@@ -178,6 +178,51 @@ public class WebReporter : IDisposable
         }
     }
 
+    /// <summary>
+    /// Upload session log files to the web dashboard storage.
+    /// Called after session ends (in Program.cs finally block).
+    /// </summary>
+    public async Task UploadLogsAsync(string? trafficLogPath, string? sessionTxtPath, string? sessionJsonPath)
+    {
+        if (!_enabled) return;
+        try
+        {
+            var uploadUrl = _url.Replace("/report-session", "/upload-session-log");
+            using var content = new MultipartFormDataContent();
+            content.Add(new StringContent(_sessionId), "session_id");
+
+            void AddFile(string? path, string name, string mediaType)
+            {
+                if (path == null || !File.Exists(path)) return;
+                var bytes = File.ReadAllBytes(path);
+                var fileContent = new ByteArrayContent(bytes);
+                fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(mediaType);
+                content.Add(fileContent, name, name);
+            }
+
+            AddFile(trafficLogPath, "traffic.log", "text/plain");
+            AddFile(sessionTxtPath, "session.txt", "text/plain");
+            AddFile(sessionJsonPath, "session.json", "application/json");
+
+            var response = await _http.PostAsync(uploadUrl, content);
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync();
+                _logger.LogWarning("UploadLogs: HTTP {Status} — {Body}", (int)response.StatusCode, body);
+            }
+            else
+            {
+                _logger.LogInformation("📤 Session logs uploaded for {SessionId}", _sessionId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("UploadLogs error: {Error}", ex.Message);
+        }
+    }
+
+    public string SessionId => _sessionId;
+
     public void Dispose()
     {
         _http.Dispose();

@@ -104,6 +104,7 @@ export type Database = {
           id: string
           imei: string
           last_activity: string | null
+          log_uploaded: boolean | null
           progress: number | null
           started_at: string | null
           status: string
@@ -125,6 +126,7 @@ export type Database = {
           id?: string
           imei: string
           last_activity?: string | null
+          log_uploaded?: boolean | null
           progress?: number | null
           started_at?: string | null
           status?: string
@@ -146,6 +148,7 @@ export type Database = {
           id?: string
           imei?: string
           last_activity?: string | null
+          log_uploaded?: boolean | null
           progress?: number | null
           started_at?: string | null
           status?: string

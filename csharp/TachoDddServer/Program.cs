@@ -83,6 +83,17 @@ while (true)
         {
             sessionSw.Stop();
             await webReporter.FlushAsync();
+
+            // Upload session logs to dashboard storage
+            if (logTraffic && trafficLogDir != null)
+            {
+                var sid = webReporter.SessionId;
+                var trafficLogPath = Path.Combine(trafficLogDir, $"traffic_{connectTime:yyyyMMdd_HHmmss}_{sid}.log");
+                var sessionTxtPath = Path.Combine(trafficLogDir, $"session_{connectTime:yyyyMMdd_HHmmss}_{sid}.txt");
+                var sessionJsonPath = Path.Combine(trafficLogDir, $"session_{connectTime:yyyyMMdd_HHmmss}_{sid}.json");
+                await webReporter.UploadLogsAsync(trafficLogPath, sessionTxtPath, sessionJsonPath);
+            }
+
             logger.LogInformation("📡 Disconnected {IP}:{Port} — session duration: {Duration}",
                 ep?.Address, ep?.Port, FormatDuration(sessionSw.Elapsed));
             client.Dispose();
