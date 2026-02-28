@@ -59,6 +59,19 @@ public class CardBridgeClient : IDisposable
         return result;
     }
 
+    /// <summary>
+    /// Perform a warm reset of the card via SCardReconnect on the CardBridge side.
+    /// This resets the card to its initial state without removing power.
+    /// </summary>
+    public async Task ReconnectAsync()
+    {
+        _logger.LogInformation("🔄 CardBridge: RECONNECT (warm reset)");
+        var sw = Stopwatch.StartNew();
+        await SendCommandAsync("RECONNECT", Array.Empty<byte>());
+        sw.Stop();
+        _logger.LogInformation("🔄 CardBridge: reconnect completed in {Ms}ms", sw.ElapsedMilliseconds);
+    }
+
     private async Task<byte[]> SendCommandAsync(string command, byte[] data)
     {
         // Check WebSocket state before sending
