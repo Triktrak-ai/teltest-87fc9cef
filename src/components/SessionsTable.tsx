@@ -14,6 +14,7 @@ const statusConfig: Record<string, { label: string; className: string }> = {
   auth_gen2v2: { label: "Auth Gen2v2", className: "bg-accent text-accent-foreground border-primary/30" },
   downloading: { label: "Pobieranie", className: "bg-info/20 text-info border-info/30" },
   completed: { label: "Ukończono", className: "bg-success/20 text-success border-success/30" },
+  partial: { label: "Częściowe", className: "bg-warning/20 text-warning border-warning/30" },
   error: { label: "Błąd", className: "bg-destructive/20 text-destructive border-destructive/30" },
   waiting: { label: "Oczekuje", className: "bg-warning/20 text-warning border-warning/30" },
   skipped: { label: "Pominięto", className: "bg-muted text-muted-foreground border-muted-foreground/20" },
@@ -52,7 +53,7 @@ function genBadgeClass(gen: string): string {
 }
 
 function isActive(status: string): boolean {
-  return status !== "completed" && status !== "error";
+  return status !== "completed" && status !== "error" && status !== "partial" && status !== "skipped";
 }
 
 export function SessionsTable() {

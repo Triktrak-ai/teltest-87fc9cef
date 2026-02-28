@@ -86,8 +86,8 @@ Deno.serve(async (req) => {
     if (body.card_generation !== undefined)
       sessionData.card_generation = body.card_generation;
 
-    // Set completed_at when status is completed
-    if (body.status === "completed") {
+    // Set completed_at when status is completed or partial
+    if (body.status === "completed" || body.status === "partial") {
       sessionData.completed_at = new Date().toISOString();
     }
 
@@ -127,7 +127,7 @@ Deno.serve(async (req) => {
 
     // Upsert download_schedule based on session status
     const sessionStatus = body.status;
-    if (sessionStatus === "completed" || sessionStatus === "error" || sessionStatus === "skipped") {
+    if (sessionStatus === "completed" || sessionStatus === "partial" || sessionStatus === "error" || sessionStatus === "skipped") {
       const scheduleData: Record<string, unknown> = {
         imei: body.imei,
         last_attempt_at: new Date().toISOString(),
@@ -138,6 +138,10 @@ Deno.serve(async (req) => {
         scheduleData.status = "ok";
         scheduleData.last_success_at = new Date().toISOString();
         scheduleData.last_error = null;
+      } else if (sessionStatus === "partial") {
+        scheduleData.status = "partial";
+        scheduleData.last_success_at = new Date().toISOString();
+        scheduleData.last_error = `Partial: ${body.files_downloaded ?? "?"}/${body.total_files ?? "?"} files`;
       } else if (sessionStatus === "error") {
         scheduleData.status = "error";
         scheduleData.last_error = body.error_message ?? "Unknown error";
