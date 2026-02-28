@@ -1,50 +1,50 @@
 
+# TachoDDD — Plan rozwoju
 
-# Naprawa macierzy kompatybilnosci — rozdzielenie na karte kierowcy i firmowa
+## ✅ Zrealizowane
 
-## Problem
+### Infrastruktura
+- Serwer TCP (TachoDddServer) z maszyną stanów DDD
+- CardBridgeService (WebSocket ↔ PC/SC)
+- Protokół Codec 12 z weryfikacją CRC
+- Detekcja generacji VU (Gen1/Gen2v1/Gen2v2) przez InterfaceVersion
+- Post-download korekta generacji na podstawie tagów sekcji Overview
+- Łączenie plików VU w jeden .ddd
 
-Obecna macierz ma 5 blednych komorek dla karty przedsiebiorstwa i nie rozroznia miedzy karta kierowcy a karta firmowa. Dostarczone dane pokazuja rozne reguly dla kazdego typu karty.
+### Logowanie i diagnostyka
+- TrafficLogger (hex dump + dekodowane pakiety)
+- SessionDiagnostics (raport TXT + JSON)
+- WebReporter (raportowanie statusu do dashboardu)
+- Upload logów sesji do storage (traffic.log, session.txt, session.json)
 
-## Zmiany
+### Web Dashboard
+- Tabela sesji z real-time aktualizacją
+- Timeline zdarzeń sesji
+- Harmonogram pobierania (download_schedule) z resetem
+- Macierz kompatybilności karta/tachograf (dwie zakładki: firmowa + kierowcy)
+- DDD Reader (parsowanie plików .ddd w przeglądarce)
+- Karty statystyk
 
-### Plik: `src/components/CompatibilityMatrix.tsx`
+### Edge Functions
+- `report-session` — raportowanie statusu z C# serwera
+- `check-download` — download gate (1x/dzień per IMEI)
+- `reset-download-schedule` — reset harmonogramu (z dashboardu lub C#)
+- `upload-session-log` — upload logów do bucketu session-logs
 
-Zamiana jednej macierzy na dwie (z zakladkami lub sekcjami):
+### Kluczowe naprawy
+- Auth w edge functions: `SUPABASE_ANON_KEY` w Lovable Cloud ma format `sb_publishable_...` ≠ JWT publishable key. Rozwiązanie: walidacja tokenu przez próbne zapytanie do bazy.
 
-**Macierz karty firmowej (Company Card):**
+## 🔜 Do zrobienia
 
-| Karta \ VU | Gen1 | Gen2v1 | Gen2v2 |
-|---|---|---|---|
-| G1 | OK: otwiera zamek | OK: otwiera zamek | WARN: moze nie autoryzowac nowych sekcji |
-| G2v1 | OK: wstecznie kompatybilna | OK: otwiera zamek | WARN: moze nie wspierac nowych certyfikatow |
-| G2v2 | OK: wstecznie kompatybilna | OK: wstecznie kompatybilna | OK: pelny odczyt Smart 2 |
+### Priorytet wysoki
+- Ikony pobierania logów na dashboardzie (czeka na pierwsze `log_uploaded = true` z C# serwera)
+- Detekcja typu karty (kierowcy vs firmowa) na podstawie EF_ICC cardType
 
-**Macierz karty kierowcy (Driver Card):**
+### Priorytet średni
+- Alert kompatybilności na dashboardzie (ostrzeżenie gdy karta+VU wypada jako 'warn')
+- Filtrowanie sesji po IMEI/statusie/dacie
+- Eksport danych sesji do CSV
 
-| Karta \ VU | Gen1 | Gen2v1 | Gen2v2 |
-|---|---|---|---|
-| G1 | OK: standard | WARN: brak zapisu GPS na karcie | WARN: brak zapisu GPS i granic |
-| G2v1 | WARN: bledy przy odczycie .ddd | OK: standard | WARN: brak zapisu granic/ladunku |
-| G2v2 | WARN: ryzyko bledow odczytu | WARN: ryzyko bledow odczytu | OK: standard |
-
-### Implementacja
-
-Komponent zostanie przerobiony na uzycie zakladek (Tabs z shadcn) z dwoma widokami:
-- Zakladka "Karta firmowa" (domyslna, bo to glowny kontekst DDD)
-- Zakladka "Karta kierowcy"
-
-Kazda zakladka renderuje osobna tabele z wlasnymi tooltipami opisujacymi konkretne ograniczenia (np. "Brak zapisu GPS na karcie", "Moze nie autoryzowac poboru nowych sekcji danych").
-
-### Dodatkowe uwagi pod macierza
-
-Pod kazda tabela pojawia sie sekcja z uwagami:
-- Karta firmowa: "Nowe karty sa wstecznie kompatybilne. Do pelnej funkcjonalnosci w Gen2v2 zalecana jest karta G2v2."
-- Karta kierowcy: "Starsze karty w nowych tachografach — dane GPS/granice pobierane z tachografu przy inspekcji."
-
-## Zmiany w plikach
-
-| Plik | Zmiana |
-|---|---|
-| `src/components/CompatibilityMatrix.tsx` | Dwie macierze z zakladkami, poprawione wartosci i tooltips |
-
+### Priorytet niski
+- Obsługa wielu czytników kart (wiele CardBridge)
+- Automatyczne retry po utracie połączenia
