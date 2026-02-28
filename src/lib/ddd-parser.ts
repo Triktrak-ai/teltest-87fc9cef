@@ -1140,22 +1140,16 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
     // Try to parse activity days
     while (r.position < dataEnd && r.remaining >= 8) {
       try {
-        const ts = r.readTimestamp();
-        if (!ts) {
-          // Try next position
-          r.position -= 3; // Backtrack and try 1 byte forward
-          continue;
+        const tsValue = r.readUint32();
+        if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) {
+          break;
         }
-
-        // Validate timestamp is a reasonable date (not in the future)
-        if (ts.getTime() > Date.now() + 86400000) {
-          r.position -= 3;
-          continue;
-        }
+        const ts = new Date(tsValue * 1000);
 
         if (r.remaining < 4) break;
         const dailyPresenceCounter = r.readUint16();
         const dayDistance = r.readUint16();
+        if (dayDistance > 9999) break;
 
         const entries: ActivityChangeEntry[] = [];
 
@@ -1169,6 +1163,7 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
               const cardInserted = ((word >> 14) & 0x01) === 1;
               const activity = (word >> 12) & 0x03;
               const minutes = word & 0x0FFF;
+              if (minutes >= 1440) continue;
 
               const statusMap: Record<number, ActivityChangeEntry['status']> = {
                 0: 'break', 1: 'availability', 2: 'work', 3: 'driving',
