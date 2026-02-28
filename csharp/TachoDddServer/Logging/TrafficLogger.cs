@@ -11,10 +11,10 @@ public class TrafficLogger : IDisposable
     public TrafficLogger(string logDir, string sessionId)
     {
         Directory.CreateDirectory(logDir);
-        var fileName = $"traffic_{DateTime.Now:yyyyMMdd_HHmmss}_{sessionId}.log";
+        var fileName = $"traffic_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{sessionId}.log";
         var path = Path.Combine(logDir, fileName);
         _writer = new StreamWriter(path, append: true) { AutoFlush = true };
-        _writer.WriteLine($"=== Sesja rozpoczęta: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} ===");
+        _writer.WriteLine($"=== Sesja rozpoczęta: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff} UTC ===");
     }
 
     /// <summary>
@@ -22,7 +22,7 @@ public class TrafficLogger : IDisposable
     /// </summary>
     public void Log(string direction, byte[] data, int length)
     {
-        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+        var timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fff");
         var hex = ToHexDump(data, Math.Min(length, 64)); // max 64 bytes in raw dump
         var suffix = length > 64 ? $" ... (+{length - 64}B)" : "";
         var line = $"[{timestamp}] {direction} {length}B: {hex}{suffix}";
@@ -38,7 +38,7 @@ public class TrafficLogger : IDisposable
     /// </summary>
     public void LogDecoded(string direction, string packetTypeName, int dataLen, string comment)
     {
-        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+        var timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fff");
         var line = $"[{timestamp}] {direction} DDD [{packetTypeName}] {dataLen}B — {comment}";
 
         lock (_lock)
@@ -52,7 +52,7 @@ public class TrafficLogger : IDisposable
     /// </summary>
     public void LogDecodedWithHex(string direction, string packetTypeName, byte[] data, int maxHexBytes, string comment)
     {
-        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+        var timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fff");
         var hex = ToHexDump(data, Math.Min(data.Length, maxHexBytes));
         var suffix = data.Length > maxHexBytes ? $" ... (+{data.Length - maxHexBytes}B)" : "";
         var line = $"[{timestamp}] {direction} DDD [{packetTypeName}] {data.Length}B — {comment} | {hex}{suffix}";
@@ -68,7 +68,7 @@ public class TrafficLogger : IDisposable
     /// </summary>
     public void LogStateChange(SessionState from, SessionState to, string reason)
     {
-        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+        var timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fff");
         var line = $"[{timestamp}] STATE {from} -> {to} [{reason}]";
 
         lock (_lock)
@@ -82,7 +82,7 @@ public class TrafficLogger : IDisposable
     /// </summary>
     public void LogError(string context, string message)
     {
-        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+        var timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fff");
         var line = $"[{timestamp}] ERROR [{context}] {message}";
 
         lock (_lock)
@@ -96,7 +96,7 @@ public class TrafficLogger : IDisposable
     /// </summary>
     public void LogError(string context, Exception ex)
     {
-        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+        var timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fff");
         var line = $"[{timestamp}] ERROR [{context}] {ex.GetType().Name}: {ex.Message}";
 
         lock (_lock)
@@ -117,7 +117,7 @@ public class TrafficLogger : IDisposable
     /// </summary>
     public void LogWarning(string message)
     {
-        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+        var timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fff");
         var line = $"[{timestamp}] WARN {message}";
 
         lock (_lock)
@@ -153,7 +153,7 @@ public class TrafficLogger : IDisposable
     {
         lock (_lock)
         {
-            _writer.WriteLine($"=== Sesja zakończona: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} ===");
+            _writer.WriteLine($"=== Sesja zakończona: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff} UTC ===");
             _writer.Dispose();
         }
     }

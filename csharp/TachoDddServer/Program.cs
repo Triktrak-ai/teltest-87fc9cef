@@ -88,9 +88,10 @@ while (true)
             if (logTraffic && trafficLogDir != null)
             {
                 var sid = webReporter.SessionId;
-                var trafficLogPath = Path.Combine(trafficLogDir, $"traffic_{connectTime:yyyyMMdd_HHmmss}_{sid}.log");
-                var sessionTxtPath = Path.Combine(trafficLogDir, $"session_{connectTime:yyyyMMdd_HHmmss}_{sid}.txt");
-                var sessionJsonPath = Path.Combine(trafficLogDir, $"session_{connectTime:yyyyMMdd_HHmmss}_{sid}.json");
+                // Find log files by session ID pattern (avoids timestamp mismatch issues)
+                var trafficLogPath = Directory.GetFiles(trafficLogDir, $"traffic_*_{sid}.log").FirstOrDefault();
+                var sessionTxtPath = Directory.GetFiles(trafficLogDir, $"session_*_{sid}.txt").FirstOrDefault();
+                var sessionJsonPath = Directory.GetFiles(trafficLogDir, $"session_*_{sid}.json").FirstOrDefault();
                 await webReporter.UploadLogsAsync(trafficLogPath, sessionTxtPath, sessionJsonPath);
             }
 
