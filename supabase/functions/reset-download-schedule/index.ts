@@ -22,12 +22,25 @@ Deno.serve(async (req) => {
   const apiKey = req.headers.get("x-api-key");
   const expectedKey = Deno.env.get("REPORT_API_KEY");
   
-  // Also accept anon key via Authorization header for dashboard calls
+  // Also accept apikey header or Authorization bearer from dashboard
   const authHeader = req.headers.get("authorization");
-  const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const hasValidAuth = 
-    (expectedKey && apiKey === expectedKey) ||
-    (authHeader?.startsWith("Bearer ") && anonKey && authHeader === `Bearer ${anonKey}`);
+  const apikeyHeader = req.headers.get("apikey");
+  
+  // Validate: x-api-key for C# server, or supabase client auth for dashboard
+  // For dashboard calls, validate the token by creating a supabase client and checking
+  let hasValidAuth = !!(expectedKey && apiKey === expectedKey);
+  
+  if (!hasValidAuth && (apikeyHeader || authHeader)) {
+    // Try to validate using Supabase - if the token/apikey can access the DB, it's valid
+    try {
+      const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+      const testClient = createClient(supabaseUrl, apikeyHeader || authHeader!.slice(7));
+      const { error: testError } = await testClient.from("download_schedule").select("id").limit(1);
+      hasValidAuth = !testError;
+    } catch {
+      hasValidAuth = false;
+    }
+  }
 
   if (!hasValidAuth) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
