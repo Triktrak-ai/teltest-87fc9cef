@@ -70,7 +70,8 @@ public class DddSession
         _logDir = trafficLogDir;
 
         var endpoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
-        _diagnostics = new SessionDiagnostics(endpoint);
+        var diagSessionId = webReporter?.SessionId;
+        _diagnostics = new SessionDiagnostics(endpoint, diagSessionId);
 
         if (logTraffic && trafficLogDir != null)
         {
