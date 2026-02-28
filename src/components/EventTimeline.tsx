@@ -1,5 +1,5 @@
 import { useSessionEvents } from "@/hooks/useSessions";
-import { Info, CheckCircle, AlertTriangle, XCircle } from "lucide-react";
+import { Info, CheckCircle, AlertTriangle, XCircle, RefreshCw } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useEffect, useRef } from "react";
 
@@ -8,6 +8,19 @@ const typeConfig: Record<string, { icon: React.ReactNode; color: string }> = {
   success: { icon: <CheckCircle size={14} />, color: "text-success" },
   warning: { icon: <AlertTriangle size={14} />, color: "text-warning" },
   error: { icon: <XCircle size={14} />, color: "text-destructive" },
+};
+
+const contextHighlight: Record<string, { icon: React.ReactNode; color: string; bgClass: string }> = {
+  GenerationCorrection: {
+    icon: <RefreshCw size={14} />,
+    color: "text-warning",
+    bgClass: "bg-warning/10 border-l-2 border-l-warning",
+  },
+  GenerationMismatch: {
+    icon: <AlertTriangle size={14} />,
+    color: "text-destructive",
+    bgClass: "bg-destructive/10 border-l-2 border-l-destructive",
+  },
 };
 
 export function EventTimeline() {
@@ -55,7 +68,8 @@ export function EventTimeline() {
           </div>
         )}
         {events?.map((event) => {
-          const cfg = typeConfig[event.type] ?? typeConfig.info;
+          const ctxHighlight = event.context ? contextHighlight[event.context] : undefined;
+          const cfg = ctxHighlight ?? typeConfig[event.type] ?? typeConfig.info;
           const time = new Date(event.created_at).toLocaleTimeString("pl-PL", {
             hour: "2-digit",
             minute: "2-digit",
@@ -64,14 +78,14 @@ export function EventTimeline() {
           return (
             <div
               key={event.id}
-              className="flex items-start gap-3 border-b border-border/30 px-5 py-3 hover:bg-secondary/20 transition-colors"
+              className={`flex items-start gap-3 border-b border-border/30 px-5 py-3 hover:bg-secondary/20 transition-colors ${ctxHighlight?.bgClass ?? ""}`}
             >
               <span className={`mt-0.5 ${cfg.color}`}>{cfg.icon}</span>
               <div className="flex-1 min-w-0">
                 <p className="text-sm leading-relaxed">
                   <span className="font-mono text-xs text-muted-foreground mr-2">{time}</span>
                   <span className="font-mono text-xs text-primary/80 mr-2">[{event.imei}]</span>
-                  <span>{event.message}</span>
+                  <span className={ctxHighlight ? "font-medium" : ""}>{event.message}</span>
                   {event.context && (
                     <span className="ml-2 font-mono text-xs text-muted-foreground">
                       ({event.context})
