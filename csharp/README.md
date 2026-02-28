@@ -6,6 +6,13 @@ System do zdalnego pobierania plików DDD z tachografów cyfrowych przez urządz
 
 ```
 FMB640 ──TCP:5200──► [VPS: TachoDddServer] ──WebSocket──► [ngrok] ──► [Twój PC: CardBridgeService] ──PC/SC──► Czytnik kart + karta firmowa
+                          │
+                          ▼ (HTTP/REST)
+                     [Lovable Cloud]
+                     ├── Edge Functions (report-session, check-download, reset-download-schedule, upload-session-log)
+                     ├── Database (sessions, session_events, download_schedule)
+                     ├── Storage (session-logs bucket)
+                     └── Dashboard (React frontend)
 ```
 
 ### Komponenty
@@ -15,6 +22,8 @@ FMB640 ──TCP:5200──► [VPS: TachoDddServer] ──WebSocket──► [n
 | **TachoDddServer** | VPS (Linux/Windows) | Serwer TCP, protokół DDD, maszyna stanów |
 | **CardBridgeService** | Lokalny PC (Windows) | Most WebSocket ↔ PC/SC do czytnika kart |
 | **ngrok** | Lokalny PC | Tunel WS do CardBridge (bez port forwarding) |
+| **WebReporter** | W ramach TachoDddServer | Raportowanie statusu sesji do dashboardu |
+| **Dashboard** | Lovable Cloud (React) | Monitorowanie sesji, harmonogram pobierania, logi |
 
 ## Maszyna stanów sesji DDD
 
@@ -176,16 +185,7 @@ Skopiuj adres `https://xxxx.ngrok-free.app` do konfiguracji serwera.
 
 ### 3. TachoDddServer (VPS)
 
-1. Edytuj `appsettings.json`:
-   ```json
-   {
-     "TcpPort": 5200,
-     "CardBridgeUrl": "wss://xxxx.ngrok-free.app",
-     "OutputDir": "/opt/tachoddd/downloads",
-     "TrafficLogDir": "/opt/tachoddd/logs",
-     "LogTraffic": true
-   }
-   ```
+1. Edytuj `appsettings.json` (patrz sekcja "Konfiguracja serwera" poniżej)
 2. ```bash
    cd csharp/TachoDddServer
    dotnet run
@@ -353,9 +353,71 @@ csharp/
 │   ├── Logging/
 │   │   ├── TrafficLogger.cs    # Logger ruchu (hex dump + decoded packets + state changes)
 │   │   └── SessionDiagnostics.cs # Centralna diagnostyka sesji (raport TXT + JSON)
+│   ├── Reporting/
+│   │   └── WebReporter.cs      # HTTP client do raportowania statusu, upload logów, download gate
 │   └── Storage/
 │       └── DddFileWriter.cs    # Zapis plików DDD na dysk
 └── README.md                   # Ten plik
+```
+
+## Web Dashboard & Edge Functions
+
+### Edge Functions
+
+| Funkcja | Endpoint | Autoryzacja | Rola |
+|---------|----------|-------------|------|
+| `report-session` | POST | `x-api-key` (REPORT_API_KEY) | Raportowanie statusu sesji z C# serwera |
+| `check-download` | GET | `x-api-key` | Sprawdzenie czy IMEI powinien dziś pobierać (download gate) |
+| `reset-download-schedule` | POST | `x-api-key` lub `apikey`/`Bearer` (publishable key) | Reset harmonogramu — z dashboardu lub C# |
+| `upload-session-log` | POST (multipart) | `x-api-key` | Upload logów sesji (traffic.log, session.txt, session.json) |
+
+### Autoryzacja edge functions (Lovable Cloud)
+
+**UWAGA:** W Lovable Cloud zmienna `SUPABASE_ANON_KEY` w runtime edge functions ma format `sb_publishable_...` (nie JWT). Publishable key wysyłany z dashboardu to JWT (`eyJhbG...`). Dlatego porównanie `Bearer token === SUPABASE_ANON_KEY` **nie działa**.
+
+Rozwiązanie zastosowane w `reset-download-schedule`:
+- Dla C# serwera: walidacja nagłówka `x-api-key` vs secret `REPORT_API_KEY`
+- Dla dashboardu: walidacja przez próbne zapytanie do bazy z przesłanym tokenem (jeśli token pozwala na SELECT — jest prawidłowy)
+
+### Download Gate
+
+Mechanizm ograniczający pobieranie do 1 raz dziennie (UTC) na IMEI:
+1. C# serwer odpytuje `check-download?imei=XXX` przed rozpoczęciem transferu
+2. Jeśli status = `ok` (już pobrano dziś) → serwer wysyła ACK, raportuje `skipped`, kończy sesję
+3. Po udanym pobraniu → `report-session` ustawia status na `ok` w `download_schedule`
+4. Dashboard pozwala ręcznie resetować harmonogram (reset-download-schedule)
+
+### Upload logów sesji
+
+Po zakończeniu sesji `WebReporter.UploadLogsAsync()` wysyła pliki logów do bucketu `session-logs`:
+- `traffic.log` — surowy hex dump komunikacji
+- `session.txt` — raport diagnostyczny (czytelny)
+- `session.json` — raport w formacie JSON
+
+Pliki dostępne pod: `session-logs/{session_id}/traffic.log` etc.
+Na dashboardzie ikona pobierania pojawia się gdy `sessions.log_uploaded = true`.
+
+### Tabele bazy danych
+
+| Tabela | Rola |
+|--------|------|
+| `sessions` | Sesje DDD — status, generacja, pliki, błędy, metryki |
+| `session_events` | Timeline zdarzeń sesji (przejścia stanów, błędy, ostrzeżenia) |
+| `download_schedule` | Harmonogram pobierania — status per IMEI, last_success_at, attempts_today |
+
+## Konfiguracja serwera (appsettings.json)
+
+```json
+{
+  "TcpPort": 5200,
+  "CardBridgeUrl": "wss://xxxx.ngrok-free.app",
+  "OutputDir": "/opt/tachoddd/downloads",
+  "TrafficLogDir": "/opt/tachoddd/logs",
+  "LogTraffic": true,
+  "ReportUrl": "https://exyjnmtxacpydoeaqcti.supabase.co/functions/v1/report-session",
+  "ReportApiKey": "<REPORT_API_KEY>",
+  "ReportEnabled": true
+}
 ```
 
 ## Wymagania
@@ -370,3 +432,4 @@ csharp/
 - Pełne pobieranie DDD trwa 2-5 minut — zapłon musi być włączony przez cały czas
 - CardBridge obsługuje jedną sesję na raz (jeden czytnik, jedna karta)
 - Utrata połączenia (wyłączenie zapłonu, timeout ngrok) przerywa sesję
+- `SUPABASE_ANON_KEY` w Lovable Cloud != publishable key (inny format) — edge functions muszą to uwzględniać
