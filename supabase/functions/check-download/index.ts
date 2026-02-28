@@ -37,6 +37,21 @@ Deno.serve(async (req) => {
   );
 
   try {
+    // Check if download block is globally disabled (dev mode)
+    const { data: settingData } = await supabase
+      .from("app_settings")
+      .select("value")
+      .eq("key", "download_block_disabled")
+      .maybeSingle();
+
+    if (settingData?.value === "true") {
+      console.log("Download block disabled (dev mode), allowing download for", imei);
+      return new Response(JSON.stringify({ should_download: true }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     const { data, error } = await supabase
       .from("download_schedule")
       .select("last_success_at, status")
