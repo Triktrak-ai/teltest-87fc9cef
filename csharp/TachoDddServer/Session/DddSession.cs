@@ -48,6 +48,7 @@ public class DddSession
     // CRC repeat request tracking
     private int _crcRetryCount = 0;
     private const int MaxCrcRetries = 3;
+    private bool _retryingWithGen1 = false; // Fallback flag for TRTP retry
 
     // Authentication retry tracking
     private int _authRetryCount = 0;
@@ -792,8 +793,10 @@ public class DddSession
             else if (type == DddPacketType.AuthOK)
             {
                 _logger.LogInformation("🔐 Authentication OK! (after {Apdu} APDU exchanges)", _diagnostics.ApduExchanges);
+                _logger.LogInformation("🔍 VU gen from APDU SELECT: {ApduGen}, Card gen: {CardGen}",
+                    _detectedVuGenFromApdu, _cardGeneration);
                 _trafficLogger?.LogDecoded("RX", "AuthOK", data.Length,
-                    $"Authentication successful after {_diagnostics.ApduExchanges} exchanges");
+                    $"Authentication successful after {_diagnostics.ApduExchanges} exchanges | apduVuGen={_detectedVuGenFromApdu} cardGen={_cardGeneration}");
 
                 TransitionTo(SessionState.CheckingInterfaceVersion, "Auth OK, checking interface version");
                 await RequestFileAsync(stream, DddFileType.InterfaceVersion);
@@ -974,8 +977,10 @@ public class DddSession
     /// Get TRTP code for FileRequest based on VU generation.
     /// Used ONLY for FileRequest (0x30), NOT for Download List.
     /// </summary>
-    private byte GetTrtp(DddFileType fileType)
+    private byte GetTrtp(DddFileType fileType, VuGeneration? genOverride = null)
     {
+        var gen = genOverride ?? _vuGeneration;
+
         byte baseCode = fileType switch
         {
             DddFileType.InterfaceVersion => 0x00,
@@ -993,10 +998,7 @@ public class DddSession
             fileType == DddFileType.InterfaceVersion)
             return baseCode;
 
-        if (fileType == DddFileType.DetailedSpeed && _vuGeneration == VuGeneration.Gen2v2)
-            return 0x24;
-
-        return _vuGeneration switch
+        return gen switch
         {
             VuGeneration.Gen2v2 => (byte)(baseCode + 0x30),
             VuGeneration.Gen2v1 => (byte)(baseCode + 0x20),
@@ -1131,9 +1133,9 @@ public class DddSession
         }
     }
 
-    private async Task RequestFileAsync(NetworkStream stream, DddFileType fileType)
+    private async Task RequestFileAsync(NetworkStream stream, DddFileType fileType, VuGeneration? genOverride = null)
     {
-        byte trtp = GetTrtp(fileType);
+        byte trtp = GetTrtp(fileType, genOverride);
         byte[] payload;
 
         if (fileType == DddFileType.Activities)
@@ -1158,9 +1160,13 @@ public class DddSession
             payload = new byte[] { trtp };
         }
 
-        await SendDddPacketAsync(stream, DddPacketType.FileRequest, payload);
+        var genLabel = genOverride?.ToString() ?? _vuGeneration.ToString();
+        _logger.LogInformation("📤 FileRequest: {Type} TRTP=0x{Trtp:X2} (gen={Gen}, cardGen={CardGen})",
+            fileType, trtp, genLabel, _cardGeneration);
         _trafficLogger?.LogDecodedWithHex("TX", "FileRequest", payload, 16,
-            $"{fileType} TRTP=0x{trtp:X2}");
+            $"{fileType} TRTP=0x{trtp:X2} gen={genLabel} cardGen={_cardGeneration}");
+
+        await SendDddPacketAsync(stream, DddPacketType.FileRequest, payload);
     }
 
     private async Task HandleFileData(NetworkStream stream, DddPacketType type, byte[] data)
@@ -1232,6 +1238,11 @@ public class DddSession
                 {
                     _downloadedFiles[_currentFileType] = _fileBuffer.ToArray();
                     _successfulDownloads++;
+                    if (_retryingWithGen1)
+                    {
+                        _logger.LogInformation("✅ Gen1 TRTP fallback succeeded for {Type}", _currentFileType);
+                        _trafficLogger?.LogDecoded("RX", "FallbackOK", 0, $"Gen1 TRTP worked for {_currentFileType}");
+                    }
 
                     // Post-download generation verification for Overview
                     if (_currentFileType == DddFileType.Overview)
@@ -1239,6 +1250,7 @@ public class DddSession
                         VerifyGenerationFromOverview(_downloadedFiles[_currentFileType]);
                     }
                 }
+                _retryingWithGen1 = false;
 
                 SaveCurrentFile();
                 _logger.LogInformation("💾 File saved: {Type}, {Size}B{Speed}",
@@ -1252,10 +1264,36 @@ public class DddSession
             {
                 HandleError(data);
 
+                var errorDesc = data.Length >= 2 ? DddErrorCodes.Format(data[0], data[1]) : "unknown";
+
+                // Check if this is an auth/access error (0x02:0x06) and we can retry with Gen1 TRTP
+                bool isAuthError = data.Length >= 2 && data[0] == 0x02 && data[1] == 0x06;
+                bool isVuFile = _currentFileType != DddFileType.DriverCard1 &&
+                                _currentFileType != DddFileType.DriverCard2 &&
+                                _currentFileType != DddFileType.InterfaceVersion;
+                bool canRetryGen1 = isAuthError && isVuFile && !_retryingWithGen1 &&
+                                    _vuGeneration != VuGeneration.Gen1;
+
+                if (canRetryGen1)
+                {
+                    _retryingWithGen1 = true;
+                    var msg = $"TRTP FALLBACK: {_currentFileType} failed with {_vuGeneration} TRTP (0x{GetTrtp(_currentFileType):X2}), retrying with Gen1 TRTP (0x{GetTrtp(_currentFileType, VuGeneration.Gen1):X2})";
+                    _logger.LogWarning("🔄 {Msg}", msg);
+                    _trafficLogger?.LogWarning(msg);
+                    _diagnostics.LogWarning(msg);
+
+                    _fileBuffer.Clear();
+                    _currentSequenceNumber = 0;
+                    _diagnostics.StartFileTimer(_currentFileType); // restart timer
+                    await RequestFileAsync(stream, _currentFileType, VuGeneration.Gen1);
+                    return;
+                }
+
                 // Stop file timer with failure
                 _diagnostics.StopFileTimer(_currentFileType, _fileBuffer.Count, false,
-                    $"Error during download: {(data.Length >= 2 ? DddErrorCodes.Format(data[0], data[1]) : "unknown")}");
+                    $"Error during download: {errorDesc}");
 
+                _retryingWithGen1 = false; // reset for next file
                 _logger.LogWarning("⚠️ Error downloading {Type}, skipping", _currentFileType);
                 await RequestNextFileAsync(stream);
             }
@@ -1476,6 +1514,40 @@ public class DddSession
             if (GenerationRank(detectedGen) <= GenerationRank(_vuGeneration)) return;
 
             var oldGen = _vuGeneration;
+
+            // Check card compatibility: if card gen is lower than detected VU gen,
+            // log the mismatch but DON'T change the TRTP generation —
+            // Gen1 codes will likely work better for a Gen2 card in a Gen2v2 VU
+            int cardRank = _cardGeneration switch
+            {
+                "Gen2v2" => 3,
+                "Gen2v1" => 2,
+                "Gen2" => 2, // Gen2 without sub-version = treat as Gen2v1 level
+                "Gen1" => 1,
+                _ => 0
+            };
+
+            if (cardRank < GenerationRank(detectedGen))
+            {
+                // Card is lower generation than VU — keep Gen1 TRTP to avoid auth errors
+                var compatMsg = $"POST-DOWNLOAD: VU is {detectedGen} but card is {_cardGeneration} — keeping TRTP as {_vuGeneration} (Gen1 fallback will handle mismatches)";
+                _logger.LogWarning("⚠️ {Msg}", compatMsg);
+                _trafficLogger?.LogWarning(compatMsg);
+                _diagnostics.LogWarning(compatMsg);
+
+                // Still record the actual VU generation for reporting
+                _diagnostics.Generation = detectedGen;
+                _webReporter?.SetGeneration(detectedGen);
+
+                _webReporter?.ReportStatus(
+                    "downloading", 0, _successfulDownloads, _filesToDownload.Count,
+                    _currentFileType.ToString(),
+                    _diagnostics.BytesSent + _diagnostics.BytesReceived,
+                    _diagnostics.ApduExchanges, _diagnostics.CrcErrors,
+                    "warning", compatMsg, "GenerationMismatchKeepGen1");
+                return;
+            }
+
             _vuGeneration = detectedGen;
             _diagnostics.Generation = _vuGeneration;
             _webReporter?.SetGeneration(_vuGeneration);
