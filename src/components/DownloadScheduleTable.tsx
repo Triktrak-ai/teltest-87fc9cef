@@ -13,9 +13,17 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { RotateCcw } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { RotateCcw, FileDown } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { useQuery } from "@tanstack/react-query";
 
 const statusConfig: Record<string, { label: string; className: string }> = {
   ok: { label: "Pobrano", className: "bg-success/20 text-success border-success/30" },
@@ -24,8 +32,30 @@ const statusConfig: Record<string, { label: string; className: string }> = {
   pending: { label: "Oczekuje", className: "bg-warning/20 text-warning border-warning/30" },
 };
 
+function useLatestSessionsWithLogs() {
+  return useQuery({
+    queryKey: ["sessions-with-logs"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("sessions")
+        .select("id, imei, log_uploaded, created_at")
+        .eq("log_uploaded", true)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []) as { id: string; imei: string; log_uploaded: boolean; created_at: string }[];
+    },
+    refetchInterval: 30000,
+  });
+}
+
+function getLogDownloadUrl(sessionId: string, fileName: string): string {
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  return `${supabaseUrl}/storage/v1/object/public/session-logs/${sessionId}/${fileName}`;
+}
+
 export function DownloadScheduleTable() {
   const { data: schedules, isLoading, resetSchedule } = useDownloadSchedule();
+  const { data: sessionsWithLogs } = useLatestSessionsWithLogs();
   const [resetting, setResetting] = useState<string | null>(null);
 
   const handleReset = async (imei?: string) => {
@@ -38,6 +68,19 @@ export function DownloadScheduleTable() {
       toast.error("Błąd resetowania harmonogramu");
     } finally {
       setResetting(null);
+    }
+  };
+
+  const getLatestLogSession = (imei: string) => {
+    if (!sessionsWithLogs) return null;
+    return sessionsWithLogs.find((s) => s.imei === imei) ?? null;
+  };
+
+  const handleDownloadLogs = (sessionId: string) => {
+    const files = ["traffic.log", "session.txt", "session.json"];
+    for (const file of files) {
+      const url = getLogDownloadUrl(sessionId, file);
+      window.open(url, "_blank");
     }
   };
 
@@ -110,6 +153,7 @@ export function DownloadScheduleTable() {
             )}
             {schedules?.map((s) => {
               const sc = statusConfig[s.status] ?? statusConfig.pending;
+              const logSession = getLatestLogSession(s.imei);
               return (
                 <tr key={s.id} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
                   <td className="px-5 py-3 font-mono text-xs">{s.imei}</td>
@@ -142,7 +186,26 @@ export function DownloadScheduleTable() {
                   <td className="px-5 py-3 text-xs text-destructive max-w-[200px] truncate">
                     {s.last_error ?? "—"}
                   </td>
-                  <td className="px-5 py-3 text-right">
+                  <td className="px-5 py-3 text-right flex items-center justify-end gap-1">
+                    {logSession && (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 w-6 p-0"
+                              onClick={() => handleDownloadLogs(logSession.id)}
+                            >
+                              <FileDown className="h-3.5 w-3.5 text-primary" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p>Pobierz logi sesji</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    )}
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
                         <Button
