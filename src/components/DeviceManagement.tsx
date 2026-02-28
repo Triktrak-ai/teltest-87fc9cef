@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { apiFetch } from "@/lib/api-client";
+import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,12 +27,8 @@ export function DeviceManagement() {
 
   const fetchDevices = async () => {
     if (!user) return;
-    try {
-      const data = await apiFetch<Device[]>("/api/user-devices");
-      setDevices(data);
-    } catch {
-      // ignore
-    }
+    const { data } = await supabase.from("user_devices").select("*").eq("user_id", user.id);
+    setDevices(data ?? []);
   };
 
   useEffect(() => { fetchDevices(); }, [user]);
@@ -41,16 +37,15 @@ export function DeviceManagement() {
     const imei = newImei.trim();
     if (!imei || !user) return;
     try {
-      await apiFetch("/api/user-devices", {
-        method: "POST",
-        body: JSON.stringify({
-          imei,
-          label: newLabel.trim() || null,
-          vehicle_plate: newVehiclePlate.trim() || null,
-          sim_number: newSimNumber.trim() || null,
-          comment: newComment.trim() || null,
-        }),
+      const { error } = await supabase.from("user_devices").insert({
+        imei,
+        label: newLabel.trim() || null,
+        vehicle_plate: newVehiclePlate.trim() || null,
+        sim_number: newSimNumber.trim() || null,
+        comment: newComment.trim() || null,
+        user_id: user.id,
       });
+      if (error) throw error;
       setNewImei("");
       setNewLabel("");
       setNewVehiclePlate("");
@@ -63,7 +58,7 @@ export function DeviceManagement() {
   };
 
   const removeDevice = async (id: string) => {
-    await apiFetch(`/api/user-devices/${id}`, { method: "DELETE" });
+    await supabase.from("user_devices").delete().eq("id", id);
     fetchDevices();
   };
 

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Navigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { apiLogin, apiSignup, apiForgotPassword } from "@/lib/api-client";
+import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,7 +9,7 @@ import { Radio } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 const Auth = () => {
-  const { user, onLoginSuccess } = useAuth();
+  const { user } = useAuth();
   const { toast } = useToast();
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -25,8 +25,8 @@ const Auth = () => {
     e.preventDefault();
     setLoading(true);
     try {
-      const data = await apiLogin(email, password);
-      await onLoginSuccess(data);
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
     } catch (err: any) {
       toast({ title: "Błąd logowania", description: err.message, variant: "destructive" });
     }
@@ -37,7 +37,15 @@ const Auth = () => {
     e.preventDefault();
     setLoading(true);
     try {
-      await apiSignup(email, password, fullName, phone || undefined);
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { full_name: fullName, phone: phone || undefined },
+          emailRedirectTo: window.location.origin,
+        },
+      });
+      if (error) throw error;
       setRegistered(true);
     } catch (err: any) {
       toast({ title: "Błąd rejestracji", description: err.message, variant: "destructive" });
@@ -51,7 +59,10 @@ const Auth = () => {
       return;
     }
     try {
-      await apiForgotPassword(email);
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
+      if (error) throw error;
       toast({ title: "Link wysłany", description: "Sprawdź swoją skrzynkę email." });
     } catch (err: any) {
       toast({ title: "Błąd", description: err.message, variant: "destructive" });

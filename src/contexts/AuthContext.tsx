@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode, useCallback } from "react";
-import { apiFetch, getAccessToken, clearTokens, type AuthResponse } from "@/lib/api-client";
+import { supabase } from "@/integrations/supabase/client";
+import type { User } from "@supabase/supabase-js";
 
 interface Profile {
   id: string;
@@ -10,81 +11,74 @@ interface Profile {
   updated_at: string;
 }
 
-interface AuthUser {
-  id: string;
-  email: string;
-}
-
 interface AuthContextType {
-  user: AuthUser | null;
+  user: User | null;
   profile: Profile | null;
   isAdmin: boolean;
   isApproved: boolean;
   loading: boolean;
   signOut: () => void;
   refreshProfile: () => Promise<void>;
-  /** Called after successful login to set user state */
-  onLoginSuccess: (authRes: AuthResponse) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const fetchProfileAndRole = useCallback(async () => {
+  const fetchProfileAndRole = useCallback(async (userId: string) => {
     try {
-      const [prof, roles] = await Promise.all([
-        apiFetch<Profile>("/api/profiles/me"),
-        apiFetch<{ role: string }[]>("/api/profiles/user-roles"),
+      const [{ data: prof }, { data: roles }] = await Promise.all([
+        supabase.from("profiles").select("*").eq("id", userId).single(),
+        supabase.from("user_roles").select("role").eq("user_id", userId),
       ]);
       setProfile(prof);
-      setIsAdmin(roles.some((r) => r.role === "admin"));
+      setIsAdmin(roles?.some((r) => r.role === "admin") ?? false);
     } catch {
-      // Token invalid — clear
-      clearTokens();
-      setUser(null);
       setProfile(null);
       setIsAdmin(false);
     }
   }, []);
 
   const refreshProfile = useCallback(async () => {
-    if (getAccessToken()) await fetchProfileAndRole();
-  }, [fetchProfileAndRole]);
+    if (user) await fetchProfileAndRole(user.id);
+  }, [user, fetchProfileAndRole]);
 
-  // Bootstrap: check if we already have a token
   useEffect(() => {
-    const token = getAccessToken();
-    if (!token) {
-      setLoading(false);
-      return;
-    }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (_event, session) => {
+        if (session?.user) {
+          setUser(session.user);
+          await fetchProfileAndRole(session.user.id);
+        } else {
+          setUser(null);
+          setProfile(null);
+          setIsAdmin(false);
+        }
+        setLoading(false);
+      }
+    );
 
-    // Decode user id/email from JWT payload (no verification — server validates)
-    try {
-      const payload = JSON.parse(atob(token.split(".")[1]));
-      setUser({ id: payload.sub, email: payload.email });
-      fetchProfileAndRole().finally(() => setLoading(false));
-    } catch {
-      clearTokens();
-      setLoading(false);
-    }
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        setUser(session.user);
+        fetchProfileAndRole(session.user.id).finally(() => setLoading(false));
+      } else {
+        setLoading(false);
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, [fetchProfileAndRole]);
 
   const signOut = () => {
-    clearTokens();
+    supabase.auth.signOut();
     setUser(null);
     setProfile(null);
     setIsAdmin(false);
-  };
-
-  const onLoginSuccess = async (authRes: AuthResponse) => {
-    setUser(authRes.user);
-    await fetchProfileAndRole();
   };
 
   return (
@@ -97,7 +91,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         loading,
         signOut,
         refreshProfile,
-        onLoginSuccess,
       }}
     >
       {children}
