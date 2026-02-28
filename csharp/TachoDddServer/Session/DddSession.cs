@@ -1153,6 +1153,12 @@ public class DddSession
                 {
                     _downloadedFiles[_currentFileType] = _fileBuffer.ToArray();
                     _successfulDownloads++;
+
+                    // Post-download generation verification for Overview
+                    if (_currentFileType == DddFileType.Overview)
+                    {
+                        VerifyGenerationFromOverview(_downloadedFiles[_currentFileType]);
+                    }
                 }
 
                 SaveCurrentFile();
@@ -1366,6 +1372,83 @@ public class DddSession
 
         return "Unknown";
     }
+
+    // ─── POST-DOWNLOAD GENERATION VERIFICATION ────────────────────
+
+    /// <summary>
+    /// Scans the downloaded Overview file for VU section tags to verify/correct
+    /// the VU generation. Critical when InterfaceVersion check failed (0x03:0x02)
+    /// and defaulted to Gen1, but the actual VU is Gen2.
+    /// Tags: 0x76 0x01-0x0F = Gen1, 0x76 0x21-0x2F = Gen2v1, 0x76 0x31-0x3F = Gen2v2.
+    /// </summary>
+    private void VerifyGenerationFromOverview(byte[] overviewData)
+    {
+        try
+        {
+            var detectedGen = ScanForGenerationTags(overviewData);
+            if (detectedGen == VuGeneration.Unknown || detectedGen == _vuGeneration)
+            {
+                if (detectedGen != VuGeneration.Unknown)
+                    _logger.LogInformation("🔍 Post-download verification: generation confirmed as {Gen}", _vuGeneration);
+                return;
+            }
+
+            // Only upgrade, never downgrade
+            if (GenerationRank(detectedGen) <= GenerationRank(_vuGeneration)) return;
+
+            var oldGen = _vuGeneration;
+            _vuGeneration = detectedGen;
+            _diagnostics.Generation = _vuGeneration;
+            _webReporter?.SetGeneration(_vuGeneration);
+
+            var msg = $"POST-DOWNLOAD CORRECTION: VU generation {oldGen} → {detectedGen} (Overview section tags)";
+            _logger.LogWarning("⚠️ {Msg}", msg);
+            _trafficLogger?.LogWarning(msg);
+            _diagnostics.LogWarning(msg);
+
+            _webReporter?.ReportStatus(
+                "downloading", 0, _successfulDownloads, _filesToDownload.Count,
+                _currentFileType.ToString(),
+                _diagnostics.BytesSent + _diagnostics.BytesReceived,
+                _diagnostics.ApduExchanges, _diagnostics.CrcErrors,
+                "warning", msg, "GenerationCorrection");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "⚠️ Error during post-download generation verification");
+            _diagnostics.LogWarning($"Generation verification error: {ex.Message}");
+        }
+    }
+
+    private VuGeneration ScanForGenerationTags(byte[] data)
+    {
+        var maxGen = VuGeneration.Unknown;
+        for (int i = 0; i < data.Length - 1; i++)
+        {
+            if (data[i] != 0x76) continue;
+            byte tag = data[i + 1];
+            VuGeneration tagGen;
+            if (tag >= 0x31 && tag <= 0x3F) tagGen = VuGeneration.Gen2v2;
+            else if (tag >= 0x21 && tag <= 0x2F) tagGen = VuGeneration.Gen2v1;
+            else if (tag >= 0x01 && tag <= 0x0F) tagGen = VuGeneration.Gen1;
+            else continue;
+
+            if (GenerationRank(tagGen) > GenerationRank(maxGen))
+            {
+                maxGen = tagGen;
+                _logger.LogDebug("🔍 Section tag 0x76 0x{Tag:X2} → {Gen}", tag, tagGen);
+            }
+        }
+        return maxGen;
+    }
+
+    private static int GenerationRank(VuGeneration gen) => gen switch
+    {
+        VuGeneration.Gen2v2 => 3,
+        VuGeneration.Gen2v1 => 2,
+        VuGeneration.Gen1 => 1,
+        _ => 0
+    };
 
     // ─── TERMINATE ───────────────────────────────────────────────────
 
