@@ -142,31 +142,23 @@ export function DownloadScheduleTable() {
           Harmonogram pobierania
         </h2>
         <div className="flex items-center gap-3">
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div className="flex items-center gap-2">
-                  {isDevMode ? (
-                    <ShieldOff className="h-3.5 w-3.5 text-warning" />
-                  ) : (
-                    <Shield className="h-3.5 w-3.5 text-primary" />
-                  )}
-                  <span className="text-xs text-muted-foreground">
-                    {isDevMode ? "Blokada wyłączona" : "Blokada aktywna"}
-                  </span>
-                  <Switch
-                    checked={isDevMode}
-                    onCheckedChange={handleToggleDevMode}
-                    disabled={toggling}
-                    className="scale-75"
-                  />
-                </div>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>Tryb deweloperski — wyłącza blokadę pobierania 1x/dzień</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+          <div className="flex items-center gap-2">
+            {isDevMode ? (
+              <ShieldOff className="h-3.5 w-3.5 text-warning" />
+            ) : (
+              <Shield className="h-3.5 w-3.5 text-primary" />
+            )}
+            <span className="text-xs text-muted-foreground">
+              {isDevMode ? "Blokada wyłączona" : "Blokada aktywna"}
+            </span>
+            <Switch
+              checked={isDevMode}
+              onCheckedChange={() => handleToggleDevMode()}
+              disabled={toggling}
+              className="scale-75"
+              title="Tryb deweloperski — wyłącza blokadę pobierania 1x/dzień"
+            />
+          </div>
         <AlertDialog>
           <AlertDialogTrigger asChild>
             <Button
