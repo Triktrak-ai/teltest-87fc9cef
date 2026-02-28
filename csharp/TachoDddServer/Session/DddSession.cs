@@ -241,6 +241,7 @@ public class DddSession
             _diagnostics.Imei = _imei;
             _diagnostics.Generation = _vuGeneration;
             _diagnostics.CardGeneration = _cardGeneration;
+            _diagnostics.DetectedVuGenFromApdu = _detectedVuGenFromApdu;
             _diagnostics.Finish();
 
             var summary = _diagnostics.GenerateSummary();
@@ -602,6 +603,9 @@ public class DddSession
     /// </summary>
     private async Task<string> ProbeCardGenerationAsync()
     {
+        var probe = new SessionDiagnostics.CardProbeResult();
+        _diagnostics.CardProbe = probe;
+
         try
         {
             _logger.LogInformation("🔬 Probing EF_ICC for card generation...");
@@ -609,20 +613,25 @@ public class DddSession
             // 1. SELECT MF (3F00)
             var selectMf = new byte[] { 0x00, 0xA4, 0x00, 0x00, 0x02, 0x3F, 0x00 };
             var resp = await _bridge.TransmitApduAsync(selectMf);
-            _trafficLogger?.LogDecodedWithHex("PROBE", "SELECT_MF", resp, resp.Length, $"SW={FormatSw(resp)}");
+            probe.SelectMfSw = FormatSw(resp);
+            _trafficLogger?.LogDecodedWithHex("PROBE", "SELECT_MF", resp, resp.Length, $"SW={probe.SelectMfSw}");
             if (!IsSwSuccess(resp))
             {
-                _logger.LogWarning("⚠️ EF_ICC probe: SELECT MF failed (SW={SW})", FormatSw(resp));
+                _logger.LogWarning("⚠️ EF_ICC probe: SELECT MF failed (SW={SW})", probe.SelectMfSw);
+                probe.Result = "Gen2";
+                probe.Error = $"SELECT MF failed: SW={probe.SelectMfSw}";
                 return "Gen2";
             }
 
             // 2. SELECT DF Tachograph_G2 (0007)
             var selectDf = new byte[] { 0x00, 0xA4, 0x02, 0x0C, 0x02, 0x00, 0x07 };
             resp = await _bridge.TransmitApduAsync(selectDf);
-            _trafficLogger?.LogDecodedWithHex("PROBE", "SELECT_DF_0007", resp, resp.Length, $"SW={FormatSw(resp)}");
+            probe.SelectDfSw = FormatSw(resp);
+            _trafficLogger?.LogDecodedWithHex("PROBE", "SELECT_DF_0007", resp, resp.Length, $"SW={probe.SelectDfSw}");
             if (!IsSwSuccess(resp))
             {
-                _logger.LogInformation("🔬 SELECT DF 0007 failed (SW={SW}) — confirming Gen1 card", FormatSw(resp));
+                _logger.LogInformation("🔬 SELECT DF 0007 failed (SW={SW}) — confirming Gen1 card", probe.SelectDfSw);
+                probe.Result = "Gen1";
                 await TryResetCardState();
                 return "Gen1";
             }
@@ -630,10 +639,13 @@ public class DddSession
             // 3. SELECT EF_ICC (0002)
             var selectEfIcc = new byte[] { 0x00, 0xA4, 0x02, 0x0C, 0x02, 0x00, 0x02 };
             resp = await _bridge.TransmitApduAsync(selectEfIcc);
-            _trafficLogger?.LogDecodedWithHex("PROBE", "SELECT_EF_ICC", resp, resp.Length, $"SW={FormatSw(resp)}");
+            probe.SelectEfIccSw = FormatSw(resp);
+            _trafficLogger?.LogDecodedWithHex("PROBE", "SELECT_EF_ICC", resp, resp.Length, $"SW={probe.SelectEfIccSw}");
             if (!IsSwSuccess(resp))
             {
-                _logger.LogWarning("⚠️ EF_ICC probe: SELECT EF_ICC failed (SW={SW})", FormatSw(resp));
+                _logger.LogWarning("⚠️ EF_ICC probe: SELECT EF_ICC failed (SW={SW})", probe.SelectEfIccSw);
+                probe.Result = "Gen2";
+                probe.Error = $"SELECT EF_ICC failed: SW={probe.SelectEfIccSw}";
                 await TryResetCardState();
                 return "Gen2";
             }
@@ -641,24 +653,28 @@ public class DddSession
             // 4. READ BINARY (32 bytes — cardGeneration is at offset 25)
             var readBinary = new byte[] { 0x00, 0xB0, 0x00, 0x00, 0x20 };
             resp = await _bridge.TransmitApduAsync(readBinary);
+            probe.ReadBinarySw = FormatSw(resp);
+            probe.ReadBinaryLen = resp.Length;
 
-            _trafficLogger?.LogDecodedWithHex("PROBE", "READ_BINARY_EF_ICC", resp, resp.Length, $"SW={FormatSw(resp)}");
+            _trafficLogger?.LogDecodedWithHex("PROBE", "READ_BINARY_EF_ICC", resp, resp.Length, $"SW={probe.ReadBinarySw}");
             _logger.LogInformation("🔬 EF_ICC READ BINARY response: {Hex} ({Len}B)",
                 BitConverter.ToString(resp), resp.Length);
 
             if (resp.Length >= 3 && IsSwSuccess(resp))
             {
-                // Parse cardGeneration from EF_ICC data
-                // The data portion is resp[0 .. resp.Length-3] (last 2 bytes are SW)
                 var data = new byte[resp.Length - 2];
                 Array.Copy(resp, 0, data, 0, data.Length);
-                var generation = ParseCardGenerationFromEfIcc(data);
+                probe.EfIccHex = BitConverter.ToString(data);
+                var generation = ParseCardGenerationFromEfIcc(data, probe);
 
                 await TryResetCardState();
                 return generation;
             }
 
             _logger.LogWarning("⚠️ EF_ICC READ BINARY unexpected response ({Len}B)", resp.Length);
+            probe.EfIccHex = BitConverter.ToString(resp);
+            probe.Result = "Gen2";
+            probe.Error = $"READ BINARY unexpected: SW={probe.ReadBinarySw}, len={resp.Length}";
             await TryResetCardState();
             return "Gen2";
         }
@@ -666,6 +682,8 @@ public class DddSession
         {
             _logger.LogWarning(ex, "⚠️ EF_ICC probe failed, falling back to Gen2");
             _diagnostics.LogWarning($"EF_ICC probe error: {ex.Message}");
+            probe.Result = "Gen2";
+            probe.Error = $"{ex.GetType().Name}: {ex.Message}";
             await TryResetCardState();
             return "Gen2";
         }
@@ -739,7 +757,7 @@ public class DddSession
     ///   cardPersonaliserID (1B) + embedderIcAssemblerId (5B) + icIdentifier (2B) = 25 bytes
     ///   → cardGeneration at offset 25 (1 byte): 0x01 = Gen2v1, 0x02 = Gen2v2
     /// </summary>
-    private string ParseCardGenerationFromEfIcc(byte[] data)
+    private string ParseCardGenerationFromEfIcc(byte[] data, SessionDiagnostics.CardProbeResult probe)
     {
         _logger.LogInformation("🔬 EF_ICC data ({Len}B): {Hex}", data.Length, BitConverter.ToString(data));
 
@@ -748,18 +766,25 @@ public class DddSession
         if (data.Length > cardGenerationOffset)
         {
             byte genByte = data[cardGenerationOffset];
+            probe.GenByte = genByte;
             _logger.LogInformation("🔬 cardGeneration byte at offset {Off}: 0x{Val:X2}", cardGenerationOffset, genByte);
 
-            return genByte switch
+            var result = genByte switch
             {
                 0x01 => "Gen2v1",
                 0x02 => "Gen2v2",
                 _ => "Gen2" // Unknown sub-generation
             };
+            probe.Result = result;
+            if (result == "Gen2")
+                probe.Error = $"Unknown genByte: 0x{genByte:X2}";
+            return result;
         }
 
         _logger.LogWarning("⚠️ EF_ICC data too short ({Len}B) for cardGeneration at offset {Off}, defaulting to Gen2",
             data.Length, cardGenerationOffset);
+        probe.Result = "Gen2";
+        probe.Error = $"EF_ICC data too short: {data.Length}B (need >{cardGenerationOffset})";
         return "Gen2";
     }
 
