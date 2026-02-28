@@ -19,11 +19,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { RotateCcw, FileDown } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { RotateCcw, FileDown, ShieldOff, Shield } from "lucide-react";
 import { toast } from "sonner";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 const statusConfig: Record<string, { label: string; className: string }> = {
   ok: { label: "Pobrano", className: "bg-success/20 text-success border-success/30" },
@@ -54,10 +55,47 @@ function getLogDownloadUrl(sessionId: string, fileName: string): string {
   return `${supabaseUrl}/storage/v1/object/public/session-logs/${sessionId}/${fileName}`;
 }
 
+function useDevMode() {
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
+    queryKey: ["app_settings", "download_block_disabled"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("app_settings" as any)
+        .select("value")
+        .eq("key", "download_block_disabled")
+        .maybeSingle();
+      if (error) throw error;
+      return (data as any)?.value === "true";
+    },
+  });
+
+  const toggle = async (disabled: boolean) => {
+    const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/toggle-download-block`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        "apikey": import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+      },
+      body: JSON.stringify({ disabled }),
+    });
+    if (!res.ok) throw new Error("Toggle failed");
+    queryClient.invalidateQueries({ queryKey: ["app_settings", "download_block_disabled"] });
+    return res.json();
+  };
+
+  return { isDevMode: query.data ?? false, isLoading: query.isLoading, toggle };
+}
+
 export function DownloadScheduleTable() {
   const { data: schedules, isLoading, resetSchedule } = useDownloadSchedule();
   const { data: sessionsWithLogs } = useLatestSessionsWithLogs();
+  const { isDevMode, toggle: toggleDevMode } = useDevMode();
   const [resetting, setResetting] = useState<string | null>(null);
+  const [toggling, setToggling] = useState(false);
 
   const handleReset = async (imei?: string) => {
     const key = imei ?? "__all__";
@@ -85,12 +123,50 @@ export function DownloadScheduleTable() {
     }
   };
 
+  const handleToggleDevMode = async () => {
+    setToggling(true);
+    try {
+      await toggleDevMode(!isDevMode);
+      toast.success(isDevMode ? "Blokada pobierania włączona" : "Blokada pobierania wyłączona (tryb dev)");
+    } catch {
+      toast.error("Błąd przełączania trybu");
+    } finally {
+      setToggling(false);
+    }
+  };
+
   return (
     <div className="rounded-lg border bg-card">
       <div className="border-b px-5 py-3 flex items-center justify-between">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
           Harmonogram pobierania
         </h2>
+        <div className="flex items-center gap-3">
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="flex items-center gap-2">
+                  {isDevMode ? (
+                    <ShieldOff className="h-3.5 w-3.5 text-warning" />
+                  ) : (
+                    <Shield className="h-3.5 w-3.5 text-primary" />
+                  )}
+                  <span className="text-xs text-muted-foreground">
+                    {isDevMode ? "Blokada wyłączona" : "Blokada aktywna"}
+                  </span>
+                  <Switch
+                    checked={isDevMode}
+                    onCheckedChange={handleToggleDevMode}
+                    disabled={toggling}
+                    className="scale-75"
+                  />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Tryb deweloperski — wyłącza blokadę pobierania 1x/dzień</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         <AlertDialog>
           <AlertDialogTrigger asChild>
             <Button
@@ -117,6 +193,7 @@ export function DownloadScheduleTable() {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
