@@ -671,14 +671,48 @@ public class DddSession
 
     private async Task TryResetCardState()
     {
+        // Try multiple SELECT MF variants — some cards reject certain P1/P2 combinations
+        byte[][] selectMfVariants = new[]
+        {
+            new byte[] { 0x00, 0xA4, 0x00, 0x00, 0x02, 0x3F, 0x00 }, // SELECT MF by FID, P2=00 (return FCI)
+            new byte[] { 0x00, 0xA4, 0x00, 0x0C, 0x02, 0x3F, 0x00 }, // SELECT MF by FID, P2=0C (no response)
+            new byte[] { 0x00, 0xA4, 0x00, 0x00, 0x00 },             // SELECT MF no data (some cards accept this)
+        };
+
+        foreach (var selectMf in selectMfVariants)
+        {
+            try
+            {
+                var resp = await _bridge.TransmitApduAsync(selectMf);
+                var sw = FormatSw(resp);
+                _trafficLogger?.LogDecoded("PROBE", "SELECT_MF", resp.Length, $"SW={sw} | {BitConverter.ToString(selectMf).Replace("-", " ")}");
+
+                if (IsSwSuccess(resp))
+                {
+                    _logger.LogInformation("✅ Card state reset OK (SELECT MF variant: {Apdu})",
+                        BitConverter.ToString(selectMf).Replace("-", " "));
+                    return;
+                }
+                _logger.LogDebug("SELECT MF variant {Apdu} returned SW={SW}", BitConverter.ToString(selectMf), sw);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("SELECT MF variant failed: {Msg}", ex.Message);
+            }
+        }
+
+        // All SELECT MF variants failed — try warm reset via SCardReconnect
+        _logger.LogWarning("⚠️ All SELECT MF variants failed — attempting warm reset (SCardReconnect)");
         try
         {
-            var selectMf = new byte[] { 0x00, 0xA4, 0x00, 0x00, 0x02, 0x3F, 0x00 };
-            await _bridge.TransmitApduAsync(selectMf);
+            await _bridge.ReconnectAsync();
+            _logger.LogInformation("✅ Card warm reset (SCardReconnect) succeeded");
+            _trafficLogger?.LogDecoded("PROBE", "RECONNECT", 0, "Warm reset OK");
         }
         catch (Exception ex)
         {
-            _logger.LogWarning("⚠️ Failed to reset card state after probe: {Msg}", ex.Message);
+            _logger.LogWarning("⚠️ Warm reset (SCardReconnect) also failed: {Msg}", ex.Message);
+            _trafficLogger?.LogError("CardReset", $"All reset methods failed: {ex.Message}");
         }
     }
 

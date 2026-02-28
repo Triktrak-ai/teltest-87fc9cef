@@ -138,6 +138,35 @@ static async Task HandleSessionAsync(WebSocket ws)
                 Array.Copy(recvBuf, responseData, recvLen);
                 Console.WriteLine($"📤 Odpowiedź APDU: {recvLen}B, SW={recvBuf[recvLen - 2]:X2}{recvBuf[recvLen - 1]:X2}");
             }
+            else if (cmd == "RECONNECT")
+            {
+                // Warm reset: disconnect + reconnect to reset card state
+                Console.WriteLine("🔄 Warm reset (RECONNECT)...");
+                logWriter.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] RECONNECT — warm reset requested");
+
+                if (hCard != IntPtr.Zero)
+                {
+                    SCardDisconnect(hCard, 0); // SCARD_LEAVE_CARD = 0
+                    hCard = IntPtr.Zero;
+                }
+
+                ret = SCardConnectW(hContext, readerName, 2, 3, out hCard, out activeProtocol);
+                if (ret != 0) throw new Exception($"SCardReconnect failed: 0x{ret:X8}");
+
+                // Read new ATR after reconnect
+                byte[] atrBuf = new byte[256];
+                int atrLen = atrBuf.Length;
+                int state2 = 0, protocol2 = 0;
+                byte[] readerNameBuf2 = new byte[256];
+                int readerNameLen2 = readerNameBuf2.Length;
+                SCardStatusA(hCard, readerNameBuf2, ref readerNameLen2,
+                    out state2, out protocol2, atrBuf, ref atrLen);
+
+                responseData = new byte[atrLen];
+                Array.Copy(atrBuf, responseData, atrLen);
+                Console.WriteLine($"🔄 Reconnect OK — nowy ATR: {BitConverter.ToString(responseData)}");
+                logWriter.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] RECONNECT OK — ATR: {ToHex(responseData)}");
+            }
             else
             {
                 var errorResp = JsonSerializer.Serialize(new { error = $"Unknown command: {cmd}" });
