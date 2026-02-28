@@ -22,7 +22,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { RotateCcw, FileDown, ShieldOff, Shield } from "lucide-react";
 import { toast } from "sonner";
-import { useState, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -86,12 +86,22 @@ function useDevMode() {
   return { isDevMode: query.data ?? false, isLoading: query.isLoading, toggle };
 }
 
-export function DownloadScheduleTable() {
+interface DownloadScheduleTableProps {
+  filterImeis?: string[] | null;
+}
+
+export function DownloadScheduleTable({ filterImeis }: DownloadScheduleTableProps) {
   const { data: schedules, isLoading, resetSchedule } = useDownloadSchedule();
   const { data: sessionsWithLogs } = useLatestSessionsWithLogs();
   const { isDevMode, toggle: toggleDevMode } = useDevMode();
   const [resetting, setResetting] = useState<string | null>(null);
   const [toggling, setToggling] = useState(false);
+
+  const filtered = useMemo(() => {
+    if (!schedules) return undefined;
+    if (!filterImeis) return schedules;
+    return schedules.filter((s) => filterImeis.includes(s.imei));
+  }, [schedules, filterImeis]);
 
   const handleReset = async (imei?: string) => {
     const key = imei ?? "__all__";
@@ -210,14 +220,14 @@ export function DownloadScheduleTable() {
                 ))}
               </>
             )}
-            {!isLoading && schedules && schedules.length === 0 && (
+            {!isLoading && filtered && filtered.length === 0 && (
               <tr>
                 <td colSpan={7} className="px-5 py-12 text-center text-muted-foreground">
                   Brak wpisów w harmonogramie
                 </td>
               </tr>
             )}
-            {schedules?.map((s) => {
+            {filtered?.map((s) => {
               const sc = statusConfig[s.status] ?? statusConfig.pending;
               const logSession = getLatestLogSession(s.imei);
               return (

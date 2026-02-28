@@ -1,7 +1,7 @@
 import { useSessionEvents } from "@/hooks/useSessions";
 import { Info, CheckCircle, AlertTriangle, XCircle, RefreshCw, SkipForward } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useMemo } from "react";
 
 const typeConfig: Record<string, { icon: React.ReactNode; color: string }> = {
   info: { icon: <Info size={14} />, color: "text-info" },
@@ -28,15 +28,25 @@ const contextHighlight: Record<string, { icon: React.ReactNode; color: string; b
   },
 };
 
-export function EventTimeline() {
+interface EventTimelineProps {
+  filterImeis?: string[] | null;
+}
+
+export function EventTimeline({ filterImeis }: EventTimelineProps) {
   const { data: events, isLoading } = useSessionEvents();
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const filtered = useMemo(() => {
+    if (!events) return undefined;
+    if (!filterImeis) return events;
+    return events.filter((e) => filterImeis.includes(e.imei));
+  }, [events, filterImeis]);
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = 0;
     }
-  }, [events]);
+  }, [filtered]);
 
   return (
     <div className="rounded-lg border bg-card">
@@ -44,7 +54,7 @@ export function EventTimeline() {
         <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
           Ostatnie zdarzenia
         </h2>
-        {events && events.length > 0 && (
+        {filtered && filtered.length > 0 && (
           <span className="flex items-center gap-1.5 text-xs text-primary">
             <span className="relative flex h-2 w-2">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
@@ -67,12 +77,12 @@ export function EventTimeline() {
             ))}
           </div>
         )}
-        {!isLoading && events && events.length === 0 && (
+        {!isLoading && filtered && filtered.length === 0 && (
           <div className="px-5 py-12 text-center text-muted-foreground text-sm">
             Brak zdarzeń
           </div>
         )}
-        {events?.map((event) => {
+        {filtered?.map((event) => {
           const ctxHighlight = event.context ? contextHighlight[event.context] : undefined;
           const cfg = ctxHighlight ?? typeConfig[event.type] ?? typeConfig.info;
           const time = new Date(event.created_at).toLocaleTimeString("pl-PL", {

@@ -1,7 +1,8 @@
 import { Activity, CheckCircle, AlertTriangle, Radio, HardDrive, Repeat, ShieldAlert, SkipForward } from "lucide-react";
-import { useSessionStats } from "@/hooks/useSessions";
+import { useSessions, useSessionStats, isStaleSession } from "@/hooks/useSessions";
 import { useDownloadSchedule } from "@/hooks/useDownloadSchedule";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useMemo } from "react";
 
 interface StatCardProps {
   label: string;
@@ -43,18 +44,53 @@ function StatCard({ label, value, icon, accent = "primary", loading }: StatCardP
   );
 }
 
-export function StatsCards() {
-  const { stats, isLoading } = useSessionStats();
-  const { data: schedules, isLoading: schedLoading } = useDownloadSchedule();
+interface StatsCardsProps {
+  filterImeis?: string[] | null;
+}
 
-  const skippedToday = schedules?.filter((s) => {
-    if (s.status !== "skipped" && s.status !== "ok") return false;
-    const updated = s.last_attempt_at ? new Date(s.last_attempt_at) : null;
-    if (!updated) return false;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    return updated >= today && s.attempts_today > 0;
-  }).length ?? 0;
+export function StatsCards({ filterImeis }: StatsCardsProps) {
+  const { data: allSessions, isLoading } = useSessions();
+  const { data: allSchedules, isLoading: schedLoading } = useDownloadSchedule();
+
+  const sessions = useMemo(() => {
+    if (!allSessions) return undefined;
+    if (!filterImeis) return allSessions;
+    return allSessions.filter((s) => filterImeis.includes(s.imei));
+  }, [allSessions, filterImeis]);
+
+  const schedules = useMemo(() => {
+    if (!allSchedules) return undefined;
+    if (!filterImeis) return allSchedules;
+    return allSchedules.filter((s) => filterImeis.includes(s.imei));
+  }, [allSchedules, filterImeis]);
+
+  const stats = useMemo(() => {
+    if (!sessions) return { activeSessions: 0, completedToday: 0, errorsToday: 0, uniqueImei: 0, totalBytes: 0, totalApdu: 0, totalCrc: 0 };
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const active = sessions.filter((s) => s.status !== "completed" && s.status !== "error" && s.status !== "partial" && s.status !== "skipped" && !isStaleSession(s));
+    const completedToday = sessions.filter((s) => s.status === "completed" && s.completed_at && new Date(s.completed_at) >= today);
+    const errorsToday = sessions.filter((s) => s.status === "error" && new Date(s.last_activity) >= today);
+    return {
+      activeSessions: active.length,
+      completedToday: completedToday.length,
+      errorsToday: errorsToday.length,
+      uniqueImei: new Set(active.map((s) => s.imei)).size,
+      totalBytes: sessions.reduce((sum, s) => sum + (s.bytes_downloaded ?? 0), 0),
+      totalApdu: sessions.reduce((sum, s) => sum + (s.apdu_exchanges ?? 0), 0),
+      totalCrc: sessions.reduce((sum, s) => sum + (s.crc_errors ?? 0), 0),
+    };
+  }, [sessions]);
+
+  const skippedToday = useMemo(() => {
+    if (!schedules) return 0;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    return schedules.filter((s) => {
+      if (s.status !== "skipped" && s.status !== "ok") return false;
+      const updated = s.last_attempt_at ? new Date(s.last_attempt_at) : null;
+      if (!updated) return false;
+      return updated >= today && s.attempts_today > 0;
+    }).length;
+  }, [schedules]);
 
   return (
     <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8">
