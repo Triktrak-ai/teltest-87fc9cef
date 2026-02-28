@@ -23,7 +23,7 @@ import { Switch } from "@/components/ui/switch";
 import { RotateCcw, FileDown, ShieldOff, Shield } from "lucide-react";
 import { toast } from "sonner";
 import { useState, useMemo } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useImeiOwners } from "@/hooks/useImeiOwners";
 
@@ -39,21 +39,16 @@ function useLatestSessionsWithLogs() {
   return useQuery({
     queryKey: ["sessions-with-logs"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("sessions")
-        .select("id, imei, log_uploaded, created_at")
-        .eq("log_uploaded", true)
-        .order("created_at", { ascending: false });
-      if (error) throw error;
-      return (data ?? []) as { id: string; imei: string; log_uploaded: boolean; created_at: string }[];
+      const sessions = await apiFetch<{ id: string; imei: string; log_uploaded: boolean; created_at: string }[]>("/api/sessions");
+      return sessions.filter((s) => s.log_uploaded);
     },
     refetchInterval: 30000,
   });
 }
 
 function getLogDownloadUrl(sessionId: string, fileName: string): string {
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-  return `${supabaseUrl}/storage/v1/object/public/session-logs/${sessionId}/${fileName}`;
+  const apiBase = import.meta.env.VITE_API_BASE_URL ?? "";
+  return `${apiBase}/api/session-logs/${sessionId}/${fileName}`;
 }
 
 function useDevMode() {
@@ -62,26 +57,17 @@ function useDevMode() {
   const query = useQuery({
     queryKey: ["app_settings", "download_block_disabled"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("app_settings" as any)
-        .select("value")
-        .eq("key", "download_block_disabled")
-        .maybeSingle();
-      if (error) throw error;
-      return (data as any)?.value === "true";
+      const setting = await apiFetch<{ key: string; value: string }>("/api/app-settings/download_block_disabled").catch(() => null);
+      return setting?.value === "true";
     },
   });
 
   const toggle = async (disabled: boolean) => {
-    const { data, error } = await supabase.functions.invoke("toggle-download-block", {
-      body: { disabled },
+    await apiFetch("/api/toggle-download-block", {
+      method: "POST",
+      body: JSON.stringify({ disabled }),
     });
-
-    if (error) throw error;
-    if (!(data as any)?.ok) throw new Error("Toggle failed");
-
     await queryClient.invalidateQueries({ queryKey: ["app_settings", "download_block_disabled"] });
-    return data;
   };
 
   return { isDevMode: query.data ?? false, isLoading: query.isLoading, toggle };

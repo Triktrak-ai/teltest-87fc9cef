@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api-client";
 import { Input } from "@/components/ui/input";
 import { Search, X } from "lucide-react";
 
@@ -20,25 +20,27 @@ export function AdminFilter({ onFilterChange }: AdminFilterProps) {
   const [query, setQuery] = useState("");
 
   useEffect(() => {
-    const fetch = async () => {
-      const [devRes, profRes] = await Promise.all([
-        supabase.from("user_devices").select("imei, label, vehicle_plate, user_id"),
-        supabase.from("profiles").select("id, full_name"),
-      ]);
-      const devs = (devRes.data ?? []) as any[];
-      const profs = (profRes.data ?? []) as any[];
-      const profMap = new Map(profs.map((p: any) => [p.id, p.full_name || "Brak nazwy"]));
-      setDevices(
-        devs.map((d: any) => ({
-          imei: d.imei,
-          label: d.label,
-          vehicle_plate: d.vehicle_plate,
-          user_id: d.user_id,
-          user_name: profMap.get(d.user_id) ?? "Nieznany",
-        }))
-      );
+    const load = async () => {
+      try {
+        const users = await apiFetch<{ id: string; full_name: string; devices: { imei: string; label: string | null; vehicle_plate: string | null }[] }[]>("/api/admin/users");
+        const devs: DeviceInfo[] = [];
+        for (const u of users) {
+          for (const d of u.devices) {
+            devs.push({
+              imei: d.imei,
+              label: d.label,
+              vehicle_plate: d.vehicle_plate,
+              user_id: u.id,
+              user_name: u.full_name || "Brak nazwy",
+            });
+          }
+        }
+        setDevices(devs);
+      } catch {
+        // ignore
+      }
     };
-    fetch();
+    load();
   }, []);
 
   const filtered = useMemo(() => {

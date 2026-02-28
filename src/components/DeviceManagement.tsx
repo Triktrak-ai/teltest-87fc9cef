@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api-client";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,11 +27,12 @@ export function DeviceManagement() {
 
   const fetchDevices = async () => {
     if (!user) return;
-    const { data } = await supabase
-      .from("user_devices")
-      .select("id, imei, label, vehicle_plate, sim_number, comment")
-      .eq("user_id", user.id);
-    setDevices((data as Device[]) ?? []);
+    try {
+      const data = await apiFetch<Device[]>("/api/user-devices");
+      setDevices(data);
+    } catch {
+      // ignore
+    }
   };
 
   useEffect(() => { fetchDevices(); }, [user]);
@@ -39,28 +40,30 @@ export function DeviceManagement() {
   const addDevice = async () => {
     const imei = newImei.trim();
     if (!imei || !user) return;
-    const { error } = await supabase.from("user_devices").insert({
-      user_id: user.id,
-      imei,
-      label: newLabel.trim() || null,
-      vehicle_plate: newVehiclePlate.trim() || null,
-      sim_number: newSimNumber.trim() || null,
-      comment: newComment.trim() || null,
-    } as any);
-    if (error) {
-      toast({ title: "Błąd", description: error.message, variant: "destructive" });
-    } else {
+    try {
+      await apiFetch("/api/user-devices", {
+        method: "POST",
+        body: JSON.stringify({
+          imei,
+          label: newLabel.trim() || null,
+          vehicle_plate: newVehiclePlate.trim() || null,
+          sim_number: newSimNumber.trim() || null,
+          comment: newComment.trim() || null,
+        }),
+      });
       setNewImei("");
       setNewLabel("");
       setNewVehiclePlate("");
       setNewSimNumber("");
       setNewComment("");
       fetchDevices();
+    } catch (err: any) {
+      toast({ title: "Błąd", description: err.message, variant: "destructive" });
     }
   };
 
   const removeDevice = async (id: string) => {
-    await supabase.from("user_devices").delete().eq("id", id);
+    await apiFetch(`/api/user-devices/${id}`, { method: "DELETE" });
     fetchDevices();
   };
 
