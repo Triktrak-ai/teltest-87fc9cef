@@ -1,5 +1,5 @@
 import { useSessionEvents } from "@/hooks/useSessions";
-import { Info, CheckCircle, AlertTriangle, XCircle, RefreshCw } from "lucide-react";
+import { Info, CheckCircle, AlertTriangle, XCircle, RefreshCw, SkipForward } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useEffect, useRef } from "react";
 
@@ -20,6 +20,11 @@ const contextHighlight: Record<string, { icon: React.ReactNode; color: string; b
     icon: <AlertTriangle size={14} />,
     color: "text-destructive",
     bgClass: "bg-destructive/10 border-l-2 border-l-destructive",
+  },
+  DownloadSkipped: {
+    icon: <SkipForward size={14} />,
+    color: "text-muted-foreground",
+    bgClass: "bg-muted/30 border-l-2 border-l-muted-foreground",
   },
 };
 

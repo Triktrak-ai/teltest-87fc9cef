@@ -125,6 +125,43 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Upsert download_schedule based on session status
+    const sessionStatus = body.status;
+    if (sessionStatus === "completed" || sessionStatus === "error" || sessionStatus === "skipped") {
+      const scheduleData: Record<string, unknown> = {
+        imei: body.imei,
+        last_attempt_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      if (sessionStatus === "completed") {
+        scheduleData.status = "ok";
+        scheduleData.last_success_at = new Date().toISOString();
+        scheduleData.last_error = null;
+      } else if (sessionStatus === "error") {
+        scheduleData.status = "error";
+        scheduleData.last_error = body.error_message ?? "Unknown error";
+      } else if (sessionStatus === "skipped") {
+        scheduleData.status = "skipped";
+      }
+
+      const { error: schedError } = await supabase
+        .from("download_schedule")
+        .upsert(scheduleData, { onConflict: "imei" });
+
+      if (schedError) {
+        console.error("Schedule upsert error:", schedError);
+      }
+
+      // Increment attempts_today via raw update after upsert
+      if (sessionStatus === "skipped") {
+        await supabase.rpc("increment_attempts_today", { p_imei: body.imei }).catch(() => {
+          // Fallback: just log, non-critical
+          console.warn("Could not increment attempts_today");
+        });
+      }
+    }
+
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },

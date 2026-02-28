@@ -16,6 +16,7 @@ const statusConfig: Record<string, { label: string; className: string }> = {
   completed: { label: "Ukończono", className: "bg-success/20 text-success border-success/30" },
   error: { label: "Błąd", className: "bg-destructive/20 text-destructive border-destructive/30" },
   waiting: { label: "Oczekuje", className: "bg-warning/20 text-warning border-warning/30" },
+  skipped: { label: "Pominięto", className: "bg-muted text-muted-foreground border-muted-foreground/20" },
 };
 
 function formatBytes(bytes: number): string {

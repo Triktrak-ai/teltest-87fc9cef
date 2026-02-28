@@ -1,5 +1,6 @@
-import { Activity, CheckCircle, AlertTriangle, Radio, HardDrive, Repeat, ShieldAlert } from "lucide-react";
+import { Activity, CheckCircle, AlertTriangle, Radio, HardDrive, Repeat, ShieldAlert, SkipForward } from "lucide-react";
 import { useSessionStats } from "@/hooks/useSessions";
+import { useDownloadSchedule } from "@/hooks/useDownloadSchedule";
 import { Skeleton } from "@/components/ui/skeleton";
 
 interface StatCardProps {
@@ -44,12 +45,23 @@ function StatCard({ label, value, icon, accent = "primary", loading }: StatCardP
 
 export function StatsCards() {
   const { stats, isLoading } = useSessionStats();
+  const { data: schedules, isLoading: schedLoading } = useDownloadSchedule();
+
+  const skippedToday = schedules?.filter((s) => {
+    if (s.status !== "skipped" && s.status !== "ok") return false;
+    const updated = s.last_attempt_at ? new Date(s.last_attempt_at) : null;
+    if (!updated) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return updated >= today && s.attempts_today > 0;
+  }).length ?? 0;
 
   return (
-    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
+    <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8">
       <StatCard label="Aktywne sesje" value={stats.activeSessions} icon={<Activity size={28} />} accent="primary" loading={isLoading} />
       <StatCard label="Ukończone dziś" value={stats.completedToday} icon={<CheckCircle size={28} />} accent="success" loading={isLoading} />
       <StatCard label="Błędy dziś" value={stats.errorsToday} icon={<AlertTriangle size={28} />} accent="destructive" loading={isLoading} />
+      <StatCard label="Pominięte dziś" value={skippedToday} icon={<SkipForward size={28} />} accent="warning" loading={schedLoading} />
       <StatCard label="IMEI aktywne" value={stats.uniqueImei} icon={<Radio size={28} />} accent="warning" loading={isLoading} />
       <StatCard label="Pobrano łącznie" value={formatBytes(stats.totalBytes)} icon={<HardDrive size={28} />} accent="primary" loading={isLoading} />
       <StatCard label="APDU łącznie" value={stats.totalApdu} icon={<Repeat size={28} />} accent="warning" loading={isLoading} />
