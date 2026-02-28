@@ -2,6 +2,7 @@ import { useSessionEvents } from "@/hooks/useSessions";
 import { Info, CheckCircle, AlertTriangle, XCircle, RefreshCw, SkipForward } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useEffect, useRef, useMemo } from "react";
+import { useImeiOwners } from "@/hooks/useImeiOwners";
 
 const typeConfig: Record<string, { icon: React.ReactNode; color: string }> = {
   info: { icon: <Info size={14} />, color: "text-info" },
@@ -33,6 +34,7 @@ interface EventTimelineProps {
 }
 
 export function EventTimeline({ filterImeis }: EventTimelineProps) {
+  const { getOwner, isAdmin } = useImeiOwners();
   const { data: events, isLoading } = useSessionEvents();
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -100,6 +102,9 @@ export function EventTimeline({ filterImeis }: EventTimelineProps) {
                 <p className="text-sm leading-relaxed">
                   <span className="font-mono text-xs text-muted-foreground mr-2">{time}</span>
                   <span className="font-mono text-xs text-primary/80 mr-2">[{event.imei}]</span>
+                  {isAdmin && getOwner(event.imei) && (
+                    <span className="text-xs text-muted-foreground mr-2">({getOwner(event.imei)!.userName})</span>
+                  )}
                   <span className={ctxHighlight ? "font-medium" : ""}>{event.message}</span>
                   {event.context && (
                     <span className="ml-2 font-mono text-xs text-muted-foreground">

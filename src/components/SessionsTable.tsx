@@ -5,6 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AlertTriangle } from "lucide-react";
 import { useMemo } from "react";
+import { useImeiOwners } from "@/hooks/useImeiOwners";
 
 type SessionStatus = Session["status"];
 
@@ -55,6 +56,7 @@ interface SessionsTableProps {
 }
 
 export function SessionsTable({ filterImeis }: SessionsTableProps) {
+  const { getOwner, isAdmin } = useImeiOwners();
   const { data: sessions, isLoading } = useSessions();
 
   const filtered = useMemo(() => {
@@ -83,6 +85,7 @@ export function SessionsTable({ filterImeis }: SessionsTableProps) {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
+              {isAdmin && <th className="px-5 py-3">Użytkownik</th>}
               <th className="px-5 py-3">IMEI</th>
               <th className="px-5 py-3">Pojazd</th>
               <th className="px-5 py-3">Tachograf</th>
@@ -102,7 +105,7 @@ export function SessionsTable({ filterImeis }: SessionsTableProps) {
               <>
                 {[1, 2, 3].map((i) => (
                   <tr key={i} className="border-b border-border/50">
-                    {Array.from({ length: 12 }).map((_, j) => (
+                    {Array.from({ length: isAdmin ? 13 : 12 }).map((_, j) => (
                       <td key={j} className="px-5 py-3">
                         <Skeleton className="h-4 w-full" />
                       </td>
@@ -113,7 +116,7 @@ export function SessionsTable({ filterImeis }: SessionsTableProps) {
             )}
             {!isLoading && filtered && filtered.length === 0 && (
               <tr>
-                <td colSpan={12} className="px-5 py-12 text-center text-muted-foreground">
+                <td colSpan={isAdmin ? 13 : 12} className="px-5 py-12 text-center text-muted-foreground">
                   Brak aktywnych sesji
                 </td>
               </tr>
@@ -128,6 +131,11 @@ export function SessionsTable({ filterImeis }: SessionsTableProps) {
               const genMismatch = isGenerationMismatch(s);
               return (
                 <tr key={s.id} className={`border-b border-border/50 hover:bg-secondary/30 transition-colors ${stale ? "opacity-50" : ""}`}>
+                  {isAdmin && (
+                    <td className="px-5 py-3 text-xs text-muted-foreground">
+                      {getOwner(s.imei)?.userName ?? "—"}
+                    </td>
+                  )}
                   <td className="px-5 py-3 font-mono text-xs">
                     <span className="flex items-center gap-1.5">
                       {active && !stale && (

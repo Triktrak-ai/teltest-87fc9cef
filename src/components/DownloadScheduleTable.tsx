@@ -25,6 +25,7 @@ import { toast } from "sonner";
 import { useState, useMemo } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useImeiOwners } from "@/hooks/useImeiOwners";
 
 const statusConfig: Record<string, { label: string; className: string }> = {
   ok: { label: "Pobrano", className: "bg-success/20 text-success border-success/30" },
@@ -91,6 +92,7 @@ interface DownloadScheduleTableProps {
 }
 
 export function DownloadScheduleTable({ filterImeis }: DownloadScheduleTableProps) {
+  const { getOwner, isAdmin } = useImeiOwners();
   const { data: schedules, isLoading, resetSchedule } = useDownloadSchedule();
   const { data: sessionsWithLogs } = useLatestSessionsWithLogs();
   const { isDevMode, toggle: toggleDevMode } = useDevMode();
@@ -197,6 +199,7 @@ export function DownloadScheduleTable({ filterImeis }: DownloadScheduleTableProp
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
+              {isAdmin && <th className="px-5 py-3">Użytkownik</th>}
               <th className="px-5 py-3">IMEI</th>
               <th className="px-5 py-3">Status</th>
               <th className="px-5 py-3">Ostatnie pobranie</th>
@@ -222,7 +225,7 @@ export function DownloadScheduleTable({ filterImeis }: DownloadScheduleTableProp
             )}
             {!isLoading && filtered && filtered.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-5 py-12 text-center text-muted-foreground">
+                <td colSpan={isAdmin ? 8 : 7} className="px-5 py-12 text-center text-muted-foreground">
                   Brak wpisów w harmonogramie
                 </td>
               </tr>
@@ -232,6 +235,11 @@ export function DownloadScheduleTable({ filterImeis }: DownloadScheduleTableProp
               const logSession = getLatestLogSession(s.imei);
               return (
                 <tr key={s.id} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
+                  {isAdmin && (
+                    <td className="px-5 py-3 text-xs text-muted-foreground">
+                      {getOwner(s.imei)?.userName ?? "—"}
+                    </td>
+                  )}
                   <td className="px-5 py-3 font-mono text-xs">{s.imei}</td>
                   <td className="px-5 py-3">
                     <Badge variant="outline" className={sc.className}>
