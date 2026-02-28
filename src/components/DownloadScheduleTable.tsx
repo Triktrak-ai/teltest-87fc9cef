@@ -72,19 +72,15 @@ function useDevMode() {
   });
 
   const toggle = async (disabled: boolean) => {
-    const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/toggle-download-block`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-        "apikey": import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-      },
-      body: JSON.stringify({ disabled }),
+    const { data, error } = await supabase.functions.invoke("toggle-download-block", {
+      body: { disabled },
     });
-    if (!res.ok) throw new Error("Toggle failed");
-    queryClient.invalidateQueries({ queryKey: ["app_settings", "download_block_disabled"] });
-    return res.json();
+
+    if (error) throw error;
+    if (!(data as any)?.ok) throw new Error("Toggle failed");
+
+    await queryClient.invalidateQueries({ queryKey: ["app_settings", "download_block_disabled"] });
+    return data;
   };
 
   return { isDevMode: query.data ?? false, isLoading: query.isLoading, toggle };
@@ -123,11 +119,11 @@ export function DownloadScheduleTable() {
     }
   };
 
-  const handleToggleDevMode = async () => {
+  const handleToggleDevMode = async (checked: boolean) => {
     setToggling(true);
     try {
-      await toggleDevMode(!isDevMode);
-      toast.success(isDevMode ? "Blokada pobierania włączona" : "Blokada pobierania wyłączona (tryb dev)");
+      await toggleDevMode(checked);
+      toast.success(checked ? "Blokada pobierania wyłączona (tryb dev)" : "Blokada pobierania włączona");
     } catch {
       toast.error("Błąd przełączania trybu");
     } finally {
@@ -153,7 +149,7 @@ export function DownloadScheduleTable() {
             </span>
             <Switch
               checked={isDevMode}
-              onCheckedChange={() => handleToggleDevMode()}
+              onCheckedChange={handleToggleDevMode}
               disabled={toggling}
               className="scale-75"
               title="Tryb deweloperski — wyłącza blokadę pobierania 1x/dzień"
