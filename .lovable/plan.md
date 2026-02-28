@@ -1,108 +1,85 @@
 
-# Mechanizm jednorazowego pobierania DDD (raz dziennie per IMEI) + Reset
 
-## Opis
+# Naprawa detekcji generacji karty + logi sesji do pobrania z dashboardu
 
-Pojazdy laczace sie wielokrotnie w ciagu dnia powoduja redundantne pobieranie. Mechanizm "download gate" oparty na tabeli w bazie danych:
-- Pozwala na pobranie plikow **raz dziennie** per IMEI
-- W przypadku bledu — ponawia az do sukcesu
-- Sygnalizuje na dashboardzie status synchronizacji
-- **Umozliwia reset kolejki** (per IMEI lub wszystkie) z poziomu dashboardu
+## Problem 1: Karta wyswietla "Gen2" zamiast "Gen2v1"/"Gen2v2"
 
-## Trwalosc danych
+### Przyczyna
 
-Cala logika oparta na tabeli `download_schedule` w bazie danych (Lovable Cloud). Serwer C# **nie trzyma zadnego stanu w pamieci** — przy kazdym polaczeniu odpytuje baze. Po restarcie serwera wszystko dziala dalej bez utraty danych.
+Dwa bledy w kodzie C#:
 
-## Architektura
+1. **Za malo bajtow w READ BINARY** -- obecny kod czyta 25 bajtow (0x19), ale bajt `cardGeneration` znajduje sie na **offsecie 25** w strukturze `cardIccIdentification` (po: clockStop 1B + cardExtendedSerialNumber 8B + cardApprovalNumber 8B + cardPersonaliserID 1B + embedderIcAssemblerId 5B + icIdentifier 2B = 25B). Czyli potrzeba minimum 26 bajtow.
+
+2. **Przedwczesny raport** -- `SetCardGeneration("Gen2")` jest wywolywany **przed** probe EF_ICC (linia 554 w DddSession.cs), wiec dashboard od razu dostaje "Gen2" i nawet jesli probe zadziala, aktualizacja moze nie dotrzec.
+
+3. **Heurystyczne skanowanie** -- `ParseCardGenerationFromEfIcc` skanuje bajt po bajcie szukajac 0x01 lub 0x02, co daje false positives (np. clockStop=0x01 to nie generacja).
+
+### Naprawa
+
+- Zwiekszyc READ BINARY do 32 bajtow (0x20)
+- Uzyc stalego offsetu 25 dla bajtu `cardGeneration`
+- Opoznic `SetCardGeneration` do **po** zakonczeniu probe
+- Dodac logowanie APDU probe do TrafficLogger
+
+## Problem 2: Logi sesji do pobrania z dashboardu
+
+### Architektura
 
 ```text
-Teltonika connects -> IMEI -> check-download (Edge Function) -> DB: download_schedule
-                                  |
-                          today OK? -> skip + terminate
-                          else    -> proceed with download
-                                  -> on success: status=ok, last_success_at=now
-                                  -> on error: status=error (retry next connection)
+C# Session ends -> Upload logs via edge function -> Storage bucket "session-logs"
+                                                  -> Save URL in sessions table
 
-Dashboard -> Reset button -> reset-download-schedule (Edge Function) -> DB: clear record(s)
+Dashboard (Harmonogram pobierania) -> ikona pobierania -> download log files
 ```
 
-## Zmiany
+### Kroki
 
-### 1. Nowa tabela `download_schedule`
+1. **Storage bucket** `session-logs` -- publiczny (read-only), pliki w formacie `{session_id}/traffic.log`, `{session_id}/session.txt`, `{session_id}/session.json`
 
-Kolumny: `imei` (unique), `last_success_at`, `last_attempt_at`, `status` (ok/error/pending/skipped), `last_error`, `attempts_today`, timestamps.
-RLS: public SELECT, no public write.
-Realtime enabled.
+2. **Nowa kolumna** `log_uploaded` (boolean) w tabeli `sessions` -- flaga czy logi sa dostepne
 
-### 2. Nowa Edge Function `check-download`
+3. **Nowa Edge Function** `upload-session-log` -- przyjmuje multipart/form-data z plikami logów, zapisuje do storage bucket, ustawia `log_uploaded = true` w sesji
 
-Przyjmuje `imei`, sprawdza czy `last_success_at` jest dzisiaj (UTC) i `status = 'ok'`.
-- Tak -> `{ should_download: false }`
-- Nie -> `{ should_download: true }`
+4. **C# WebReporter** -- nowa metoda `UploadLogsAsync(trafficLogPath, sessionTxtPath, sessionJsonPath)` wywolywana w `finally` bloku `Program.cs` po `FlushAsync()`
 
-Autoryzacja przez `x-api-key` (REPORT_API_KEY).
-
-### 3. Nowa Edge Function `reset-download-schedule`
-
-Endpoint POST, autoryzacja przez `x-api-key`.
-- Body `{ imei: "123..." }` -> resetuje wpis dla danego IMEI (ustawia `status='pending'`, czysc `last_success_at`)
-- Body `{ all: true }` -> resetuje wszystkie wpisy
-- Zwraca `{ ok: true, reset_count: N }`
-
-### 4. Rozszerzenie Edge Function `report-session`
-
-Przy kazdym upsert sesji aktualizuje `download_schedule`:
-- `status = "completed"` -> upsert z `last_success_at = now()`, `status = 'ok'`
-- `status = "error"` -> upsert z `status = 'error'`, `last_error = error_message`
-- `status = "skipped"` -> upsert z `status = 'skipped'`, `last_attempt_at = now()`, inkrementacja `attempts_today`
-
-### 5. C# — DddSession.cs
-
-Po otrzymaniu IMEI, wywolanie `WebReporter.CheckDownloadScheduleAsync()`. Jesli `should_download = false`:
-- Log "IMEI already downloaded today — skipping"
-- Report status "skipped" z eventem "DownloadSkipped"
-- ACK IMEI + SendTerminate
-
-### 6. C# — WebReporter.cs
-
-Nowa metoda `CheckDownloadScheduleAsync()` — HTTP GET do `check-download?imei=XXX`. Przy bledzie/braku polaczenia zwraca `true` (pozwala na pobranie).
-
-### 7. Dashboard — nowy komponent `DownloadScheduleTable`
-
-Tabela z kolumnami: IMEI, Status (badge kolorowy), Ostatnie pobranie, Proby dzis, Blad.
-
-**Przyciski resetowania:**
-- Przycisk "Resetuj" przy kazdym wierszu IMEI (resetuje pojedynczy IMEI)
-- Przycisk "Resetuj wszystkie" w naglowku tabeli (resetuje cala kolejke)
-- Oba z potwierdzeniem (AlertDialog) przed wykonaniem
-- Wywolanie edge function `reset-download-schedule`
-
-### 8. Dashboard — hook `useDownloadSchedule`
-
-Hook z query + realtime subscription na tabele `download_schedule`.
-Funkcja `resetSchedule(imei?: string)` wywolujaca edge function.
-
-### 9. Dashboard — integracja
-
-- `DownloadScheduleTable` dodany do `Index.tsx` pod tabela sesji
-- Nowa karta w `StatsCards`: "Pominietych dzis"
-- `EventTimeline`: kontekst `DownloadSkipped` z ikona SkipForward i szarym tlem
-- `SessionsTable`: obsluga statusu "skipped" (szary badge)
+5. **Frontend** -- ikona pobierania w tabeli "Harmonogram pobierania" przy kazdym IMEI, linkujaca do najnowszej sesji z logami. Po kliknieciu pobiera archiwum logow (traffic.log + session.txt).
 
 ## Pliki do zmiany
 
 | Plik | Zmiana |
 |------|--------|
-| Migracja SQL | Nowa tabela `download_schedule` |
-| `supabase/functions/check-download/index.ts` | **Nowy** — sprawdzanie schedule |
-| `supabase/functions/reset-download-schedule/index.ts` | **Nowy** — resetowanie schedule |
-| `supabase/functions/report-session/index.ts` | Upsert `download_schedule` |
-| `csharp/TachoDddServer/Session/DddSession.cs` | Check schedule po IMEI |
-| `csharp/TachoDddServer/Reporting/WebReporter.cs` | `CheckDownloadScheduleAsync()` |
-| `src/hooks/useDownloadSchedule.ts` | **Nowy** — hook z realtime + reset |
-| `src/hooks/useSessions.ts` | Rozszerzenie stats o "skipped today" |
-| `src/components/DownloadScheduleTable.tsx` | **Nowy** — tabela z przyciskami reset |
-| `src/components/SessionsTable.tsx` | Status "skipped" |
-| `src/components/StatsCards.tsx` | Karta "Pominietych dzis" |
-| `src/components/EventTimeline.tsx` | Kontekst `DownloadSkipped` |
-| `src/pages/Index.tsx` | Dodanie `DownloadScheduleTable` |
+| `csharp/TachoDddServer/Session/DddSession.cs` | Fix READ BINARY (0x20), staly offset 25, opoznienie SetCardGeneration, logowanie probe do TrafficLogger |
+| `csharp/TachoDddServer/Reporting/WebReporter.cs` | Nowa metoda `UploadLogsAsync()` -- HTTP POST multipart do edge function |
+| `csharp/TachoDddServer/Program.cs` | Wywolanie `UploadLogsAsync()` w finally po FlushAsync |
+| Migracja SQL | Bucket `session-logs`, kolumna `log_uploaded` w `sessions`, RLS dla storage |
+| `supabase/functions/upload-session-log/index.ts` | **Nowy** -- odbiera pliki, zapisuje do storage |
+| `supabase/config.toml` | Dodanie `[functions.upload-session-log]` |
+| `src/hooks/useDownloadSchedule.ts` | Rozszerzenie query o dane z sesji (log_uploaded) |
+| `src/components/DownloadScheduleTable.tsx` | Ikona pobierania logow przy kazdym wierszu IMEI |
+
+## Szczegoly techniczne
+
+### Fix ParseCardGenerationFromEfIcc
+
+Obecna logika (bledna):
+```text
+offset 0 -> check if 0x01 or 0x02 (to jest clockStop!)
+offset 1-9 -> scan for 0x01/0x02 (to sa serial number bytes!)
+```
+
+Poprawna logika:
+```text
+READ BINARY 32 bytes (0x20)
+offset 25 -> cardGeneration byte (0x01 = Gen2v1, 0x02 = Gen2v2)
+```
+
+### Upload logow z C#
+
+Po zakonczeniu sesji (w `finally` w Program.cs), WebReporter wysyla pliki logow do edge function `upload-session-log` jako multipart/form-data. Edge function zapisuje je do bucketu `session-logs/{session_id}/`.
+
+### Ikona w DownloadScheduleTable
+
+Przy kazdym wierszu IMEI pojawi sie ikona `Download` (lucide). Po kliknieciu:
+- Szuka najnowszej sesji dla tego IMEI z `log_uploaded = true`
+- Otwiera link do pliku traffic.log w nowej karcie (bezposredni URL do storage)
+
