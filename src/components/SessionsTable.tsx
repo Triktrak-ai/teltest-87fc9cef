@@ -27,22 +27,24 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-function isGenerationMismatch(s: Session): boolean {
+function isGenerationMismatch(s: Session): { mismatch: boolean; culprit?: "card" | "vu" } {
   const card = s.card_generation ?? "Unknown";
   const vu = s.generation ?? "Unknown";
-  if (card === "Unknown" || vu === "Unknown") return false;
+  if (card === "Unknown" || vu === "Unknown") return { mismatch: false };
 
   // Gen1 card works with everything
-  if (card === "Gen1") return false;
+  if (card === "Gen1") return { mismatch: false };
 
-  // Gen2/Gen2v1/Gen2v2 card in Gen1 tachograph = mismatch
-  if (vu === "Gen1") return true;
+  // Gen2/Gen2v1/Gen2v2 card in Gen1 tachograph = mismatch (card too new)
+  if (vu === "Gen1") return { mismatch: true, culprit: "card" };
+
+  // Gen2v2 VU requires Gen2v2 card for full access — Gen2/Gen2v1 card = mismatch
+  if (vu === "Gen2v2" && (card === "Gen2" || card === "Gen2v1")) return { mismatch: true, culprit: "card" };
 
   // Gen2v2 card in Gen2v1 tachograph = mismatch
-  if (card === "Gen2v2" && vu === "Gen2v1") return true;
+  if (card === "Gen2v2" && (vu === "Gen2v1" || vu === "Gen2")) return { mismatch: true, culprit: "card" };
 
-  // Otherwise compatible (Gen2* card in Gen2* tachograph)
-  return false;
+  return { mismatch: false };
 }
 
 function genBadgeClass(gen: string): string {
@@ -121,6 +123,7 @@ export function SessionsTable() {
               const staleMinutes = stale
                 ? Math.round((Date.now() - new Date(s.last_activity).getTime()) / 60000)
                 : 0;
+              const genMismatch = isGenerationMismatch(s);
               return (
                 <tr key={s.id} className={`border-b border-border/50 hover:bg-secondary/30 transition-colors ${stale ? "opacity-50" : ""}`}>
                   <td className="px-5 py-3 font-mono text-xs">
@@ -136,25 +139,41 @@ export function SessionsTable() {
                   </td>
                   <td className="px-5 py-3 font-medium">{s.vehicle_plate ?? "—"}</td>
                   <td className="px-5 py-3">
-                    <Badge variant="outline" className={genBadgeClass(s.generation)}>
-                      <span className="font-mono text-xs">{s.generation}</span>
-                    </Badge>
+                    <span className="flex items-center gap-1.5">
+                      <Badge variant="outline" className={genBadgeClass(s.generation)}>
+                        <span className="font-mono text-xs">{s.generation}</span>
+                      </Badge>
+                      {genMismatch.mismatch && genMismatch.culprit === "vu" && (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="inline-flex text-destructive">
+                                <AlertTriangle className="h-3.5 w-3.5" />
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>Niezgodność: tachograf {s.generation} nie obsługuje karty {s.card_generation}</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      )}
+                    </span>
                   </td>
                   <td className="px-5 py-3">
                     <span className="flex items-center gap-1.5">
                       <Badge variant="outline" className={genBadgeClass(s.card_generation ?? "Unknown")}>
                         <span className="font-mono text-xs">{s.card_generation ?? "Unknown"}</span>
                       </Badge>
-                      {isGenerationMismatch(s) && (
+                      {genMismatch.mismatch && genMismatch.culprit === "card" && (
                         <TooltipProvider>
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <span className="inline-flex items-center gap-1 text-destructive">
+                              <span className="inline-flex text-destructive">
                                 <AlertTriangle className="h-3.5 w-3.5" />
                               </span>
                             </TooltipTrigger>
                             <TooltipContent>
-                              <p>Niezgodność generacji: karta {s.card_generation}, tachograf {s.generation}</p>
+                              <p>Niezgodność: karta {s.card_generation} w tachografie {s.generation} — dane karty kierowcy niedostępne</p>
                             </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
