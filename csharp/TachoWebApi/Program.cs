@@ -89,7 +89,14 @@ app.UseMiddleware<ApiKeyAuthMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 
+// Serve React SPA from wwwroot/
+app.UseDefaultFiles();       // serves index.html for /
+app.UseStaticFiles();        // serves JS/CSS/images from wwwroot/
+
 app.MapControllers();
 app.MapHub<DashboardHub>("/hubs/dashboard");
+
+// SPA fallback — any non-API, non-file request → index.html
+app.MapFallbackToFile("index.html");
 
 app.Run();
