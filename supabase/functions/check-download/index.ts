@@ -37,15 +37,19 @@ Deno.serve(async (req) => {
   );
 
   try {
+    console.log(`check-download called for IMEI=${imei}`);
+
     // Check if download block is globally disabled (dev mode)
-    const { data: settingData } = await supabase
+    const { data: settingData, error: settingError } = await supabase
       .from("app_settings")
       .select("value")
       .eq("key", "download_block_disabled")
       .maybeSingle();
 
+    console.log(`dev mode setting: value=${settingData?.value}, error=${settingError?.message ?? 'none'}`);
+
     if (settingData?.value === "true") {
-      console.log("Download block disabled (dev mode), allowing download for", imei);
+      console.log(`Dev mode ON — allowing download for ${imei}`);
       return new Response(JSON.stringify({ should_download: true }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -67,6 +71,7 @@ Deno.serve(async (req) => {
     }
 
     if (!data || data.status !== "ok" || !data.last_success_at) {
+      console.log(`No block: data=${JSON.stringify(data)} → allowing`);
       return new Response(JSON.stringify({ should_download: true }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -80,6 +85,8 @@ Deno.serve(async (req) => {
       lastSuccess.getUTCFullYear() === now.getUTCFullYear() &&
       lastSuccess.getUTCMonth() === now.getUTCMonth() &&
       lastSuccess.getUTCDate() === now.getUTCDate();
+
+    console.log(`Schedule check: status=${data.status}, lastSuccess=${data.last_success_at}, isToday=${isToday}, should_download=${!isToday}`);
 
     return new Response(
       JSON.stringify({ should_download: !isToday }),
