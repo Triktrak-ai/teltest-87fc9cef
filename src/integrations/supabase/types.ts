@@ -204,25 +204,34 @@ export type Database = {
       }
       user_devices: {
         Row: {
+          comment: string | null
           created_at: string
           id: string
           imei: string
           label: string | null
+          sim_number: string | null
           user_id: string
+          vehicle_plate: string | null
         }
         Insert: {
+          comment?: string | null
           created_at?: string
           id?: string
           imei: string
           label?: string | null
+          sim_number?: string | null
           user_id: string
+          vehicle_plate?: string | null
         }
         Update: {
+          comment?: string | null
           created_at?: string
           id?: string
           imei?: string
           label?: string | null
+          sim_number?: string | null
           user_id?: string
+          vehicle_plate?: string | null
         }
         Relationships: []
       }

@@ -13,7 +13,7 @@ interface UserRow {
   created_at: string;
   email?: string;
   isAdmin: boolean;
-  devices: { id: string; imei: string; label: string | null }[];
+  devices: { id: string; imei: string; label: string | null; vehicle_plate: string | null; sim_number: string | null; comment: string | null }[];
 }
 
 export function AdminPanel() {
@@ -22,6 +22,9 @@ export function AdminPanel() {
   const [loading, setLoading] = useState(true);
   const [newImei, setNewImei] = useState<Record<string, string>>({});
   const [newLabel, setNewLabel] = useState<Record<string, string>>({});
+  const [newVehiclePlate, setNewVehiclePlate] = useState<Record<string, string>>({});
+  const [newSimNumber, setNewSimNumber] = useState<Record<string, string>>({});
+  const [newComment, setNewComment] = useState<Record<string, string>>({});
 
   const fetchUsers = async () => {
     setLoading(true);
@@ -42,7 +45,16 @@ export function AdminPanel() {
       approved: p.approved,
       created_at: p.created_at,
       isAdmin: roles.some((r: any) => r.user_id === p.id && r.role === "admin"),
-      devices: devices.filter((d: any) => d.user_id === p.id).map((d: any) => ({ id: d.id, imei: d.imei, label: d.label })),
+      devices: devices
+        .filter((d: any) => d.user_id === p.id)
+        .map((d: any) => ({
+          id: d.id,
+          imei: d.imei,
+          label: d.label,
+          vehicle_plate: d.vehicle_plate,
+          sim_number: d.sim_number,
+          comment: d.comment,
+        })),
     }));
 
     setUsers(merged);
@@ -74,12 +86,18 @@ export function AdminPanel() {
       user_id: userId,
       imei,
       label: newLabel[userId]?.trim() || null,
-    });
+      vehicle_plate: newVehiclePlate[userId]?.trim() || null,
+      sim_number: newSimNumber[userId]?.trim() || null,
+      comment: newComment[userId]?.trim() || null,
+    } as any);
     if (error) {
       toast({ title: "Błąd", description: error.message, variant: "destructive" });
     } else {
       setNewImei((p) => ({ ...p, [userId]: "" }));
       setNewLabel((p) => ({ ...p, [userId]: "" }));
+      setNewVehiclePlate((p) => ({ ...p, [userId]: "" }));
+      setNewSimNumber((p) => ({ ...p, [userId]: "" }));
+      setNewComment((p) => ({ ...p, [userId]: "" }));
       fetchUsers();
     }
   };
@@ -131,6 +149,9 @@ export function AdminPanel() {
                     <div key={d.id} className="flex items-center gap-2 text-sm">
                       <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{d.imei}</code>
                       {d.label && <span className="text-xs text-muted-foreground">{d.label}</span>}
+                      {d.vehicle_plate && <span className="text-xs text-muted-foreground">🚗 {d.vehicle_plate}</span>}
+                      {d.sim_number && <span className="text-xs text-muted-foreground">📱 {d.sim_number}</span>}
+                      {d.comment && <span className="text-xs text-muted-foreground italic">({d.comment})</span>}
                       <button onClick={() => removeDevice(d.id)} className="text-destructive hover:text-destructive/80">
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -140,18 +161,36 @@ export function AdminPanel() {
               ) : (
                 <p className="text-xs text-muted-foreground">Brak przypisanych urządzeń</p>
               )}
-              <div className="flex items-center gap-2">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                 <Input
                   placeholder="IMEI"
                   value={newImei[u.id] || ""}
                   onChange={(e) => setNewImei((p) => ({ ...p, [u.id]: e.target.value }))}
-                  className="h-8 w-40 text-xs"
+                  className="h-8 text-xs"
                 />
                 <Input
                   placeholder="Etykieta (opcj.)"
                   value={newLabel[u.id] || ""}
                   onChange={(e) => setNewLabel((p) => ({ ...p, [u.id]: e.target.value }))}
-                  className="h-8 w-32 text-xs"
+                  className="h-8 text-xs"
+                />
+                <Input
+                  placeholder="Nr rejestracyjny"
+                  value={newVehiclePlate[u.id] || ""}
+                  onChange={(e) => setNewVehiclePlate((p) => ({ ...p, [u.id]: e.target.value }))}
+                  className="h-8 text-xs"
+                />
+                <Input
+                  placeholder="Nr SIM"
+                  value={newSimNumber[u.id] || ""}
+                  onChange={(e) => setNewSimNumber((p) => ({ ...p, [u.id]: e.target.value }))}
+                  className="h-8 text-xs"
+                />
+                <Input
+                  placeholder="Komentarz"
+                  value={newComment[u.id] || ""}
+                  onChange={(e) => setNewComment((p) => ({ ...p, [u.id]: e.target.value }))}
+                  className="h-8 text-xs"
                 />
                 <Button size="sm" variant="outline" onClick={() => addDevice(u.id)} className="h-8">
                   <Plus className="h-3.5 w-3.5" />
