@@ -1,78 +1,57 @@
 
-# Plan: Przepisanie backendu na ASP.NET Web API (bez Supabase)
 
-## Status: ✅ ZAIMPLEMENTOWANY
+# Plan: Naprawa race condition statusu + logika partial/completed + dashboard
 
-Caly backend (auth, baza, storage, realtime, edge functions) zostal przeniesiony do jednego projektu ASP.NET Web API w C# (`csharp/TachoWebApi/`). Frontend React zostal przepisany — warstwa komunikacji uzywa `fetch()` + JWT zamiast Supabase JS SDK, a realtime dziala przez SignalR.
+## Problem
 
----
+1. **Race condition**: Asynchroniczne raporty z serwera C# docieraja w losowej kolejnosci. Spozniony raport `downloading` moze nadpisac finalny `completed`.
+2. **Logika partial vs completed**: Gdy wszystkie 5 plikow VU pobrano, ale karty sa `empty_slot`, status to `partial` — powinien byc `completed` (bo pobrano wszystko co bylo dostepne).
+3. **Dashboard**: Brak informacji dlaczego sesja jest `partial` (brak kart vs faktyczny blad).
 
-## Co zostalo utworzone
+## Rozwiazanie
 
-### Backend C# (`csharp/TachoWebApi/`)
+### 1. Ochrona statusow koncowych w edge function `report-session`
 
-| Plik | Opis |
-|------|------|
-| `Program.cs` | Konfiguracja: EF Core, JWT, SignalR, CORS, auto-migracja |
-| `appsettings.json` | Connection string, JWT secret, API key, CORS origins |
-| **Data/** | |
-| `AppDbContext.cs` | DbContext z mapowaniem 8 tabel |
-| `Models/AuthUser.cs` | Nowa tabela auth_users (email, password_hash, refresh_token) |
-| `Models/Profile.cs` | Profil uzytkownika (1:1 z AuthUser) |
-| `Models/UserRole.cs` | Role (admin/user) w osobnej tabeli |
-| `Models/UserDevice.cs` | Urzadzenia IMEI |
-| `Models/Session.cs` | Sesje pobierania DDD |
-| `Models/SessionEvent.cs` | Zdarzenia sesji |
-| `Models/DownloadSchedule.cs` | Harmonogram pobierania |
-| `Models/AppSetting.cs` | Ustawienia globalne |
-| **Controllers/** | |
-| `AuthController.cs` | signup, login, refresh, forgot/reset password, admin/create-user |
-| `SessionsController.cs` | GET sessions, session-events (filtrowane wg roli) |
-| `DownloadScheduleController.cs` | GET schedule, POST reset, POST toggle-block |
-| `DevicesController.cs` | CRUD user-devices |
-| `AdminController.cs` | GET users, PATCH approve, POST toggle-admin |
-| `ProfilesController.cs` | GET me, GET user-roles |
-| `SettingsController.cs` | GET app-settings (publiczny) |
-| `ReportSessionController.cs` | POST report-session (x-api-key) + SignalR notify |
-| `CheckDownloadController.cs` | GET check-download (x-api-key) |
-| `UploadSessionLogController.cs` | POST upload-session-log (x-api-key, pliki na dysk) |
-| `SessionLogsController.cs` | GET session-logs (JWT admin) |
-| **Hubs/** | |
-| `DashboardHub.cs` | SignalR hub `/hubs/dashboard` |
-| **Services/** | |
-| `JwtService.cs` | Generowanie/walidacja JWT |
-| `EmailService.cs` | Wysylka e-maili (MailKit) |
-| `FileStorageService.cs` | Zapis plikow na dysk |
-| **Middleware/** | |
-| `ApiKeyAuthMiddleware.cs` | Walidacja x-api-key dla endpointow server-to-server |
+Przed upsert sesji, jesli sesja juz istnieje i ma status koncowy (`completed`, `partial`, `error`), nie pozwalamy na nadpisanie statusem posrednim (`connecting`, `downloading`, `auth_*`).
 
-### Frontend (zmienione pliki)
+Logika:
+```text
+sesja istnieje w bazie?
+  -> tak -> aktualny status to completed/partial/error?
+    -> tak -> nowy status to tez koncowy? -> nadpisz
+    -> tak -> nowy status to posredni? -> IGNORUJ zmiane statusu
+  -> nie -> normalny upsert
+```
 
-| Plik | Zmiana |
-|------|--------|
-| `src/lib/api-client.ts` | **NOWY** — wrapper fetch() z JWT, auto-refresh, auth API |
-| `src/hooks/useSignalR.ts` | **NOWY** — wspoldzielone polaczenie SignalR |
-| `src/contexts/AuthContext.tsx` | Przepisany — JWT w localStorage zamiast Supabase Auth |
-| `src/hooks/useSessions.ts` | apiFetch + SignalR zamiast supabase.from + postgres_changes |
-| `src/hooks/useDownloadSchedule.ts` | Analogicznie |
-| `src/hooks/useImeiOwners.ts` | Analogicznie |
-| `src/components/AdminPanel.tsx` | apiFetch zamiast supabase.from + supabase.functions |
-| `src/components/DeviceManagement.tsx` | Analogicznie |
-| `src/components/AdminFilter.tsx` | Analogicznie |
-| `src/components/DownloadScheduleTable.tsx` | Analogicznie |
-| `src/pages/Auth.tsx` | apiLogin/apiSignup zamiast supabase.auth |
-| `src/pages/ResetPassword.tsx` | apiResetPassword z query param token |
+Zmiana w: `supabase/functions/report-session/index.ts`
 
-### Dodana zaleznosc npm
-- `@microsoft/signalr` — klient SignalR
+### 2. Logika partial vs completed po stronie C# (WebReporter)
+
+To jest logika po stronie serwera C# — nie mozemy tego zmienic w Lovable. Ale mozemy dodac inteligencje do edge function:
+
+W `report-session`, gdy status = `partial`, sprawdzamy: jesli `files_downloaded >= 5` (wszystkie VU) i w eventach sesji sa tylko `empty_slot` (nie `access_denied` ani inne bledy kart), to zmieniamy status na `completed`.
+
+### 3. Dodanie kontekstu `partial` na dashboardzie
+
+W `SessionsTable.tsx`, przy statusie `partial` dodajemy tooltip z informacja:
+- Jesli error_message zawiera "empty_slot" -> "Pobrano wszystkie pliki VU. Brak wlozonej karty kierowcy."
+- W przeciwnym razie -> wyswietlamy error_message
 
 ---
 
-## Uruchomienie na Windows Server
+## Szczegoly techniczne
 
-1. Zainstaluj PostgreSQL, utworz baze `tachoddd`
-2. Edytuj `csharp/TachoWebApi/appsettings.json` (connection string, JWT key, API key, CORS origins)
-3. `cd csharp/TachoWebApi && dotnet ef migrations add Initial && dotnet ef database update`
-4. `dotnet run` (lub zainstaluj jako Windows Service)
-5. Frontend: ustaw `VITE_API_BASE_URL=https://twoj-serwer:5100` w `.env`, `npm run build`, serwuj z IIS
-6. TachoDddServer: `appsettings.json` juz wskazuje na `http://localhost:5100/api/report-session`
+### Plik: `supabase/functions/report-session/index.ts`
+
+1. Przed upsert — pobierz aktualny status sesji z bazy (`SELECT status FROM sessions WHERE id = ?`)
+2. Jesli aktualny status jest koncowy (`completed`, `partial`, `error`) a nowy nie jest koncowy — usun `status` z `sessionData` (zachowaj inne aktualizacje jak `last_activity`)
+3. Jesli status to `partial` i `files_downloaded >= 5` — sprawdz eventy sesji pod katem `empty_slot` i ewentualnie zmien na `completed`
+
+### Plik: `csharp/TachoWebApi/Controllers/ReportSessionController.cs`
+
+Analogiczna ochrona: przed aktualizacja statusu sprawdz czy obecny status nie jest juz koncowy.
+
+### Plik: `src/components/SessionsTable.tsx`
+
+Dodaj tooltip do badge `Czesciowe` z wyjasnieniem przyczyny (na podstawie `error_message` lub `files_downloaded`/`total_files`).
+
