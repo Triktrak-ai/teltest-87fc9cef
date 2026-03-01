@@ -192,9 +192,30 @@ export function SessionsTable({ filterImeis }: SessionsTableProps) {
                   </td>
                   <td className="px-5 py-3">
                     <span className="flex items-center gap-1.5">
-                      <Badge variant="outline" className={sc.className}>
-                        {sc.label}
-                      </Badge>
+                      {s.status === "partial" ? (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge variant="outline" className={sc.className}>
+                                {sc.label}
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>
+                                {s.error_message?.includes("empty_slot")
+                                  ? "Pobrano wszystkie pliki VU. Brak włożonej karty kierowcy."
+                                  : s.error_message
+                                    ? s.error_message
+                                    : `Pobrano ${s.files_downloaded ?? 0}/${s.total_files ?? 0} plików`}
+                              </p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : (
+                        <Badge variant="outline" className={sc.className}>
+                          {sc.label}
+                        </Badge>
+                      )}
                       {stale && (
                         <TooltipProvider>
                           <Tooltip>

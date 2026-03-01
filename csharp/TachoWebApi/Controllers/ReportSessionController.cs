@@ -23,6 +23,9 @@ public class ReportSessionController : ControllerBase
         _hub = hub;
     }
 
+    private static readonly HashSet<string> FinalStatuses = new(StringComparer.OrdinalIgnoreCase)
+        { "completed", "partial", "error" };
+
     [HttpPost]
     public async Task<IActionResult> Report([FromBody] ReportPayload body)
     {
@@ -40,8 +43,15 @@ public class ReportSessionController : ControllerBase
         }
 
         session.Imei = imei;
-        session.Status = body.Status ?? session.Status;
         session.LastActivity = DateTime.UtcNow;
+
+        // Race condition protection: don't let intermediate status overwrite final
+        var currentIsFinal = FinalStatuses.Contains(session.Status);
+        var newIsFinal = body.Status != null && FinalStatuses.Contains(body.Status);
+        if (!(currentIsFinal && !newIsFinal))
+        {
+            session.Status = body.Status ?? session.Status;
+        }
 
         if (body.VehiclePlate != null) session.VehiclePlate = body.VehiclePlate;
         if (body.Generation != null) session.Generation = body.Generation;
