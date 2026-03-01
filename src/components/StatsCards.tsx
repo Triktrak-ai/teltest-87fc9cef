@@ -1,6 +1,7 @@
 import { Activity, CheckCircle, AlertTriangle, Radio, HardDrive, Repeat, ShieldAlert, SkipForward } from "lucide-react";
 import { useSessions, useSessionStats, isStaleSession } from "@/hooks/useSessions";
 import { useDownloadSchedule } from "@/hooks/useDownloadSchedule";
+import { useAuth } from "@/contexts/AuthContext";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMemo } from "react";
 
@@ -49,6 +50,7 @@ interface StatsCardsProps {
 }
 
 export function StatsCards({ filterImeis }: StatsCardsProps) {
+  const { isAdmin } = useAuth();
   const { data: allSessions, isLoading } = useSessions();
   const { data: allSchedules, isLoading: schedLoading } = useDownloadSchedule();
 
@@ -93,15 +95,19 @@ export function StatsCards({ filterImeis }: StatsCardsProps) {
   }, [schedules]);
 
   return (
-    <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8">
+    <div className={`grid gap-4 ${isAdmin ? "grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8" : "grid-cols-1 sm:grid-cols-3"}`}>
       <StatCard label="Aktywne sesje" value={stats.activeSessions} icon={<Activity size={28} />} accent="primary" loading={isLoading} />
       <StatCard label="Ukończone dziś" value={stats.completedToday} icon={<CheckCircle size={28} />} accent="success" loading={isLoading} />
       <StatCard label="Błędy dziś" value={stats.errorsToday} icon={<AlertTriangle size={28} />} accent="destructive" loading={isLoading} />
-      <StatCard label="Pominięte dziś" value={skippedToday} icon={<SkipForward size={28} />} accent="warning" loading={schedLoading} />
-      <StatCard label="IMEI aktywne" value={stats.uniqueImei} icon={<Radio size={28} />} accent="warning" loading={isLoading} />
-      <StatCard label="Pobrano łącznie" value={formatBytes(stats.totalBytes)} icon={<HardDrive size={28} />} accent="primary" loading={isLoading} />
-      <StatCard label="APDU łącznie" value={stats.totalApdu} icon={<Repeat size={28} />} accent="warning" loading={isLoading} />
-      <StatCard label="Błędy CRC" value={stats.totalCrc} icon={<ShieldAlert size={28} />} accent="destructive" loading={isLoading} />
+      {isAdmin && (
+        <>
+          <StatCard label="Pominięte dziś" value={skippedToday} icon={<SkipForward size={28} />} accent="warning" loading={schedLoading} />
+          <StatCard label="IMEI aktywne" value={stats.uniqueImei} icon={<Radio size={28} />} accent="warning" loading={isLoading} />
+          <StatCard label="Pobrano łącznie" value={formatBytes(stats.totalBytes)} icon={<HardDrive size={28} />} accent="primary" loading={isLoading} />
+          <StatCard label="APDU łącznie" value={stats.totalApdu} icon={<Repeat size={28} />} accent="warning" loading={isLoading} />
+          <StatCard label="Błędy CRC" value={stats.totalCrc} icon={<ShieldAlert size={28} />} accent="destructive" loading={isLoading} />
+        </>
+      )}
     </div>
   );
 }
