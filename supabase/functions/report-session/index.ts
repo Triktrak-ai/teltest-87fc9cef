@@ -6,7 +6,7 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-api-key",
 };
 
-const FINAL_STATUSES = ["completed", "partial", "error"];
+const FINAL_STATUSES = ["completed", "partial", "error", "skipped"];
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {

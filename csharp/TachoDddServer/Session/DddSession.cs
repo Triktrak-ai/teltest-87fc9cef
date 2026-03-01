@@ -298,7 +298,12 @@ public class DddSession
                         "info", $"Download skipped — already completed today for {_imei}", "DownloadSkipped");
                     await SendRawAsync(stream, new byte[] { 0x01 }); // ACK IMEI
                     _trafficLogger?.LogDecoded("TX", "IMEI_ACK", 1, "Accepted (but skipping download)");
-                    TransitionTo(SessionState.Complete, "Already downloaded today — skipped");
+                    // Set state manually to avoid TransitionTo sending a "completed" report that overwrites "skipped"
+                    var oldState = _state;
+                    _state = SessionState.Complete;
+                    _diagnostics.LogStateTransition(oldState, SessionState.Complete, "Already downloaded today — skipped");
+                    _trafficLogger?.LogStateChange(oldState, SessionState.Complete, "Already downloaded today — skipped");
+                    _logger.LogInformation("STATE {From} -> {To} [{Reason}]", oldState, SessionState.Complete, "Already downloaded today — skipped");
                     return;
                 }
             }
