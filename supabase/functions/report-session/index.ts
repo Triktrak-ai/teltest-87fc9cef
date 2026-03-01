@@ -59,19 +59,20 @@ Deno.serve(async (req) => {
     // Check current session status before upsert
     const { data: existingSession } = await supabase
       .from("sessions")
-      .select("status")
+      .select("status, completed_at")
       .eq("id", body.session_id)
       .maybeSingle();
 
     const currentStatus = existingSession?.status;
+    const hasCompletedAt = !!existingSession?.completed_at;
     const newStatus = body.status;
     const currentIsFinal = currentStatus && FINAL_STATUSES.includes(currentStatus);
     const newIsFinal = newStatus && FINAL_STATUSES.includes(newStatus);
 
-    // If current status is final and new status is NOT final, protect it
+    // If current status is final OR completed_at is set, and new status is NOT final, protect it
     let protectedStatus = false;
-    if (currentIsFinal && !newIsFinal) {
-      console.log(`STATUS PROTECTION: keeping '${currentStatus}', ignoring '${newStatus}'`);
+    if ((currentIsFinal || hasCompletedAt) && !newIsFinal) {
+      console.log(`STATUS PROTECTION: keeping '${currentStatus}' (completed_at=${hasCompletedAt}), ignoring '${newStatus}'`);
       protectedStatus = true;
     }
 
