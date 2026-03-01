@@ -1,95 +1,82 @@
 
 
-# Fix: Race condition w aktualizacji statusu sesji
+# Naprawa: Skip sesji mimo wylaczonej blokady + status "completed" zamiast "skipped"
 
-## Problem
-Sesja `903ea45b` ma status `downloading` mimo ustawionego `completed_at`. Dwa raporty dotarły do edge function w odstepie ~100ms. Raport "downloading" nadpisal status, bo w momencie SELECT-a raport "completed" nie byl jeszcze scommitowany.
+## Znalezione problemy
 
-## Rozwiazanie
-Dodac do edge function `report-session` dodatkowe zabezpieczenie:
+### Problem 1: TransitionTo(Complete) nadpisuje status "skipped"
+W `DddSession.cs` po wyslaniu `ReportStatus("skipped")`, kod natychmiast wywoluje `TransitionTo(SessionState.Complete)`, ktory mapuje `Complete` na `"completed"` i wysyla **drugi** raport. Ten drugi raport nadpisuje "skipped" na "completed" w bazie.
 
-1. **Sprawdzanie `completed_at`** — jesli sesja ma juz ustawione `completed_at`, traktuj ja jako finalowa niezaleznie od pola `status` (na wypadek race condition)
-2. **Sprawdzanie w bazie** — rozszerzyc SELECT o pole `completed_at` i uwzglednic je w logice ochrony statusu
+Dlatego sesja `2f2b0cf7` ma status `completed` (18 bajtow, 0 plikow) zamiast `skipped`, a sesja `8718b1c4` mial szczescie i `skipped` zostal — zalezne od timingu race condition.
 
-## Zmiany w pliku
+### Problem 2: Sesje skipowane mimo download_block_disabled = true
+Edge function `check-download` powinna zwracac `should_download: true` gdy blokada jest wylaczona. Logika wyglada poprawnie, ale sesje z 1 marca sa skipowane. Brak logow edge function uniemozliwia bezposrednia weryfikacje.
 
-### `supabase/functions/report-session/index.ts`
+Potencjalne przyczyny:
+- RLS policy na `app_settings` jest RESTRICTIVE — moze blokowac odczyt w niektorych konfiguracjach
+- Edge function deploy mogl byc nieaktualny (starsza wersja bez sprawdzania dev mode)
 
-W sekcji race condition protection, zmiana z:
+## Plan naprawy
 
-```typescript
-const { data: existingSession } = await supabase
-  .from("sessions")
-  .select("status")
-  .eq("id", body.session_id)
-  .maybeSingle();
+### Krok 1: Fix C# — TransitionTo nie powinien nadpisywac statusu skip
+W `DddSession.cs` zmienic blok skip, aby `TransitionTo` nie wyslal raportu "completed":
 
-const currentStatus = existingSession?.status;
+```text
+Obecny kod (linie 296-302):
+  _webReporter.ReportStatus("skipped", ...);
+  await SendRawAsync(stream, new byte[] { 0x01 });
+  TransitionTo(SessionState.Complete, "Already downloaded today — skipped");
+
+Poprawka — dodac flage lub uzyc dedykowanego stanu,
+lub po prostu nie wywolywac TransitionTo i recznie ustawic _state:
+  _webReporter.ReportStatus("skipped", ...);
+  await SendRawAsync(stream, new byte[] { 0x01 });
+  _state = SessionState.Complete;
+  _diagnostics.LogStateTransition(SessionState.WaitingForImei, SessionState.Complete, "Already downloaded today — skipped");
+  _trafficLogger?.LogStateChange(SessionState.WaitingForImei, SessionState.Complete, "Already downloaded today — skipped");
 ```
 
-Na:
-
-```typescript
-const { data: existingSession } = await supabase
-  .from("sessions")
-  .select("status, completed_at")
-  .eq("id", body.session_id)
-  .maybeSingle();
-
-const currentStatus = existingSession?.status;
-const hasCompletedAt = !!existingSession?.completed_at;
+Alternatywnie: dodac do `TransitionTo` parametr `skipWebReport = false` i uzyc go:
+```csharp
+TransitionTo(SessionState.Complete, "Already downloaded today — skipped", skipWebReport: true);
 ```
 
-Oraz rozszerzenie warunku ochrony:
+### Krok 2: Zabezpieczenie w edge function report-session
+Dodac `"skipped"` do listy `FINAL_STATUSES` w `report-session`, aby status "skipped" nie mogl byc nadpisany przez "completed":
 
+W pliku `supabase/functions/report-session/index.ts`:
 ```typescript
-// Protect if status is final OR if completed_at is already set (race condition guard)
-if ((currentIsFinal || hasCompletedAt) && !newIsFinal) {
-  console.log(`STATUS PROTECTION: keeping '${currentStatus}' (completed_at=${hasCompletedAt}), ignoring '${newStatus}'`);
-  protectedStatus = true;
-}
+const FINAL_STATUSES = ["completed", "partial", "error", "skipped"];
 ```
 
-### Naprawa istniejacych danych
-
-Jednorazowy UPDATE aby naprawic sesje `903ea45b`:
+### Krok 3: Naprawa statusow w bazie
+Jednorazowy UPDATE sesji ktore maja eventy "DownloadSkipped" ale status "completed":
 
 ```sql
-UPDATE sessions 
-SET status = 'partial' 
-WHERE id = '903ea45b-897a-4aee-bc4b-c101ec00aef9' 
-  AND status = 'downloading' 
-  AND completed_at IS NOT NULL;
+UPDATE sessions SET status = 'skipped'
+WHERE id IN (
+  SELECT DISTINCT s.id FROM sessions s
+  JOIN session_events e ON e.session_id = s.id
+  WHERE e.context = 'DownloadSkipped'
+    AND s.status = 'completed'
+    AND s.files_downloaded = 0
+);
 ```
 
-Status `partial` (nie `completed`) poniewaz pobrano 6/7 plikow — DriverCard2 zakonczyl sie empty_slot. Jednak logika upgrade partial->completed (5+ plikow VU + same empty_slot) powinna tez zostac zastosowana, wiec finalny status to `completed`.
+### Krok 4: Weryfikacja edge function check-download
+Dodac wiecej logow diagnostycznych do edge function check-download, aby przyszle przypadki skip byly latwiejsze do debugowania. Ewentualnie: zweryfikowac ze deploy jest aktualny (edge function moze nie byc aktualnie zdeployowana z kodem sprawdzajacym `download_block_disabled`).
 
-```sql
-UPDATE sessions 
-SET status = 'completed' 
-WHERE id = '903ea45b-897a-4aee-bc4b-c101ec00aef9' 
-  AND completed_at IS NOT NULL;
-```
+## Pliki do zmiany
 
-### Dodatkowe zabezpieczenie: skanowanie i naprawa starych sesji
+| Plik | Zmiana |
+|------|--------|
+| `csharp/TachoDddServer/Session/DddSession.cs` | Dodac parametr `skipWebReport` do `TransitionTo` lub ustawic stan recznie w bloku skip |
+| `supabase/functions/report-session/index.ts` | Dodac "skipped" do FINAL_STATUSES |
+| Baza danych | UPDATE sesji z blednym statusem |
 
-Query diagnostyczne aby znalezc inne sesje z tym samym bugiem:
+## Wplyw
 
-```sql
-SELECT id, imei, status, completed_at, files_downloaded, total_files 
-FROM sessions 
-WHERE completed_at IS NOT NULL 
-  AND status NOT IN ('completed', 'partial', 'error', 'skipped');
-```
+- Fix C# wymaga restartu serwera TachoDddServer
+- Fix edge function deploy jest automatyczny
+- Naprawa danych jest jednorazowa
 
-Jesli znajdzie wiecej takich sesji — naprawic je hurtowo.
-
-## Podsumowanie
-
-| Akcja | Plik/Miejsce |
-|-------|-------------|
-| Fix race condition guard | `supabase/functions/report-session/index.ts` |
-| Naprawa sesji 903ea45b | UPDATE w bazie |
-| Skan diagnostyczny | Query na inne dotknięte sesje |
-
-Zmiana jest minimalna (3 linie w edge function) i eliminuje cala klase race condition bugow.
