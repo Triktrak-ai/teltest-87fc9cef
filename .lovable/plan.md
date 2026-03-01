@@ -1,84 +1,95 @@
 
 
-# Plan: Export oczyszczonego TachoDddServer do docs/
+# Fix: Race condition w aktualizacji statusu sesji
 
-## Cel
-Stworzyc w `docs/` zestaw plikow C# zawierajacych "samo mieso" — logike protokolu DDD, autentykacji karta firmowa, detekcji generacji i pobierania plikow. Bez raportowania do dashboardu (WebReporter), logowania diagnostycznego (TrafficLogger, SessionDiagnostics) i aktualizacji frontendu.
+## Problem
+Sesja `903ea45b` ma status `downloading` mimo ustawionego `completed_at`. Dwa raporty dotarły do edge function w odstepie ~100ms. Raport "downloading" nadpisal status, bo w momencie SELECT-a raport "completed" nie byl jeszcze scommitowany.
 
-## Pliki do stworzenia
+## Rozwiazanie
+Dodac do edge function `report-session` dodatkowe zabezpieczenie:
 
-### `docs/TachoDddServer-core/README.md`
-Krotkie wprowadzenie: co to jest, jak dziala, architektura (VPS TCP server + CardBridge WebSocket na laptopie), wymagania (czytnik PC/SC, karta firmowa, urzadzenie Teltonika z FMB640).
+1. **Sprawdzanie `completed_at`** — jesli sesja ma juz ustawione `completed_at`, traktuj ja jako finalowa niezaleznie od pola `status` (na wypadek race condition)
+2. **Sprawdzanie w bazie** — rozszerzyc SELECT o pole `completed_at` i uwzglednic je w logice ochrony statusu
 
-### `docs/TachoDddServer-core/Protocol/Codec12Frame.cs`
-Bez zmian — record z jednym wierszem.
+## Zmiany w pliku
 
-### `docs/TachoDddServer-core/Protocol/Codec12Parser.cs`
-Bez zmian — parser ramek Codec 12 z CRC-16/IBM. Czysta logika.
+### `supabase/functions/report-session/index.ts`
 
-### `docs/TachoDddServer-core/Protocol/DddPacket.cs`
-Bez zmian — Build/Parse pakietow DDD.
+W sekcji race condition protection, zmiana z:
 
-### `docs/TachoDddServer-core/Protocol/DddPacketType.cs`
-Bez zmian — enum typow pakietow.
+```typescript
+const { data: existingSession } = await supabase
+  .from("sessions")
+  .select("status")
+  .eq("id", body.session_id)
+  .maybeSingle();
 
-### `docs/TachoDddServer-core/Protocol/DddErrorCodes.cs`
-Bez zmian — opis kodow bledow DDD.
+const currentStatus = existingSession?.status;
+```
 
-### `docs/TachoDddServer-core/Session/SessionState.cs`
-Bez zmian — enum stanow sesji.
+Na:
 
-### `docs/TachoDddServer-core/Session/VuGeneration.cs`
-Bez zmian — enum generacji VU.
+```typescript
+const { data: existingSession } = await supabase
+  .from("sessions")
+  .select("status, completed_at")
+  .eq("id", body.session_id)
+  .maybeSingle();
 
-### `docs/TachoDddServer-core/Session/DddFileType.cs`
-Bez zmian — enum typow plikow.
+const currentStatus = existingSession?.status;
+const hasCompletedAt = !!existingSession?.completed_at;
+```
 
-### `docs/TachoDddServer-core/Session/DddSession.cs`
-**Oczyszczona wersja** — najwazniejszy plik. Zmiany:
-- Usuniete pola: `_webReporter`, `_trafficLogger`, `_diagnostics`, `_logDir`
-- Konstruktor: tylko `TcpClient`, `CardBridgeClient`, `string outputDir`, `ILogger`
-- Usuniete wszystkie wywolania: `_webReporter?.ReportStatus(...)`, `_webReporter?.SetImei(...)`, `_webReporter?.SetGeneration(...)`, `_webReporter?.SetCardGeneration(...)`, `_webReporter?.ReportError(...)`, `_webReporter?.CheckDownloadScheduleAsync()`
-- Usuniete wszystkie wywolania: `_trafficLogger?.Log(...)`, `_trafficLogger?.LogDecoded(...)`, `_trafficLogger?.LogDecodedWithHex(...)`, `_trafficLogger?.LogWarning(...)`, `_trafficLogger?.LogError(...)`, `_trafficLogger?.LogSummary(...)`, `_trafficLogger?.LogStateChange(...)`
-- Usuniete wszystkie wywolania: `_diagnostics.Log*(...)`, `_diagnostics.BytesReceived`, `_diagnostics.BytesSent`, `_diagnostics.ApduExchanges`, `_diagnostics.CrcErrors`, `_diagnostics.StartFileTimer(...)`, `_diagnostics.StopFileTimer(...)`, `_diagnostics.CardProbe`, `_diagnostics.FileDownloads`, `_diagnostics.Imei`, `_diagnostics.Generation`, `_diagnostics.CardGeneration`, `_diagnostics.DetectedVuGenFromApdu`, `_diagnostics.Finish()`, `_diagnostics.GenerateSummary()`, `_diagnostics.SaveToFile(...)`, `_diagnostics.SessionId`
-- Usuniety blok "Download gate" (sprawdzanie czy juz pobrano dzis) — to logika biznesowa dashboardu
-- Usuniety blok `finally` z generowaniem raportow i uploadem logow
-- Zachowana CALA logika: maszyna stanow, APDU loop, EF_ICC probe, detekcja generacji (ATR, APDU SELECT, TREP, post-download Overview scan), generation locking, TRTP fallback, two-phase driver card retry, resume, CRC retry, keep alive, file merging
+Oraz rozszerzenie warunku ochrony:
 
-### `docs/TachoDddServer-core/CardBridge/CardBridgeClient.cs`
-Bez zmian — klient WebSocket do komunikacji z czytnikiem kart. Czysta logika.
+```typescript
+// Protect if status is final OR if completed_at is already set (race condition guard)
+if ((currentIsFinal || hasCompletedAt) && !newIsFinal) {
+  console.log(`STATUS PROTECTION: keeping '${currentStatus}' (completed_at=${hasCompletedAt}), ignoring '${newStatus}'`);
+  protectedStatus = true;
+}
+```
 
-### `docs/TachoDddServer-core/Storage/DddFileWriter.cs`
-Bez zmian — Save/Append plikow.
+### Naprawa istniejacych danych
 
-### `docs/TachoDddServer-core/CardBridgeService/Program.cs`
-Bez zmian — serwis lokalny PC/SC z winscard.dll. Czysta logika.
+Jednorazowy UPDATE aby naprawic sesje `903ea45b`:
 
-### `docs/TachoDddServer-core/CardBridgeService/CardBridgeService.csproj`
-Bez zmian.
+```sql
+UPDATE sessions 
+SET status = 'partial' 
+WHERE id = '903ea45b-897a-4aee-bc4b-c101ec00aef9' 
+  AND status = 'downloading' 
+  AND completed_at IS NOT NULL;
+```
 
-### `docs/TachoDddServer-core/TachoDddServer.csproj`
-Oczyszczony — bez referencji do pakietow raportowania (jesli sa).
+Status `partial` (nie `completed`) poniewaz pobrano 6/7 plikow — DriverCard2 zakonczyl sie empty_slot. Jednak logika upgrade partial->completed (5+ plikow VU + same empty_slot) powinna tez zostac zastosowana, wiec finalny status to `completed`.
 
-### `docs/TachoDddServer-core/Program.cs`
-Uproszczony — minimalny serwer TCP bez WebReporter, bez TrafficLogDir, bez uploadu logow. Tylko: nasłuchuj TCP, przyjmij IMEI, uruchom sesje.
+```sql
+UPDATE sessions 
+SET status = 'completed' 
+WHERE id = '903ea45b-897a-4aee-bc4b-c101ec00aef9' 
+  AND completed_at IS NOT NULL;
+```
 
-## Podsumowanie plikow
+### Dodatkowe zabezpieczenie: skanowanie i naprawa starych sesji
 
-| Plik | Akcja |
-|------|-------|
-| README.md | Nowy — dokumentacja |
-| Protocol/* (4 pliki) | Kopia 1:1 |
-| Session/SessionState.cs | Kopia 1:1 |
-| Session/VuGeneration.cs | Kopia 1:1 |
-| Session/DddFileType.cs | Kopia 1:1 |
-| Session/DddSession.cs | Oczyszczony z ~1745 do ~1100 linii |
-| CardBridge/CardBridgeClient.cs | Kopia 1:1 |
-| Storage/DddFileWriter.cs | Kopia 1:1 |
-| CardBridgeService/Program.cs | Kopia 1:1 |
-| CardBridgeService/*.csproj | Kopia 1:1 |
-| TachoDddServer.csproj | Oczyszczony |
-| Program.cs | Uproszczony |
+Query diagnostyczne aby znalezc inne sesje z tym samym bugiem:
 
-Lacznie: ~15 plikow. Kolega dostanie dzialajacy, czytelny kod "samo mieso" gotowy do skopiowania i uruchomienia.
+```sql
+SELECT id, imei, status, completed_at, files_downloaded, total_files 
+FROM sessions 
+WHERE completed_at IS NOT NULL 
+  AND status NOT IN ('completed', 'partial', 'error', 'skipped');
+```
 
+Jesli znajdzie wiecej takich sesji — naprawic je hurtowo.
+
+## Podsumowanie
+
+| Akcja | Plik/Miejsce |
+|-------|-------------|
+| Fix race condition guard | `supabase/functions/report-session/index.ts` |
+| Naprawa sesji 903ea45b | UPDATE w bazie |
+| Skan diagnostyczny | Query na inne dotknięte sesje |
+
+Zmiana jest minimalna (3 linie w edge function) i eliminuje cala klase race condition bugow.
