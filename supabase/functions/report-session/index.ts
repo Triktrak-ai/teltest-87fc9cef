@@ -6,6 +6,8 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-api-key",
 };
 
+const FINAL_STATUSES = ["completed", "partial", "error"];
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -53,13 +55,37 @@ Deno.serve(async (req) => {
       body.imei = "unknown";
     }
 
+    // === Race condition protection ===
+    // Check current session status before upsert
+    const { data: existingSession } = await supabase
+      .from("sessions")
+      .select("status")
+      .eq("id", body.session_id)
+      .maybeSingle();
+
+    const currentStatus = existingSession?.status;
+    const newStatus = body.status;
+    const currentIsFinal = currentStatus && FINAL_STATUSES.includes(currentStatus);
+    const newIsFinal = newStatus && FINAL_STATUSES.includes(newStatus);
+
+    // If current status is final and new status is NOT final, protect it
+    let protectedStatus = false;
+    if (currentIsFinal && !newIsFinal) {
+      console.log(`STATUS PROTECTION: keeping '${currentStatus}', ignoring '${newStatus}'`);
+      protectedStatus = true;
+    }
+
     // Upsert session
     const sessionData: Record<string, unknown> = {
       id: body.session_id,
       imei: body.imei,
-      status: body.status ?? "connecting",
       last_activity: new Date().toISOString(),
     };
+
+    // Set status only if not protected
+    if (!protectedStatus) {
+      sessionData.status = newStatus ?? "connecting";
+    }
 
     // Optional fields
     if (body.vehicle_plate !== undefined)
@@ -87,8 +113,31 @@ Deno.serve(async (req) => {
       sessionData.card_generation = body.card_generation;
 
     // Set completed_at when status is completed or partial
-    if (body.status === "completed" || body.status === "partial") {
+    if (!protectedStatus && (newStatus === "completed" || newStatus === "partial")) {
       sessionData.completed_at = new Date().toISOString();
+    }
+
+    // === Partial → Completed upgrade ===
+    // If incoming status is "partial" and files_downloaded >= 5 (all VU files),
+    // check if card issues are only empty_slot → upgrade to completed
+    if (!protectedStatus && newStatus === "partial" && (body.files_downloaded ?? 0) >= 5) {
+      const { data: events } = await supabase
+        .from("session_events")
+        .select("message, type")
+        .eq("session_id", body.session_id)
+        .in("type", ["warning", "error"]);
+
+      const cardIssues = (events ?? []).filter(
+        (e) => e.message && (e.message.includes("Slot 1") || e.message.includes("Slot 2") || e.message.includes("card"))
+      );
+      const allEmptySlot = cardIssues.length > 0 && cardIssues.every(
+        (e) => e.message.includes("empty_slot") || e.message.includes("Empty slot")
+      );
+
+      if (cardIssues.length === 0 || allEmptySlot) {
+        console.log("UPGRADE partial → completed (all VU files downloaded, cards empty_slot)");
+        sessionData.status = "completed";
+      }
     }
 
     console.log("UPSERT sessionData:", JSON.stringify(sessionData));
@@ -126,26 +175,27 @@ Deno.serve(async (req) => {
     }
 
     // Upsert download_schedule based on session status
-    const sessionStatus = body.status;
-    if (sessionStatus === "completed" || sessionStatus === "partial" || sessionStatus === "error" || sessionStatus === "skipped") {
+    // Use the effective status (after potential upgrade)
+    const effectiveStatus = (sessionData.status as string) ?? currentStatus;
+    if (effectiveStatus === "completed" || effectiveStatus === "partial" || effectiveStatus === "error" || effectiveStatus === "skipped") {
       const scheduleData: Record<string, unknown> = {
         imei: body.imei,
         last_attempt_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
 
-      if (sessionStatus === "completed") {
+      if (effectiveStatus === "completed") {
         scheduleData.status = "ok";
         scheduleData.last_success_at = new Date().toISOString();
         scheduleData.last_error = null;
-      } else if (sessionStatus === "partial") {
+      } else if (effectiveStatus === "partial") {
         scheduleData.status = "partial";
         scheduleData.last_success_at = new Date().toISOString();
         scheduleData.last_error = `Partial: ${body.files_downloaded ?? "?"}/${body.total_files ?? "?"} files`;
-      } else if (sessionStatus === "error") {
+      } else if (effectiveStatus === "error") {
         scheduleData.status = "error";
         scheduleData.last_error = body.error_message ?? "Unknown error";
-      } else if (sessionStatus === "skipped") {
+      } else if (effectiveStatus === "skipped") {
         scheduleData.status = "skipped";
       }
 
@@ -158,9 +208,8 @@ Deno.serve(async (req) => {
       }
 
       // Increment attempts_today via raw update after upsert
-      if (sessionStatus === "skipped") {
+      if (effectiveStatus === "skipped") {
         await supabase.rpc("increment_attempts_today", { p_imei: body.imei }).catch(() => {
-          // Fallback: just log, non-critical
           console.warn("Could not increment attempts_today");
         });
       }
