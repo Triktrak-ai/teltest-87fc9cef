@@ -45,26 +45,32 @@ function StatCard({ label, value, icon, accent = "primary", loading }: StatCardP
   );
 }
 
-interface StatsCardsProps {
-  filterImeis?: string[] | null;
+import { type AdminFilterResult } from "@/components/AdminFilter";
+
+function matchesFilter(imei: string, filter: AdminFilterResult): boolean {
+  return filter.imeis.includes(imei) || imei.toLowerCase().includes(filter.rawQuery);
 }
 
-export function StatsCards({ filterImeis }: StatsCardsProps) {
+interface StatsCardsProps {
+  adminFilter?: AdminFilterResult | null;
+}
+
+export function StatsCards({ adminFilter }: StatsCardsProps) {
   const { isAdmin } = useAuth();
   const { data: allSessions, isLoading } = useSessions();
   const { data: allSchedules, isLoading: schedLoading } = useDownloadSchedule();
 
   const sessions = useMemo(() => {
     if (!allSessions) return undefined;
-    if (!filterImeis) return allSessions;
-    return allSessions.filter((s) => filterImeis.includes(s.imei));
-  }, [allSessions, filterImeis]);
+    if (!adminFilter) return allSessions;
+    return allSessions.filter((s) => matchesFilter(s.imei, adminFilter));
+  }, [allSessions, adminFilter]);
 
   const schedules = useMemo(() => {
     if (!allSchedules) return undefined;
-    if (!filterImeis) return allSchedules;
-    return allSchedules.filter((s) => filterImeis.includes(s.imei));
-  }, [allSchedules, filterImeis]);
+    if (!adminFilter) return allSchedules;
+    return allSchedules.filter((s) => matchesFilter(s.imei, adminFilter));
+  }, [allSchedules, adminFilter]);
 
   const stats = useMemo(() => {
     if (!sessions) return { activeSessions: 0, completedToday: 0, errorsToday: 0, uniqueImei: 0, totalBytes: 0, totalApdu: 0, totalCrc: 0 };

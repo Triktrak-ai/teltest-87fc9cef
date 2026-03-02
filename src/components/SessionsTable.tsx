@@ -63,19 +63,25 @@ function isActive(status: string): boolean {
   return status !== "completed" && status !== "error" && status !== "partial" && status !== "skipped";
 }
 
-interface SessionsTableProps {
-  filterImeis?: string[] | null;
+import { type AdminFilterResult } from "@/components/AdminFilter";
+
+function matchesFilter(imei: string, filter: AdminFilterResult): boolean {
+  return filter.imeis.includes(imei) || imei.toLowerCase().includes(filter.rawQuery);
 }
 
-export function SessionsTable({ filterImeis }: SessionsTableProps) {
+interface SessionsTableProps {
+  adminFilter?: AdminFilterResult | null;
+}
+
+export function SessionsTable({ adminFilter }: SessionsTableProps) {
   const { getOwner, isAdmin } = useImeiOwners();
   const { data: sessions, isLoading } = useSessions();
 
   const filtered = useMemo(() => {
     if (!sessions) return undefined;
-    if (!filterImeis) return sessions;
-    return sessions.filter((s) => filterImeis.includes(s.imei));
-  }, [sessions, filterImeis]);
+    if (!adminFilter) return sessions;
+    return sessions.filter((s) => matchesFilter(s.imei, adminFilter));
+  }, [sessions, adminFilter]);
 
   return (
     <div className="rounded-lg border bg-card">

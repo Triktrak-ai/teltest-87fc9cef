@@ -11,8 +11,15 @@ interface DeviceInfo {
   user_id: string;
 }
 
+export interface AdminFilterResult {
+  /** IMEIs matched from user_devices (by name, plate, label, imei) */
+  imeis: string[];
+  /** Raw query for direct IMEI substring matching in sessions */
+  rawQuery: string;
+}
+
 interface AdminFilterProps {
-  onFilterChange: (imeis: string[] | null) => void;
+  onFilterChange: (result: AdminFilterResult | null) => void;
 }
 
 export function AdminFilter({ onFilterChange }: AdminFilterProps) {
@@ -43,17 +50,21 @@ export function AdminFilter({ onFilterChange }: AdminFilterProps) {
     load();
   }, []);
 
-  const filtered = useMemo(() => {
+  const filtered = useMemo((): AdminFilterResult | null => {
     if (!query.trim()) return null;
     const q = query.toLowerCase().trim();
-    const matching = devices.filter(
-      (d) =>
+    const matchingImeis = new Set<string>();
+    devices.forEach((d) => {
+      if (
         d.imei.toLowerCase().includes(q) ||
         (d.vehicle_plate && d.vehicle_plate.toLowerCase().includes(q)) ||
         d.user_name.toLowerCase().includes(q) ||
         (d.label && d.label.toLowerCase().includes(q))
-    );
-    return matching.map((d) => d.imei);
+      ) {
+        matchingImeis.add(d.imei);
+      }
+    });
+    return { imeis: Array.from(matchingImeis), rawQuery: q };
   }, [query, devices]);
 
   useEffect(() => {
