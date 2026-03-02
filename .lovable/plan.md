@@ -1,37 +1,49 @@
 
-
-# Naprawa logiki wykrywania niezgodności generacji
+# Kategoryzacja sesji "Unknown" na dashboardzie
 
 ## Problem
-Funkcja `isGenerationMismatch()` w `SessionsTable.tsx` nieprawidłowo oznacza niektóre kombinacje kart i tachografów jako niezgodne, wyświetlając błędny tooltip "dane karty kierowcy niedostępne".
+Kolumna "Tachograf" wyswietla "Unknown" dla wielu sesji, ktore tak naprawde maja rozne, rozpoznawalne przyczyny. Uzytkownik widzi monotonna liste "Unknown" bez zadnej informacji o tym co sie stalo.
 
-Konkretne błędy w logice (linie 32-41):
-- Karta Gen2v2 w VU Gen2v1/Gen2 jest oznaczana jako `culprit="card"` — ale karta Gen2v2 jest wstecznie kompatybilna i działa poprawnie
-- Karta Gen2 w VU Gen1 jest oznaczana jako mismatch — ale karty firmowe Gen2 zazwyczaj działają w VU Gen1
-- Komunikat mówi o "danych karty kierowcy" ale logika dotyczy karty firmowej (company card)
+## Analiza danych
+Z bazy wynika 5 jasnych kategorii sesji z "Unknown":
 
-## Poprawka
+| Kategoria | Ilosc | Wzorzec | Znaczenie |
+|---|---|---|---|
+| Lockout (cert rejected) | 37 | APDU 0-3, error | Tachograf odrzucil certyfikat (blokada bezpieczenstwa) |
+| Brak odpowiedzi VU | 13 | APDU 0, error, oba Unknown | VU nie odpowiedzialo (stacyjka wylaczona / offline) |
+| Auth zaawansowany blad | 8 | APDU 20+, error | Autentykacja przeszla daleko ale ostatecznie odrzucona |
+| Wykrywanie | 10 | connecting, APDU 0 | Sesja w trakcie - generacja jeszcze nieznana |
+| Pominieto | 6 | skipped | Sesja pominieta przez harmonogram |
 
-### Zmiana w `src/components/SessionsTable.tsx`
+## Rozwiazanie
 
-**Nowa logika `isGenerationMismatch`:**
+### 1. Nowa funkcja `classifyUnknownGeneration()` w `SessionsTable.tsx`
+
+Zamiast wyswietlac surowe "Unknown", dodac funkcje ktora na podstawie `status`, `apdu_exchanges`, `error_message` i kontekstu z `session_events` zwraca:
 
 ```text
-Prawidłowe przypadki niezgodności (wg macierzy kompatybilności):
-- VU Gen2v2 + karta Gen2v1/Gen2/Gen1 → ostrzeżenie przy karcie (ograniczony odczyt nowych sekcji)
-- VU Gen2v1 + karta Gen1 → ostrzeżenie przy karcie (możliwy błąd autoryzacji)
-
-Przypadki BEZ ostrzeżenia:
-- Karta Gen2v2 w dowolnym VU → wstecznie kompatybilna
-- Karta Gen1 w VU Gen1 → pełna kompatybilność
-- Karta Gen2v1 w VU Gen2v1 → pełna kompatybilność
+- "Lockout"       → ikona Lock, kolor destructive, tooltip "Tachograf odrzucil certyfikat"
+- "VU offline"    → ikona WifiOff, kolor muted, tooltip "Brak odpowiedzi VU (stacyjka wylaczona?)"  
+- "Auth blad"     → ikona ShieldX, kolor warning, tooltip "Autentykacja przerwana po N wymianach APDU"
+- "Wykrywanie..." → ikona Loader, kolor info, animacja pulse
+- "Unknown"       → fallback dla niepasujacych przypadkow
 ```
 
-**Nowy komunikat tooltipa:**
-Zamiast "dane karty kierowcy niedostępne", wyświetlać bardziej precyzyjny komunikat zależny od kontekstu:
-- VU Gen2v2 + starsza karta: "Starsza karta firmowa — możliwy ograniczony odczyt danych Gen2v2"
-- VU Gen1 + karta Gen2: usunąć ostrzeżenie (kompatybilne)
+### 2. Zmiana wyswietlania w kolumnie "Tachograf"
 
-### Jeden plik do zmiany
-`src/components/SessionsTable.tsx` — poprawka funkcji `isGenerationMismatch` (linie 32-41) oraz tooltipa (linia 186)
+Zamiast Badge "Unknown" wyswietlic nowy Badge z odpowiednia ikona, kolorem i tooltipem. Zastosowac to tylko gdy `generation === "Unknown"` — znane generacje (Gen1, Gen2, Gen2v2) pozostaja bez zmian.
 
+### 3. Zmiana wyswietlania w kolumnie "Status" dla bledow
+
+Dla sesji z `status === "error"` i rozpoznanym wzorcem, wzbogacic tooltip Badge "Blad" o szczegoly:
+- "Blokada bezpieczenstwa tachografu (lockout)" 
+- "VU nie odpowiada — mozliwe wylaczenie stacyjki"
+- "Certyfikat odrzucony po pelnej autentykacji"
+
+### Zmiany w plikach
+
+**`src/components/SessionsTable.tsx`** — jedyny plik:
+- Dodac funkcje `classifyUnknownGeneration(session)` zwracajaca `{ label, icon, color, tooltip }`
+- Zmodyfikowac renderowanie kolumny "Tachograf" (linia 169-188) aby uzywac klasyfikacji zamiast surowego "Unknown"
+- Dodac tooltips do kolumny "Status" dla rozpoznanych wzorcow bledow
+- Import dodatkowych ikon: `Lock`, `WifiOff`, `ShieldX`, `Loader`
