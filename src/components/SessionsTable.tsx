@@ -3,7 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Lock, WifiOff, ShieldAlert, Loader } from "lucide-react";
 import { useMemo } from "react";
 import { useImeiOwners } from "@/hooks/useImeiOwners";
 
@@ -50,6 +50,84 @@ function isGenerationMismatch(s: Session): { mismatch: boolean; culprit?: "card"
     return { mismatch: true, culprit: "card", message: "Karta Gen1 w tachografie Gen2 — możliwy błąd autoryzacji" };
   }
   return { mismatch: false };
+}
+
+interface UnknownClassification {
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  className: string;
+  tooltip: string;
+  animate?: boolean;
+}
+
+function classifyUnknownGeneration(s: Session): UnknownClassification | null {
+  const gen = s.generation ?? "Unknown";
+  if (gen !== "Unknown") return null;
+
+  // Skipped sessions
+  if (s.status === "skipped") {
+    return null; // handled by status column already
+  }
+
+  // Detecting — session in progress, generation not yet known
+  if (s.status === "connecting" || (isActive(s.status) && (s.apdu_exchanges ?? 0) === 0)) {
+    return {
+      label: "Wykrywanie…",
+      icon: Loader,
+      className: "bg-info/20 text-info border-info/30",
+      tooltip: "Sesja w trakcie — generacja tachografu jeszcze nieznana",
+      animate: true,
+    };
+  }
+
+  // Error-based classifications
+  if (s.status === "error") {
+    const apdu = s.apdu_exchanges ?? 0;
+    const errMsg = (s.error_message ?? "").toLowerCase();
+    const bothUnknown = gen === "Unknown" && (s.card_generation ?? "Unknown") === "Unknown";
+
+    // VU offline — no APDU at all, both generations unknown
+    if (apdu === 0 && bothUnknown) {
+      return {
+        label: "VU offline",
+        icon: WifiOff,
+        className: "bg-muted text-muted-foreground border-muted-foreground/20",
+        tooltip: "Brak odpowiedzi VU (stacyjka wyłączona?)",
+      };
+    }
+
+    // Lockout — low APDU count, certificate rejected
+    if (apdu <= 3 || errMsg.includes("certificate rejected") || errMsg.includes("cert")) {
+      return {
+        label: "Lockout",
+        icon: Lock,
+        className: "bg-destructive/20 text-destructive border-destructive/30",
+        tooltip: "Tachograf odrzucił certyfikat (blokada bezpieczeństwa)",
+      };
+    }
+
+    // Advanced auth failure — high APDU count
+    if (apdu >= 20) {
+      return {
+        label: "Auth błąd",
+        icon: ShieldAlert,
+        className: "bg-warning/20 text-warning border-warning/30",
+        tooltip: `Autentykacja przerwana po ${apdu} wymianach APDU`,
+      };
+    }
+  }
+
+  return null; // fallback — show raw "Unknown"
+}
+
+function getErrorTooltip(s: Session): string | null {
+  if (s.status !== "error") return null;
+  const cls = classifyUnknownGeneration(s);
+  if (!cls) return null;
+  if (cls.label === "Lockout") return "Blokada bezpieczeństwa tachografu (lockout)";
+  if (cls.label === "VU offline") return "VU nie odpowiada — możliwe wyłączenie stacyjki";
+  if (cls.label === "Auth błąd") return "Certyfikat odrzucony po pełnej autentykacji";
+  return null;
 }
 
 function genBadgeClass(gen: string): string {
@@ -168,9 +246,32 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                   <td className="px-5 py-3 font-medium">{s.vehicle_plate ?? "—"}</td>
                   <td className="px-5 py-3">
                     <span className="flex items-center gap-1.5">
-                      <Badge variant="outline" className={genBadgeClass(s.generation)}>
-                        <span className="font-mono text-xs">{s.generation}</span>
-                      </Badge>
+                      {(() => {
+                        const cls = classifyUnknownGeneration(s);
+                        if (cls) {
+                          const IconComp = cls.icon;
+                          return (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Badge variant="outline" className={cls.className}>
+                                    <IconComp className={`h-3 w-3 mr-1 ${cls.animate ? "animate-spin" : ""}`} />
+                                    <span className="font-mono text-xs">{cls.label}</span>
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  <p>{cls.tooltip}</p>
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          );
+                        }
+                        return (
+                          <Badge variant="outline" className={genBadgeClass(s.generation)}>
+                            <span className="font-mono text-xs">{s.generation}</span>
+                          </Badge>
+                        );
+                      })()}
                       {genMismatch.mismatch && genMismatch.culprit === "vu" && (
                         <TooltipProvider>
                           <Tooltip>
@@ -226,6 +327,19 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                                     ? s.error_message
                                     : `Pobrano ${s.files_downloaded ?? 0}/${s.total_files ?? 0} plików`}
                               </p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : s.status === "error" && getErrorTooltip(s) ? (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge variant="outline" className={sc.className}>
+                                {sc.label}
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>{getErrorTooltip(s)}</p>
                             </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
