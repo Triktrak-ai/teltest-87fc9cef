@@ -29,14 +29,26 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-function isGenerationMismatch(s: Session): { mismatch: boolean; culprit?: "card" | "vu" } {
+function isGenerationMismatch(s: Session): { mismatch: boolean; culprit?: "card" | "vu"; message?: string } {
   const card = s.card_generation ?? "Unknown";
   const vu = s.generation ?? "Unknown";
   if (card === "Unknown" || vu === "Unknown") return { mismatch: false };
-  if (card === "Gen1") return { mismatch: false };
-  if (vu === "Gen1") return { mismatch: true, culprit: "card" };
-  if (vu === "Gen2v2" && (card === "Gen2" || card === "Gen2v1")) return { mismatch: true, culprit: "card" };
-  if (card === "Gen2v2" && (vu === "Gen2v1" || vu === "Gen2")) return { mismatch: true, culprit: "card" };
+  // Gen2v2 card is backward compatible with all VUs
+  if (card === "Gen2v2") return { mismatch: false };
+  // Gen1 card in Gen1 VU — full compatibility
+  if (card === "Gen1" && vu === "Gen1") return { mismatch: false };
+  // Gen1 card in Gen2+ VU — no mismatch for company cards
+  if (card === "Gen1" && (vu === "Gen2" || vu === "Gen2v1")) return { mismatch: false };
+  // Gen2/Gen2v1 card in Gen1 VU — generally works for company cards
+  if (vu === "Gen1") return { mismatch: false };
+  // Gen2/Gen2v1 card in Gen2v2 VU — limited read of new sections
+  if (vu === "Gen2v2" && (card === "Gen2" || card === "Gen2v1" || card === "Gen1")) {
+    return { mismatch: true, culprit: "card", message: `Starsza karta firmowa (${card}) — możliwy ograniczony odczyt danych Gen2v2` };
+  }
+  // Gen2v1 + Gen1 card — possible auth error
+  if ((vu === "Gen2" || vu === "Gen2v1") && card === "Gen1") {
+    return { mismatch: true, culprit: "card", message: "Karta Gen1 w tachografie Gen2 — możliwy błąd autoryzacji" };
+  }
   return { mismatch: false };
 }
 
@@ -162,7 +174,7 @@ export function SessionsTable({ filterImeis }: SessionsTableProps) {
                               </span>
                             </TooltipTrigger>
                             <TooltipContent>
-                              <p>Niezgodność: tachograf {s.generation} nie obsługuje karty {s.card_generation}</p>
+                              <p>{genMismatch.message ?? `Niezgodność: tachograf ${s.generation} nie obsługuje karty ${s.card_generation}`}</p>
                             </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
@@ -183,7 +195,7 @@ export function SessionsTable({ filterImeis }: SessionsTableProps) {
                               </span>
                             </TooltipTrigger>
                             <TooltipContent>
-                              <p>Niezgodność: karta {s.card_generation} w tachografie {s.generation} — dane karty kierowcy niedostępne</p>
+                              <p>{genMismatch.message ?? `Niezgodność: karta ${s.card_generation} w tachografie ${s.generation}`}</p>
                             </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
