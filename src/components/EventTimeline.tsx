@@ -29,20 +29,26 @@ const contextHighlight: Record<string, { icon: React.ReactNode; color: string; b
   },
 };
 
-interface EventTimelineProps {
-  filterImeis?: string[] | null;
+import { type AdminFilterResult } from "@/components/AdminFilter";
+
+function matchesFilter(imei: string, filter: AdminFilterResult): boolean {
+  return filter.imeis.includes(imei) || imei.toLowerCase().includes(filter.rawQuery);
 }
 
-export function EventTimeline({ filterImeis }: EventTimelineProps) {
+interface EventTimelineProps {
+  adminFilter?: AdminFilterResult | null;
+}
+
+export function EventTimeline({ adminFilter }: EventTimelineProps) {
   const { getOwner, isAdmin } = useImeiOwners();
   const { data: events, isLoading } = useSessionEvents();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const filtered = useMemo(() => {
     if (!events) return undefined;
-    if (!filterImeis) return events;
-    return events.filter((e) => filterImeis.includes(e.imei));
-  }, [events, filterImeis]);
+    if (!adminFilter) return events;
+    return events.filter((e) => matchesFilter(e.imei, adminFilter));
+  }, [events, adminFilter]);
 
   useEffect(() => {
     if (scrollRef.current) {

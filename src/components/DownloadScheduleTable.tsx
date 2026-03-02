@@ -69,11 +69,17 @@ function useDevMode() {
   return { isDevMode: query.data ?? false, isLoading: query.isLoading, toggle };
 }
 
-interface DownloadScheduleTableProps {
-  filterImeis?: string[] | null;
+import { type AdminFilterResult } from "@/components/AdminFilter";
+
+function matchesFilter(imei: string, filter: AdminFilterResult): boolean {
+  return filter.imeis.includes(imei) || imei.toLowerCase().includes(filter.rawQuery);
 }
 
-export function DownloadScheduleTable({ filterImeis }: DownloadScheduleTableProps) {
+interface DownloadScheduleTableProps {
+  adminFilter?: AdminFilterResult | null;
+}
+
+export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProps) {
   const { getOwner, isAdmin } = useImeiOwners();
   const { data: schedules, isLoading, resetSchedule } = useDownloadSchedule();
   const { data: sessionsWithLogs } = useLatestSessionsWithLogs();
@@ -83,9 +89,9 @@ export function DownloadScheduleTable({ filterImeis }: DownloadScheduleTableProp
 
   const filtered = useMemo(() => {
     if (!schedules) return undefined;
-    if (!filterImeis) return schedules;
-    return schedules.filter((s) => filterImeis.includes(s.imei));
-  }, [schedules, filterImeis]);
+    if (!adminFilter) return schedules;
+    return schedules.filter((s) => matchesFilter(s.imei, adminFilter));
+  }, [schedules, adminFilter]);
 
   const handleReset = async (imei?: string) => {
     const key = imei ?? "__all__";
