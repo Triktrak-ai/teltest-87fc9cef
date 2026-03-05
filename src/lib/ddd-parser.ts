@@ -1064,9 +1064,9 @@ function findCardNumberDigits(bytes: Uint8Array): number[] {
       if (bytes[i + j] >= 0x30 && bytes[i + j] <= 0x39) digitCount++;
       else break;
     }
-    if (digitCount >= 13) {
+    if (digitCount >= 10) {
       positions.push(i);
-      i += digitCount; // skip past this card number
+      i += digitCount;
     }
   }
   return positions;
