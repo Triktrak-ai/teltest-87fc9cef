@@ -223,20 +223,6 @@ interface SessionsTableProps {
   adminFilter?: AdminFilterResult | null;
 }
 
-import { type AdminFilterResult } from "@/components/AdminFilter";
-
-function matchesFilter(imei: string, filter: AdminFilterResult): boolean {
-  return filter.imeis.includes(imei) || imei.toLowerCase().includes(filter.rawQuery);
-}
-
-function hasDownloadableFiles(s: Session): boolean {
-  const eff = getEffectiveStatus(s);
-  return (eff === "completed" || eff === "partial") && (s.files_downloaded ?? 0) > 0;
-}
-
-interface SessionsTableProps {
-  adminFilter?: AdminFilterResult | null;
-}
 
 export function SessionsTable({ adminFilter }: SessionsTableProps) {
   const { getOwner, isAdmin } = useImeiOwners();
