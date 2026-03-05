@@ -159,18 +159,18 @@ function classifyUnknownGeneration(s: Session): UnknownClassification | null {
 function getErrorBadgeInfo(s: Session): { label: string; icon?: React.ComponentType<{ className?: string }>; className: string } {
   const cls = classifyUnknownGeneration(s);
   if (cls) {
-    if (cls.label === "VU offline") return { label: "VU offline", icon: WifiOff, className: "bg-muted text-muted-foreground border-muted-foreground/20" };
-    if (cls.label === "Lockout") return { label: "Lockout", icon: Lock, className: "bg-destructive/20 text-destructive border-destructive/30" };
-    if (cls.label === "Auth błąd") return { label: "Auth błąd", icon: ShieldAlert, className: "bg-warning/20 text-warning border-warning/30" };
+    if (cls.label === "VU offline") return { label: "VU offline", icon: WifiOff, className: ERR_CLASS };
+    if (cls.label === "Lockout") return { label: "Lockout", icon: Lock, className: ERR_CLASS };
+    if (cls.label === "Auth błąd") return { label: "Auth błąd", icon: ShieldAlert, className: ERR_CLASS };
   }
   const files = s.files_downloaded ?? 0;
   const total = s.total_files ?? 0;
   if (files > 0 && total > 0) {
-    return { label: `Przerwane ${files}/${total}`, icon: AlertTriangle, className: "bg-warning/20 text-warning border-warning/30" };
+    return { label: `Przerwane ${files}/${total}`, icon: AlertTriangle, className: ERR_CLASS };
   }
   const apdu = s.apdu_exchanges ?? 0;
   if (apdu >= 20) {
-    return { label: "Auth błąd", icon: ShieldAlert, className: "bg-warning/20 text-warning border-warning/30" };
+    return { label: "Auth błąd", icon: ShieldAlert, className: ERR_CLASS };
   }
   return { label: "Błąd", className: "bg-destructive/20 text-destructive border-destructive/30" };
 }
