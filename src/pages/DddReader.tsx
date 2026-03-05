@@ -162,9 +162,18 @@ const DddReader = () => {
             isDragging ? "border-primary bg-primary/5" : "border-muted-foreground/25 hover:border-primary/50"
           }`}
         >
-          <Upload className="mx-auto mb-3 h-10 w-10 text-muted-foreground" />
-          <p className="text-sm font-medium">Przeciągnij pliki .DDD lub kliknij aby wybrać</p>
-          <p className="mt-1 text-xs text-muted-foreground">Pliki VU (overview, activities, events, speed, technical) lub karty kierowcy (driver1, driver2)</p>
+          {autoLoading ? (
+            <>
+              <Loader2 className="mx-auto mb-3 h-10 w-10 text-primary animate-spin" />
+              <p className="text-sm font-medium">Ładowanie plików z serwera…</p>
+            </>
+          ) : (
+            <>
+              <Upload className="mx-auto mb-3 h-10 w-10 text-muted-foreground" />
+              <p className="text-sm font-medium">Przeciągnij pliki .DDD lub kliknij aby wybrać</p>
+              <p className="mt-1 text-xs text-muted-foreground">Pliki VU (overview, activities, events, speed, technical) lub karty kierowcy (driver1, driver2)</p>
+            </>
+          )}
           {loadedFiles.length > 0 && (
             <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
               {loadedFiles.map((name, i) => (
