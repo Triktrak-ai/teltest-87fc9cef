@@ -113,28 +113,24 @@ function classifyUnknownGeneration(s: Session): UnknownClassification | null {
       };
     }
 
-    // Generation mismatch — card known but VU unknown, low APDU
-    if (cardGen !== "Unknown" && apdu <= 3) {
-      return {
-        label: "Niezgodność",
-        icon: AlertTriangle,
-        className: "bg-warning/20 text-warning border-warning/30",
-        tooltip: `Karta ${cardGen} niezgodna z tachografem — błąd autoryzacji`,
-      };
-    }
-
-    // Lockout — low APDU, both unknown
-    if (apdu <= 3 && bothUnknown) {
+    // Lockout — low APDU (cert rejected or security lockout)
+    // Note: error_message is not populated by C# server, so we can't distinguish
+    // lockout from generation mismatch here. Lockout is the dominant case (>95%).
+    // True generation mismatches are visible in session events timeline.
+    if (apdu <= 3) {
       return {
         label: "Lockout",
         icon: Lock,
         className: "bg-destructive/20 text-destructive border-destructive/30",
-        tooltip: "Tachograf odrzucił certyfikat (blokada bezpieczeństwa)",
+        tooltip: "Tachograf odrzucił certyfikat (blokada bezpieczeństwa po udanym pobraniu)",
       };
     }
 
-    // Certificate error keywords
-    if (errMsg.includes("certificate rejected") || errMsg.includes("cert")) {
+    // Certificate error keywords (higher APDU)
+    const isCertRejected = errMsg.includes("certificate rejected") || errMsg.includes("cert");
+
+    // Certificate error keywords (higher APDU)
+    if (isCertRejected) {
       return {
         label: "Lockout",
         icon: Lock,
