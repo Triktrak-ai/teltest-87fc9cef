@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { parseDddFile, mergeDddData, emptyDddData, type DddFileData, type DddSection, type DriverCardData } from "@/lib/ddd-parser";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { apiListDddFiles, apiDownloadDddFile } from "@/lib/api-client";
+import { listDddFiles, downloadDddFile } from "@/lib/ddd-storage";
 import { toast } from "sonner";
 
 const ACTIVITY_COLORS: Record<string, string> = {
@@ -111,7 +111,7 @@ const DddReader = () => {
 
     (async () => {
       try {
-        const files = await apiListDddFiles(imei, after, before);
+        const files = await listDddFiles(imei, after, before);
         if (files.length === 0) {
           toast.error("Brak plików DDD dla tej sesji");
           setAutoLoading(false);
@@ -119,7 +119,7 @@ const DddReader = () => {
         }
         const fileObjects: File[] = [];
         for (const f of files) {
-          const buf = await apiDownloadDddFile(imei, f.name);
+          const buf = await downloadDddFile(imei, f.name);
           fileObjects.push(new File([buf], f.name));
         }
         processFiles(fileObjects);

@@ -15,7 +15,7 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useImeiOwners } from "@/hooks/useImeiOwners";
-import { apiDownloadDddZip, apiListDddFiles, apiDownloadDddFile } from "@/lib/api-client";
+import { downloadDddZip, listDddFiles, downloadDddFile } from "@/lib/ddd-storage";
 
 const statusConfig: Record<string, { label: string; className: string }> = {
   ok: { label: "Pobrano", className: "bg-success/20 text-success border-success/30" },
