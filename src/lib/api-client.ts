@@ -164,3 +164,23 @@ export async function apiDownloadDddFile(imei: string, fileName: string): Promis
   if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
   return res.arrayBuffer();
 }
+
+export async function apiDownloadDddZip(imei: string, after: string, before: string): Promise<ArrayBuffer> {
+  let token = getAccessToken();
+  const params = new URLSearchParams({ after, before });
+
+  const doFetch = async (tk: string | null) => {
+    const headers: Record<string, string> = {};
+    if (tk) headers["Authorization"] = `Bearer ${tk}`;
+    return fetch(`${API_BASE}/api/ddd-files/${imei}/zip?${params}`, { headers });
+  };
+
+  let res = await doFetch(token);
+  if (res.status === 401 && token) {
+    const newToken = await refreshAccessToken();
+    if (newToken) res = await doFetch(newToken);
+  }
+
+  if (!res.ok) throw new Error(`ZIP download failed: HTTP ${res.status}`);
+  return res.arrayBuffer();
+}
