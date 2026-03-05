@@ -991,43 +991,29 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
   const events: EventRecord[] = [];
   const faults: FaultRecord[] = [];
 
-  // Gen2v2 VuEventRecord structure (Annex 1C Appendix 7):
-  // eventType(1B) + eventRecordPurpose(1B) + beginTime(4B) + endTime(4B)
-  // + FullCardNumberAndGen_driver(20B) + FullCardNumberAndGen_codriver(20B)
-  // + similarEventsNumber(1B) = 51B per record
-  // FullCardNumberAndGen = cardType(1B) + nation(1B) + cardNumber(16B) + generation(2B)
-
-  // Strategy: find card number digit patterns and calculate event record start
-  const cardPositions = findCardNumberDigits(bytes);
+  // Find card number patterns: byte followed by 0x28 then digits
+  const cardPositions = findCardNumberPatterns(bytes);
 
   if (cardPositions.length === 0) {
     return parseEventsStructured(bytes, warnings);
   }
 
-  // For Gen2v2: card number digits start at offset 12 from event record start
-  // (eventType(1) + purpose(1) + beginTime(4) + endTime(4) + cardType(1) + nation(1) = 12)
-  for (const digitPos of cardPositions) {
-    // The FullCardNumber starts 2 bytes before the digits (cardType + nation)
-    const fullCardStart = digitPos - 2;
-    // Event record starts 10 bytes before FullCardNumber
-    const eventStart = fullCardStart - 10;
+  // Gen2v2 event record: eventType(1B) + purpose(1B) + beginTime(4B) + endTime(4B) + FullCardNumber starts at offset 10
+  // The findCardNumberPatterns returns position of cardType byte (2 bytes before digit start)
+  // So event start = cardPos - 10
+  for (const cardPos of cardPositions) {
+    const eventStart = cardPos - 10;
     if (eventStart < 0) continue;
 
     try {
       const r = new BinaryReader(toArrayBuffer(bytes), eventStart);
       const eventType = r.readUint8();
-      const eventRecordPurpose = r.readUint8(); // Gen2v2 has this field
+      const _purpose = r.readUint8(); // Gen2v2 eventRecordPurpose
       const eventBeginTime = r.readTimestamp();
       const eventEndTime = r.readTimestamp();
 
-      // Read FullCardNumberAndGeneration for driver slot (20B)
-      const cardNumberDriverSlot = r.readFullCardNumberAndGen();
-
-      // Read FullCardNumberAndGeneration for codriver slot (20B)
-      let cardNumberCodriverSlot = '';
-      if (r.remaining >= 20) {
-        cardNumberCodriverSlot = r.readFullCardNumberAndGen();
-      }
+      // Read FullCardNumber: cardType(1B) + nation(1B) + cardNumber(16B)
+      const cardNumberDriverSlot = r.readFullCardNumber();
 
       if (eventType <= 0x0D && (eventBeginTime || eventEndTime)) {
         events.push({
@@ -1035,7 +1021,7 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
           eventTypeName: EVENT_TYPE_NAMES[eventType] || `Nieznany (0x${eventType.toString(16)})`,
           eventBeginTime, eventEndTime,
           cardNumberDriverSlot,
-          cardNumberCodriverSlot,
+          cardNumberCodriverSlot: '',
         });
       }
     } catch {
@@ -1055,18 +1041,19 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
   return { events: uniqueEvents, faults };
 }
 
-/** Find positions where 10+ consecutive ASCII digits appear (card number patterns) */
-function findCardNumberDigits(bytes: Uint8Array): number[] {
+/** Find positions of card number patterns: any byte + 0x28 + 10+ digits */
+function findCardNumberPatterns(bytes: Uint8Array): number[] {
   const positions: number[] = [];
-  for (let i = 0; i < bytes.length - 16; i++) {
-    let digitCount = 0;
-    for (let j = 0; j < 16 && i + j < bytes.length; j++) {
-      if (bytes[i + j] >= 0x30 && bytes[i + j] <= 0x39) digitCount++;
-      else break;
-    }
-    if (digitCount >= 10) {
-      positions.push(i);
-      i += digitCount;
+  for (let i = 0; i < bytes.length - 18; i++) {
+    if (bytes[i + 1] === 0x28) {
+      let digitCount = 0;
+      for (let j = 2; j < 18 && i + j < bytes.length; j++) {
+        if (bytes[i + j] >= 0x30 && bytes[i + j] <= 0x39) digitCount++;
+        else break;
+      }
+      if (digitCount >= 10) {
+        positions.push(i);
+      }
     }
   }
   return positions;
