@@ -1,5 +1,5 @@
-import { useState, useCallback, useRef } from "react";
-import { Link } from "react-router-dom";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { Radio, Upload, FileText, ArrowLeft, Activity, AlertTriangle, Wrench, Gauge, Search, X, Plus, CreditCard, MapPin, Car } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -9,6 +9,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { parseDddFile, mergeDddData, emptyDddData, type DddFileData, type DddSection, type DriverCardData } from "@/lib/ddd-parser";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { apiListDddFiles, apiDownloadDddFile } from "@/lib/api-client";
+import { toast } from "sonner";
 
 const ACTIVITY_COLORS: Record<string, string> = {
   driving: "bg-red-500",
@@ -51,7 +53,10 @@ const DddReader = () => {
   const [loadedFiles, setLoadedFiles] = useState<string[]>([]);
   const [error, setError] = useState<string>("");
   const [isDragging, setIsDragging] = useState(false);
+  const [autoLoading, setAutoLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [searchParams] = useSearchParams();
+  const autoLoadedRef = useRef(false);
 
   const processFiles = useCallback((files: FileList | File[]) => {
     setError("");
@@ -93,6 +98,39 @@ const DddReader = () => {
     setIsDragging(false);
     if (e.dataTransfer.files.length > 0) processFiles(e.dataTransfer.files);
   }, [processFiles]);
+
+  // Auto-load from URL params (?sessionImei=...&after=...&before=...)
+  useEffect(() => {
+    if (autoLoadedRef.current) return;
+    const imei = searchParams.get("sessionImei");
+    const after = searchParams.get("after");
+    const before = searchParams.get("before");
+    if (!imei || !after || !before) return;
+    autoLoadedRef.current = true;
+    setAutoLoading(true);
+
+    (async () => {
+      try {
+        const files = await apiListDddFiles(imei, after, before);
+        if (files.length === 0) {
+          toast.error("Brak plików DDD dla tej sesji");
+          setAutoLoading(false);
+          return;
+        }
+        const fileObjects: File[] = [];
+        for (const f of files) {
+          const buf = await apiDownloadDddFile(imei, f.name);
+          fileObjects.push(new File([buf], f.name));
+        }
+        processFiles(fileObjects);
+        toast.success(`Załadowano ${fileObjects.length} plików z serwera`);
+      } catch (err) {
+        toast.error(`Błąd ładowania: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        setAutoLoading(false);
+      }
+    })();
+  }, [searchParams, processFiles]);
 
   return (
     <div className="min-h-screen bg-background">
