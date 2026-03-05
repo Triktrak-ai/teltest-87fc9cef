@@ -20,7 +20,23 @@ const statusConfig: Record<string, { label: string; className: string }> = {
   error: { label: "Błąd", className: "bg-destructive/20 text-destructive border-destructive/30" },
   waiting: { label: "Oczekuje", className: "bg-warning/20 text-warning border-warning/30" },
   skipped: { label: "Pominięto", className: "bg-muted text-muted-foreground border-muted-foreground/20" },
+  ignition_off: { label: "Stacyjka OFF", className: "bg-muted text-muted-foreground border-muted-foreground/20" },
 };
+
+function getEffectiveStatus(s: Session): string {
+  // Fix race condition: completed_at set but status stuck on "downloading"
+  if (s.completed_at && s.status === "downloading") {
+    if ((s.total_files ?? 0) > 0 && (s.files_downloaded ?? 0) < (s.total_files ?? 0)) {
+      return "partial";
+    }
+    return "completed";
+  }
+  // Fix false success: completed with 0 files and 0 APDU = ignition OFF
+  if (s.status === "completed" && (s.files_downloaded ?? 0) === 0 && (s.apdu_exchanges ?? 0) === 0) {
+    return "ignition_off";
+  }
+  return s.status;
+}
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -84,7 +100,8 @@ function classifyUnknownGeneration(s: Session): UnknownClassification | null {
   if (s.status === "error") {
     const apdu = s.apdu_exchanges ?? 0;
     const errMsg = (s.error_message ?? "").toLowerCase();
-    const bothUnknown = gen === "Unknown" && (s.card_generation ?? "Unknown") === "Unknown";
+    const cardGen = s.card_generation ?? "Unknown";
+    const bothUnknown = gen === "Unknown" && cardGen === "Unknown";
 
     // VU offline — no APDU at all, both generations unknown
     if (apdu === 0 && bothUnknown) {
@@ -96,8 +113,28 @@ function classifyUnknownGeneration(s: Session): UnknownClassification | null {
       };
     }
 
-    // Lockout — low APDU count, certificate rejected
-    if (apdu <= 3 || errMsg.includes("certificate rejected") || errMsg.includes("cert")) {
+    // Generation mismatch — card known but VU unknown, low APDU
+    if (cardGen !== "Unknown" && apdu <= 3) {
+      return {
+        label: "Niezgodność",
+        icon: AlertTriangle,
+        className: "bg-warning/20 text-warning border-warning/30",
+        tooltip: `Karta ${cardGen} niezgodna z tachografem — błąd autoryzacji`,
+      };
+    }
+
+    // Lockout — low APDU, both unknown
+    if (apdu <= 3 && bothUnknown) {
+      return {
+        label: "Lockout",
+        icon: Lock,
+        className: "bg-destructive/20 text-destructive border-destructive/30",
+        tooltip: "Tachograf odrzucił certyfikat (blokada bezpieczeństwa)",
+      };
+    }
+
+    // Certificate error keywords
+    if (errMsg.includes("certificate rejected") || errMsg.includes("cert")) {
       return {
         label: "Lockout",
         icon: Lock,
@@ -123,11 +160,24 @@ function classifyUnknownGeneration(s: Session): UnknownClassification | null {
 function getErrorTooltip(s: Session): string | null {
   if (s.status !== "error") return null;
   const cls = classifyUnknownGeneration(s);
-  if (!cls) return null;
-  if (cls.label === "Lockout") return "Blokada bezpieczeństwa tachografu (lockout)";
-  if (cls.label === "VU offline") return "VU nie odpowiada — możliwe wyłączenie stacyjki";
-  if (cls.label === "Auth błąd") return "Certyfikat odrzucony po pełnej autentykacji";
-  return null;
+  if (cls) {
+    if (cls.label === "Lockout") return "Blokada bezpieczeństwa tachografu (lockout)";
+    if (cls.label === "VU offline") return "VU nie odpowiada — możliwe wyłączenie stacyjki";
+    if (cls.label === "Auth błąd") return "Certyfikat odrzucony po pełnej autentykacji";
+    if (cls.label === "Niezgodność") return cls.tooltip;
+    return cls.tooltip;
+  }
+  // Universal error context for ALL error sessions (even with known generation)
+  const files = s.files_downloaded ?? 0;
+  const total = s.total_files ?? 0;
+  const apdu = s.apdu_exchanges ?? 0;
+  if (files > 0 && total > 0) {
+    return `Pobieranie przerwane po ${files}/${total} plikach`;
+  }
+  if (apdu >= 20) {
+    return `Błąd po autentykacji (${apdu} APDU)`;
+  }
+  return s.error_message || null;
 }
 
 function genBadgeClass(gen: string): string {
@@ -218,8 +268,9 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
               </tr>
             )}
             {filtered?.map((s) => {
-              const sc = statusConfig[s.status] ?? statusConfig.connecting;
-              const active = isActive(s.status);
+              const effectiveStatus = getEffectiveStatus(s);
+              const sc = statusConfig[effectiveStatus] ?? statusConfig.connecting;
+              const active = isActive(effectiveStatus);
               const stale = isStaleSession(s);
               const staleMinutes = stale
                 ? Math.round((Date.now() - new Date(s.last_activity).getTime()) / 60000)
@@ -311,7 +362,7 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                   </td>
                   <td className="px-5 py-3">
                     <span className="flex items-center gap-1.5">
-                      {s.status === "partial" ? (
+                      {effectiveStatus === "partial" ? (
                         <TooltipProvider>
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -330,7 +381,21 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                             </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
-                      ) : s.status === "error" && getErrorTooltip(s) ? (
+                      ) : effectiveStatus === "ignition_off" ? (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge variant="outline" className={sc.className}>
+                                <WifiOff className="h-3 w-3 mr-1" />
+                                {sc.label}
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>Stacyjka wyłączona przed rozpoczęciem pobierania</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : effectiveStatus === "error" && getErrorTooltip(s) ? (
                         <TooltipProvider>
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -363,14 +428,14 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                         </TooltipProvider>
                       )}
                     </span>
-                    {s.error_code && (
+                    {s.error_code && effectiveStatus === "error" && (
                       <span className="ml-2 font-mono text-xs text-destructive">
                         {s.error_code}
                       </span>
                     )}
                   </td>
                   <td className="px-5 py-3 w-32">
-                    {s.status === "downloading" ? (
+                    {effectiveStatus === "downloading" ? (
                       <div className="flex items-center gap-2">
                         <Progress value={s.progress} className="h-1.5 flex-1" />
                         <span className="font-mono text-xs text-muted-foreground">{s.progress}%</span>
