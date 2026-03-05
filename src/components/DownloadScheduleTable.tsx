@@ -8,12 +8,14 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Switch } from "@/components/ui/switch";
-import { RotateCcw, FileDown, ShieldOff, Shield } from "lucide-react";
+import { RotateCcw, FileDown, ShieldOff, Shield, Download, BookOpen } from "lucide-react";
 import { toast } from "sonner";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useImeiOwners } from "@/hooks/useImeiOwners";
+import { apiDownloadDddZip, apiListDddFiles, apiDownloadDddFile } from "@/lib/api-client";
 
 const statusConfig: Record<string, { label: string; className: string }> = {
   ok: { label: "Pobrano", className: "bg-success/20 text-success border-success/30" },
@@ -86,6 +88,7 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
   const { isDevMode, toggle: toggleDevMode } = useDevMode();
   const [resetting, setResetting] = useState<string | null>(null);
   const [toggling, setToggling] = useState(false);
+  const navigate = useNavigate();
 
   const filtered = useMemo(() => {
     if (!schedules) return undefined;
@@ -118,6 +121,41 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
       window.open(url, "_blank");
     }
   };
+
+  // Time window: from last_success_at minus 10 min to last_success_at plus 5 min
+  const getTimeWindow = (s: DownloadSchedule) => {
+    const successAt = s.last_success_at;
+    if (!successAt) return null;
+    const dt = new Date(successAt);
+    const after = new Date(dt.getTime() - 10 * 60000).toISOString();
+    const before = new Date(dt.getTime() + 5 * 60000).toISOString();
+    return { after, before };
+  };
+
+  const handleDownloadDdd = useCallback(async (s: DownloadSchedule) => {
+    const tw = getTimeWindow(s);
+    if (!tw) { toast.error("Brak daty ostatniego pobrania"); return; }
+    try {
+      toast.info("Przygotowywanie archiwum ZIP…");
+      const buf = await apiDownloadDddZip(s.imei, tw.after, tw.before);
+      const blob = new Blob([buf], { type: "application/zip" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${s.imei}_ddd.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("Pobrano archiwum ZIP");
+    } catch (err) {
+      toast.error(`Błąd pobierania: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, []);
+
+  const handleOpenInReader = useCallback((s: DownloadSchedule) => {
+    const tw = getTimeWindow(s);
+    if (!tw) { toast.error("Brak daty ostatniego pobrania"); return; }
+    navigate(`/ddd-reader?sessionImei=${s.imei}&after=${encodeURIComponent(tw.after)}&before=${encodeURIComponent(tw.before)}`);
+  }, [navigate]);
 
   const handleToggleDevMode = async (checked: boolean) => {
     setToggling(true);
@@ -234,6 +272,30 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
                   <td className="px-5 py-3 font-mono text-xs">{s.attempts_today}</td>
                   <td className="px-5 py-3 text-xs text-destructive max-w-[200px] truncate">{s.last_error ?? "—"}</td>
                   <td className="px-5 py-3 text-right flex items-center justify-end gap-1">
+                    {s.last_success_at && (
+                      <>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handleDownloadDdd(s)}>
+                                <Download className="h-3.5 w-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent><p>Pobierz pliki DDD (ZIP)</p></TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handleOpenInReader(s)}>
+                                <BookOpen className="h-3.5 w-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent><p>Otwórz w czytniku DDD</p></TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </>
+                    )}
                     {logSession && (
                       <TooltipProvider>
                         <Tooltip>
