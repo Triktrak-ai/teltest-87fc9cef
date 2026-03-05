@@ -329,6 +329,29 @@ class BinaryReader {
   readCardNumber(): string {
     return this.readString(18);
   }
+
+  /**
+   * Read a FullCardNumber (18B) and return only the 16-byte card number portion.
+   * Structure: cardType(1B) + issuingMemberState(1B) + cardNumber(16B)
+   */
+  readFullCardNumber(): string {
+    if (this.remaining < 18) return '';
+    const cardType = this.readUint8();
+    const nation = this.readUint8();
+    const cardNumber = this.readString(16);
+    return cardNumber;
+  }
+
+  /**
+   * Read FullCardNumberAndGeneration (20B for Gen2v2).
+   * Structure: cardType(1B) + nation(1B) + cardNumber(16B) + generation(2B)
+   */
+  readFullCardNumberAndGen(): string {
+    if (this.remaining < 20) return '';
+    const cardNumber = this.readFullCardNumber();
+    this.skip(2); // skip generation bytes
+    return cardNumber;
+  }
 }
 
 // ─── Timestamp validation ────────────────────────────────────────────────────
