@@ -991,31 +991,37 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
   const events: EventRecord[] = [];
   const faults: FaultRecord[] = [];
 
-  // Find card number patterns: byte followed by 0x28 then digits
   const cardPositions = findCardNumberPatterns(bytes);
 
   if (cardPositions.length === 0) {
     return parseEventsStructured(bytes, warnings);
   }
 
-  // Gen2v2 event record: eventType(1B) + purpose(1B) + beginTime(4B) + endTime(4B) + FullCardNumber starts at offset 10
-  // The findCardNumberPatterns returns position of cardType byte (2 bytes before digit start)
-  // So event start = cardPos - 10
+  // Card number pattern found at position i (cardType byte), digits at i+2
+  // Event record: eventType(1B) + [purpose(1B)?] + beginTime(4B) + endTime(4B) = 9 or 10 bytes before card
+  // Try both offsets and validate
   for (const cardPos of cardPositions) {
-    const eventStart = cardPos - 10;
-    if (eventStart < 0) continue;
+    for (const offset of [10, 9]) {
+      const eventStart = cardPos - offset;
+      if (eventStart < 0) continue;
 
-    try {
-      const r = new BinaryReader(toArrayBuffer(bytes), eventStart);
-      const eventType = r.readUint8();
-      const _purpose = r.readUint8(); // Gen2v2 eventRecordPurpose
-      const eventBeginTime = r.readTimestamp();
-      const eventEndTime = r.readTimestamp();
+      try {
+        const r = new BinaryReader(toArrayBuffer(bytes), eventStart);
+        const eventType = r.readUint8();
+        if (eventType > 0x0D) continue;
+        
+        if (offset === 10) r.readUint8(); // skip eventRecordPurpose for Gen2v2
+        
+        const eventBeginTime = r.readTimestamp();
+        const eventEndTime = r.readTimestamp();
 
-      // Read FullCardNumber: cardType(1B) + nation(1B) + cardNumber(16B)
-      const cardNumberDriverSlot = r.readFullCardNumber();
+        if (!eventBeginTime && !eventEndTime) continue;
 
-      if (eventType <= 0x0D && (eventBeginTime || eventEndTime)) {
+        // Read card number: skip cardType(1B) + nation(1B), read 16B digits
+        const _cardType = r.readUint8();
+        const _nation = r.readUint8();
+        const cardNumberDriverSlot = r.readString(16);
+
         events.push({
           eventType,
           eventTypeName: EVENT_TYPE_NAMES[eventType] || `Nieznany (0x${eventType.toString(16)})`,
@@ -1023,9 +1029,10 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
           cardNumberDriverSlot,
           cardNumberCodriverSlot: '',
         });
+        break; // found valid parse at this offset
+      } catch {
+        continue;
       }
-    } catch {
-      // Skip malformed records
     }
   }
 
