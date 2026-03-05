@@ -602,12 +602,14 @@ graph TB
         subgraph "TachoWebApi (.NET 8, :5100)"
             STATIC["wwwroot/<br/>React SPA"]
             API["REST Controllers<br/>JWT Auth"]
+            DDDAPI["DddFilesController<br/>ZIP / single file"]
             SIGNALR["SignalR Hub<br/>/hubs/dashboard"]
             STORAGE["File Storage<br/>C:\TachoDDD\SessionLogs"]
         end
         
         PG["PostgreSQL 16<br/>:5432"]
         TACHO["TachoDddServer<br/>(.NET 8)<br/>:5200 TCP"]
+        DDDFS["DDD Files<br/>C:\TachoDDD\Downloads"]
     end
     
     subgraph "Laptop (lokalnie)"
@@ -619,9 +621,11 @@ graph TB
     PROXY -->|"all traffic"| API
     API --> STATIC
     API --> SIGNALR
+    DDDAPI -->|"read .ddd files"| DDDFS
     
     FMB["Teltonika FMB640"] -->|"TCP :5200"| TACHO
     TACHO -->|"HTTP /api/report-session"| API
+    TACHO -->|"save .ddd"| DDDFS
     TACHO -->|"WSS (ngrok)"| CB
     CB --> READER
     
