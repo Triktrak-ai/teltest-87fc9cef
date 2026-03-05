@@ -475,47 +475,59 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
     places: [],
   };
 
-  // Driver card files use 2-byte tags + 2-byte length TLV structure
-  // Tags are in 0x00xx-0x05xx range
+  // Driver card files use 3-byte tags + 2-byte length TLV structure
+  // Per Annex 1C Appendix 2 §4.1-4.2:
+  // Tag: 2 bytes EF FID + 1 byte (00=Gen1 data, 01=Gen1 sig, 02=Gen2 data, 03=Gen2 sig)
+  // Length: 2 bytes big-endian
   const view = new DataView(toArrayBuffer(bytes));
   let pos = 0;
 
-  while (pos < bytes.length - 4) {
-    const tag = view.getUint16(pos, false);
-    const len = view.getUint16(pos + 2, false);
+  while (pos < bytes.length - 5) {
+    if (pos + 5 > bytes.length) break;
 
-    if (len === 0 || pos + 4 + len > bytes.length) {
+    const tagHigh = view.getUint16(pos, false);  // 2-byte EF FID
+    const tagType = bytes[pos + 2];              // 00=data1, 01=sig1, 02=data2, 03=sig2
+    const len = view.getUint16(pos + 3, false);  // 2-byte length
+
+    if (len === 0 || pos + 5 + len > bytes.length) {
       pos++;
+      continue;
+    }
+
+    // Only process data tags (00=Gen1, 02=Gen2), skip signatures (01, 03)
+    const isData = tagType === 0x00 || tagType === 0x02;
+    if (!isData) {
+      pos += 5 + len;
       continue;
     }
 
     // Validate tag is in expected range for driver cards
-    const tagHigh = (tag >> 8) & 0xFF;
-    if (tagHigh > 0x0C && tag !== 0xC100 && tag !== 0xC108) {
+    const tagHighByte = (tagHigh >> 8) & 0xFF;
+    if (tagHighByte > 0x0C && tagHigh !== 0xC100 && tagHigh !== 0xC108 && tagHigh !== 0xC109) {
       pos++;
       continue;
     }
 
-    const sectionData = bytes.slice(pos + 4, pos + 4 + len);
+    const sectionData = bytes.slice(pos + 5, pos + 5 + len);
 
     try {
-      switch (tag) {
-        case 0x0002: // CardIdentification
+      switch (tagHigh) {
+        case 0x0520: // CardIdentificationAndDriverCardHolderIdentification
           result.identification = parseCardIdentification(sectionData);
           console.log(`[DDD] Driver card identification: ${result.identification?.cardNumber}`);
           break;
 
-        case 0x0005: // CardDriverActivity
+        case 0x0504: // CardDriverActivity
           result.activities = parseCardActivities(sectionData, warnings);
           console.log(`[DDD] Driver card activities: ${result.activities.length} days`);
           break;
 
-        case 0x0006: // VehiclesUsed
+        case 0x0505: // CardVehiclesUsed
           result.vehiclesUsed = parseVehiclesUsed(sectionData);
           console.log(`[DDD] Driver card vehicles: ${result.vehiclesUsed.length}`);
           break;
 
-        case 0x0520: // CardEventData
+        case 0x0502: // CardEventData
           result.events = parseCardEvents(sectionData);
           console.log(`[DDD] Driver card events: ${result.events.length}`);
           break;
@@ -525,16 +537,17 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
           console.log(`[DDD] Driver card faults: ${result.faults.length}`);
           break;
 
-        case 0x0508: // CardPlaceDailyWorkPeriod
+        case 0x0506: // CardPlaceDailyWorkPeriod (Gen1) 
+        case 0x0526: // CardPlaceAuthDailyWorkPeriod (Gen2v2)
           result.places = parseCardPlaces(sectionData);
           console.log(`[DDD] Driver card places: ${result.places.length}`);
           break;
       }
     } catch (e) {
-      warnings.push({ offset: pos, message: `Driver card tag 0x${tag.toString(16)}: ${e}` });
+      warnings.push({ offset: pos, message: `Driver card tag 0x${tagHigh.toString(16)} type ${tagType}: ${e}` });
     }
 
-    pos += 4 + len;
+    pos += 5 + len;
   }
 
   // If TLV parsing found nothing, try pattern-based scanning
@@ -1159,10 +1172,13 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
           if (activityChangeCount > 0 && activityChangeCount <= 1440) {
             for (let i = 0; i < activityChangeCount && r.remaining >= 2 && r.position < dataEnd; i++) {
               const word = r.readUint16();
+              // Annex 1C Appendix 1 §2.1: scpaattttttttttt
+              // s=bit15 (slot), c=bit14 (crew), p=bit13 (card present),
+              // aa=bits12-11 (activity), ttttttttttt=bits10-0 (minutes)
               const slot = (word >> 15) & 0x01;
-              const cardInserted = ((word >> 14) & 0x01) === 1;
-              const activity = (word >> 12) & 0x03;
-              const minutes = word & 0x0FFF;
+              const cardInserted = ((word >> 13) & 0x01) === 0; // p=0 means card inserted
+              const activity = (word >> 11) & 0x03;
+              const minutes = word & 0x07FF; // 11 bits, max 1439
               if (minutes >= 1440) continue;
 
               const statusMap: Record<number, ActivityChangeEntry['status']> = {
@@ -1173,7 +1189,7 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
               let nextMinutes = 1440;
               if (i + 1 < activityChangeCount && r.remaining >= 2 && r.position < dataEnd) {
                 const nextWord = (bytes[r.position] << 8) | bytes[r.position + 1];
-                nextMinutes = nextWord & 0x0FFF;
+                nextMinutes = nextWord & 0x07FF;
               }
 
               const hFrom = Math.floor(minutes / 60);
@@ -1331,30 +1347,56 @@ function extractSections(buffer: ArrayBuffer, warnings: ParserWarning[]): DddSec
 
 function parseOverview(data: Uint8Array): DddOverview {
   const r = new BinaryReader(toArrayBuffer(data));
-  const cardSlotsStatus = r.readUint8();
-  const downloadDate = r.readTimestamp();
-  const downloadPeriodBegin = r.readTimestamp();
-  const downloadPeriodEnd = r.readTimestamp();
+
+  // Gen1 VuOverview structure (Annex 1C, Appendix 7 §2.2.6.2):
+  // MemberStateCertificate (194B) + VuCertificate (194B) = 388B certificates
+  // Then: VehicleIdentificationNumber (17B)
+  //        VehicleRegistrationIdentification: nation(1B) + VRN(14B)
+  //        CurrentDateTime (4B)
+  //        VuDownloadablePeriod: begin(4B) + end(4B)
+  //        CardSlotsStatus (1B)
+  //        VuDownloadActivityData ...
+
+  // Skip certificates (2 × 194 = 388 bytes)
+  if (r.remaining > 388) {
+    r.skip(388);
+  }
+
+  // VehicleIdentificationNumber (VIN) — 17 bytes
+  const _vin = r.remaining >= 17 ? r.readString(17) : '';
+  // VehicleRegistrationIdentification
   const vehicleNationByte = r.remaining > 0 ? r.readUint8() : 0;
   const vehicleNation = NATION_CODES[vehicleNationByte] || `0x${vehicleNationByte.toString(16)}`;
   const vrn = r.remaining >= 14 ? r.readString(14) : '';
-  const vuManufacturerName = r.remaining >= 36 ? r.readString(36) : '';
-  const vuManufacturerAddress = r.remaining >= 36 ? r.readString(36) : '';
-  const vuSerialNumber = r.remaining >= 8 ? r.readString(8) : '';
-  const vuPartNumber = r.remaining >= 16 ? r.readString(16) : '';
-  const vuSoftwareVersion = r.remaining >= 4 ? r.readString(4) : '';
-  const vuManufacturingDate = r.remaining >= 4 ? r.readTimestamp() : null;
-  const vuApprovalNumber = r.remaining >= 16 ? r.readString(16) : '';
+  // CurrentDateTime
+  const downloadDate = r.readTimestamp();
+  // VuDownloadablePeriod
+  const downloadPeriodBegin = r.readTimestamp();
+  const downloadPeriodEnd = r.readTimestamp();
+  // CardSlotsStatus
+  const cardSlotsStatus = r.remaining > 0 ? r.readUint8() : 0;
+  // VuDownloadActivityData
   const vuDownloadActivityDataLength = r.remaining >= 4 ? r.readUint32() : 0;
 
+  // After VuDownloadActivityData, try reading VU identification if data remains
+  // The VU identification fields are in the VuCompanyLocksData section, not here
+  // For Gen1, manufacturer info would be in the Technical Data section
+
   return {
-    vuManufacturerName, vuManufacturerAddress, vuSerialNumber, vuPartNumber,
-    vuSoftwareVersion, vuManufacturingDate, vuApprovalNumber,
-    vehicleRegistrationNation: vehicleNation, vehicleRegistrationNumber: vrn,
+    vuManufacturerName: '',
+    vuManufacturerAddress: '',
+    vuSerialNumber: '',
+    vuPartNumber: '',
+    vuSoftwareVersion: '',
+    vuManufacturingDate: null,
+    vuApprovalNumber: '',
+    vehicleRegistrationNation: vehicleNation,
+    vehicleRegistrationNumber: vrn,
     currentDateTime: downloadDate,
     vuDownloadablePeriodBegin: downloadPeriodBegin,
     vuDownloadablePeriodEnd: downloadPeriodEnd,
-    cardSlotsStatus, vuDownloadActivityDataLength,
+    cardSlotsStatus,
+    vuDownloadActivityDataLength,
   };
 }
 
@@ -1387,10 +1429,11 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
 
       for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
         const word = r.readUint16();
+        // Annex 1C Appendix 1 §2.1: scpaattttttttttt
         const slot = (word >> 15) & 0x01;
-        const cardInserted = ((word >> 14) & 0x01) === 1;
-        const activity = (word >> 12) & 0x03;
-        const minutes = word & 0x0FFF;
+        const cardInserted = ((word >> 13) & 0x01) === 0; // p=0 means card inserted
+        const activity = (word >> 11) & 0x03;
+        const minutes = word & 0x07FF; // 11 bits
 
         // Zmiana 3: walidacja minutes — pomijaj śmieci
         if (minutes >= 1440) continue;
@@ -1402,7 +1445,7 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
         let nextMinutes = 1440;
         if (i + 1 < activityChangeCount && r.remaining >= 2) {
           const peek = (r.readUint16());
-          nextMinutes = peek & 0x0FFF;
+          nextMinutes = peek & 0x07FF;
           r.position -= 2;
         }
 
