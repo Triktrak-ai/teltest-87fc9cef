@@ -6,7 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { parseDddFile, mergeDddData, emptyDddData, type DddFileData, type DddSection, type DriverCardData } from "@/lib/ddd-parser";
+import { parseDddFile, mergeDddData, emptyDddData, type DddFileData, type DddSection, type DriverCardData, type RawFileBuffer } from "@/lib/ddd-parser";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { listDddFiles, downloadDddFile } from "@/lib/ddd-storage";
@@ -34,6 +34,19 @@ const formatDateTime = (d: Date | null) => d ? d.toLocaleString("pl-PL") : "—"
 const hexDump = (data: Uint8Array, maxBytes = 32): string => {
   const slice = data.slice(0, maxBytes);
   return Array.from(slice).map(b => b.toString(16).padStart(2, '0')).join(' ');
+};
+
+const formatHexDumpBlock = (data: Uint8Array, maxBytes = 200): string => {
+  const slice = data.slice(0, maxBytes);
+  const lines: string[] = [];
+  for (let i = 0; i < slice.length; i += 16) {
+    const row = slice.slice(i, i + 16);
+    const offset = i.toString(16).padStart(6, '0');
+    const hex = Array.from(row).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    const ascii = Array.from(row).map(b => (b >= 0x20 && b <= 0x7e) ? String.fromCharCode(b) : '.').join('');
+    lines.push(`${offset}  ${hex.padEnd(48)}  |${ascii}|`);
+  }
+  return lines.join('\n');
 };
 
 const TAG_NAMES: Record<number, string> = {
