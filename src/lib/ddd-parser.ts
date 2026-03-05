@@ -133,6 +133,12 @@ export interface DriverCardData {
   places: CardPlaceRecord[];
 }
 
+export interface RawFileBuffer {
+  fileName: string;
+  fileType: string;
+  data: Uint8Array;
+}
+
 export interface DddFileData {
   overview: DddOverview | null;
   activities: ActivityRecord[];
@@ -146,6 +152,7 @@ export interface DddFileData {
   bytesParsed: number;
   generation: 'gen1' | 'gen2' | 'unknown';
   driverCard: DriverCardData | null;
+  rawFileBuffers: RawFileBuffer[];
 }
 
 // ─── File type detection from filename ───────────────────────────────────────
@@ -182,6 +189,7 @@ export function mergeDddData(existing: DddFileData, incoming: DddFileData): DddF
     bytesParsed: existing.bytesParsed + incoming.bytesParsed,
     generation: incoming.generation !== 'unknown' ? incoming.generation : existing.generation,
     driverCard: incoming.driverCard ?? existing.driverCard,
+    rawFileBuffers: [...existing.rawFileBuffers, ...incoming.rawFileBuffers],
   };
 }
 
@@ -199,7 +207,7 @@ export function emptyDddData(): DddFileData {
     overview: null, activities: [], events: [], faults: [],
     technicalData: null, speedRecords: [], rawSections: [],
     warnings: [], fileSize: 0, bytesParsed: 0, generation: 'unknown',
-    driverCard: null,
+    driverCard: null, rawFileBuffers: [],
   };
 }
 
@@ -367,6 +375,7 @@ function isValidTimestamp(value: number): boolean {
 
 export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileData {
   const warnings: ParserWarning[] = [];
+  const fileType = detectFileType(fileName);
   const result: DddFileData = {
     overview: null,
     activities: [],
@@ -380,10 +389,14 @@ export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileDat
     bytesParsed: 0,
     generation: 'unknown',
     driverCard: null,
+    rawFileBuffers: [{
+      fileName: fileName || 'unknown',
+      fileType: fileType || 'unknown',
+      data: new Uint8Array(buffer),
+    }],
   };
 
   // Check if this is an individual file (detected by filename)
-  const fileType = detectFileType(fileName);
   if (fileType) {
     console.log(`[DDD] Individual file detected: ${fileType} (${fileName})`);
     return parseIndividualFile(buffer, fileType, result);

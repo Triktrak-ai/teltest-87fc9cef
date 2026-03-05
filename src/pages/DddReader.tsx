@@ -6,7 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { parseDddFile, mergeDddData, emptyDddData, type DddFileData, type DddSection, type DriverCardData } from "@/lib/ddd-parser";
+import { parseDddFile, mergeDddData, emptyDddData, type DddFileData, type DddSection, type DriverCardData, type RawFileBuffer } from "@/lib/ddd-parser";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { listDddFiles, downloadDddFile } from "@/lib/ddd-storage";
@@ -34,6 +34,19 @@ const formatDateTime = (d: Date | null) => d ? d.toLocaleString("pl-PL") : "—"
 const hexDump = (data: Uint8Array, maxBytes = 32): string => {
   const slice = data.slice(0, maxBytes);
   return Array.from(slice).map(b => b.toString(16).padStart(2, '0')).join(' ');
+};
+
+const formatHexDumpBlock = (data: Uint8Array, maxBytes = 200): string => {
+  const slice = data.slice(0, maxBytes);
+  const lines: string[] = [];
+  for (let i = 0; i < slice.length; i += 16) {
+    const row = slice.slice(i, i + 16);
+    const offset = i.toString(16).padStart(6, '0');
+    const hex = Array.from(row).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    const ascii = Array.from(row).map(b => (b >= 0x20 && b <= 0x7e) ? String.fromCharCode(b) : '.').join('');
+    lines.push(`${offset}  ${hex.padEnd(48)}  |${ascii}|`);
+  }
+  return lines.join('\n');
 };
 
 const TAG_NAMES: Record<number, string> = {
@@ -622,6 +635,29 @@ const DddReader = () => {
                         <p key={i} className="text-xs font-mono text-muted-foreground">
                           <span className="text-amber-600">offset {w.offset}:</span> {w.message}
                         </p>
+                      ))}
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Raw file hex dumps */}
+                {data.rawFileBuffers.length > 0 && (
+                  <Card>
+                    <CardHeader className="py-3">
+                      <CardTitle className="text-sm">Hex dump surowych plików (pierwsze 200 bajtów)</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      {data.rawFileBuffers.map((fb, i) => (
+                        <div key={i}>
+                          <div className="flex items-center gap-2 mb-2">
+                            <Badge variant="outline" className="text-xs font-mono">{fb.fileType}</Badge>
+                            <span className="text-xs text-muted-foreground truncate">{fb.fileName}</span>
+                            <span className="text-xs text-muted-foreground ml-auto">{fb.data.length.toLocaleString()} B</span>
+                          </div>
+                          <pre className="text-[10px] leading-4 font-mono bg-muted/50 rounded-md p-3 overflow-x-auto whitespace-pre">
+                            {formatHexDumpBlock(fb.data, 200)}
+                          </pre>
+                        </div>
                       ))}
                     </CardContent>
                   </Card>
