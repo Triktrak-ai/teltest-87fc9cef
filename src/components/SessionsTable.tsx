@@ -228,18 +228,18 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
           <thead>
             <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
               {isAdmin && <th className="px-5 py-3">Użytkownik</th>}
+              <th className="px-5 py-3">Data / Czas</th>
+              <th className="px-5 py-3">Status</th>
               <th className="px-5 py-3">IMEI</th>
               <th className="px-5 py-3">Pojazd</th>
               <th className="px-5 py-3">Tachograf</th>
               <th className="px-5 py-3">Karta</th>
-              <th className="px-5 py-3">Status</th>
               <th className="px-5 py-3">Postęp</th>
               <th className="px-5 py-3">Pliki</th>
               <th className="px-5 py-3">Akt. plik</th>
               <th className="px-5 py-3">Pobrano</th>
               <th className="px-5 py-3">APDU</th>
               <th className="px-5 py-3">CRC err</th>
-              <th className="px-5 py-3">Akt. aktywność</th>
             </tr>
           </thead>
           <tbody>
@@ -279,6 +279,95 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                       {getOwner(s.imei)?.userName ?? "—"}
                     </td>
                   )}
+                  {/* Data / Czas */}
+                  <td className="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">
+                    {(() => {
+                      const d = new Date(s.last_activity);
+                      return (
+                        <>
+                          <span>{d.toLocaleDateString("pl-PL", { day: "2-digit", month: "2-digit" })}</span>
+                          {" "}
+                          <span className="font-mono">{d.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                        </>
+                      );
+                    })()}
+                  </td>
+                  {/* Status */}
+                  <td className="px-5 py-3">
+                    <span className="flex items-center gap-1.5">
+                      {effectiveStatus === "partial" ? (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge variant="outline" className={sc.className}>
+                                {sc.label}
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>
+                                {s.error_message?.includes("empty_slot")
+                                  ? "Pobrano wszystkie pliki VU. Brak włożonej karty kierowcy."
+                                  : s.error_message
+                                    ? s.error_message
+                                    : `Pobrano ${s.files_downloaded ?? 0}/${s.total_files ?? 0} plików`}
+                              </p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : effectiveStatus === "ignition_off" ? (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge variant="outline" className={sc.className}>
+                                <WifiOff className="h-3 w-3 mr-1" />
+                                {sc.label}
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>Stacyjka wyłączona przed rozpoczęciem pobierania</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : effectiveStatus === "error" && getErrorTooltip(s) ? (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge variant="outline" className={sc.className}>
+                                {sc.label}
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>{getErrorTooltip(s)}</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : (
+                        <Badge variant="outline" className={sc.className}>
+                          {sc.label}
+                        </Badge>
+                      )}
+                      {stale && (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge variant="secondary" className="bg-muted text-muted-foreground border-muted-foreground/20 text-[10px]">
+                                Nieaktywna
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>Brak aktywności od {staleMinutes} min</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      )}
+                    </span>
+                    {s.error_code && effectiveStatus === "error" && (
+                      <span className="ml-2 font-mono text-xs text-destructive">
+                        {s.error_code}
+                      </span>
+                    )}
+                  </td>
+                  {/* IMEI */}
                   <td className="px-5 py-3 font-mono text-xs">
                     <span className="flex items-center gap-1.5">
                       {active && !stale && (
@@ -356,80 +445,6 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                       )}
                     </span>
                   </td>
-                  <td className="px-5 py-3">
-                    <span className="flex items-center gap-1.5">
-                      {effectiveStatus === "partial" ? (
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Badge variant="outline" className={sc.className}>
-                                {sc.label}
-                              </Badge>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              <p>
-                                {s.error_message?.includes("empty_slot")
-                                  ? "Pobrano wszystkie pliki VU. Brak włożonej karty kierowcy."
-                                  : s.error_message
-                                    ? s.error_message
-                                    : `Pobrano ${s.files_downloaded ?? 0}/${s.total_files ?? 0} plików`}
-                              </p>
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      ) : effectiveStatus === "ignition_off" ? (
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Badge variant="outline" className={sc.className}>
-                                <WifiOff className="h-3 w-3 mr-1" />
-                                {sc.label}
-                              </Badge>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              <p>Stacyjka wyłączona przed rozpoczęciem pobierania</p>
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      ) : effectiveStatus === "error" && getErrorTooltip(s) ? (
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Badge variant="outline" className={sc.className}>
-                                {sc.label}
-                              </Badge>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              <p>{getErrorTooltip(s)}</p>
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      ) : (
-                        <Badge variant="outline" className={sc.className}>
-                          {sc.label}
-                        </Badge>
-                      )}
-                      {stale && (
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Badge variant="secondary" className="bg-muted text-muted-foreground border-muted-foreground/20 text-[10px]">
-                                Nieaktywna
-                              </Badge>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              <p>Brak aktywności od {staleMinutes} min</p>
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      )}
-                    </span>
-                    {s.error_code && effectiveStatus === "error" && (
-                      <span className="ml-2 font-mono text-xs text-destructive">
-                        {s.error_code}
-                      </span>
-                    )}
-                  </td>
                   <td className="px-5 py-3 w-32">
                     {effectiveStatus === "downloading" ? (
                       <div className="flex items-center gap-2">
@@ -456,13 +471,6 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                     ) : (
                       "—"
                     )}
-                  </td>
-                  <td className="px-5 py-3 text-xs text-muted-foreground">
-                    {new Date(s.last_activity).toLocaleTimeString("pl-PL", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                      second: "2-digit",
-                    })}
                   </td>
                 </tr>
               );
