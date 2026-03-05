@@ -4,7 +4,9 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AlertTriangle, Lock, WifiOff, ShieldAlert, Loader } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState, useEffect } from "react";
+import { Button } from "@/components/ui/button";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useImeiOwners } from "@/hooks/useImeiOwners";
 
 type SessionStatus = Session["status"];
@@ -207,6 +209,33 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
     return sessions.filter((s) => matchesFilter(s.imei, adminFilter));
   }, [sessions, adminFilter]);
 
+  const PAGE_SIZE = 30;
+  const [currentPage, setCurrentPage] = useState(1);
+
+  // Reset page when filter or data changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [adminFilter, sessions]);
+
+  const totalPages = filtered ? Math.ceil(filtered.length / PAGE_SIZE) : 0;
+  const paginatedSessions = useMemo(() => {
+    if (!filtered) return undefined;
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return filtered.slice(start, start + PAGE_SIZE);
+  }, [filtered, currentPage]);
+
+  const pageNumbers = useMemo(() => {
+    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
+    const pages: (number | "...")[] = [1];
+    if (currentPage > 3) pages.push("...");
+    for (let i = Math.max(2, currentPage - 1); i <= Math.min(totalPages - 1, currentPage + 1); i++) {
+      pages.push(i);
+    }
+    if (currentPage < totalPages - 2) pages.push("...");
+    if (totalPages > 1) pages.push(totalPages);
+    return pages;
+  }, [totalPages, currentPage]);
+
   return (
     <div className="rounded-lg border bg-card">
       <div className="border-b px-5 py-3 flex items-center justify-between">
@@ -263,7 +292,7 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                 </td>
               </tr>
             )}
-            {filtered?.map((s) => {
+            {paginatedSessions?.map((s) => {
               const effectiveStatus = getEffectiveStatus(s);
               const sc = statusConfig[effectiveStatus] ?? statusConfig.connecting;
               const active = isActive(effectiveStatus);
@@ -478,6 +507,51 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
           </tbody>
         </table>
       </div>
+      {/* Pagination */}
+      {filtered && totalPages > 1 && (
+        <div className="border-t px-5 py-3 flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">
+            {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filtered.length)} z {filtered.length}
+          </span>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2 text-xs"
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Poprzednia
+            </Button>
+            {pageNumbers.map((p, i) =>
+              p === "..." ? (
+                <span key={`ellipsis-${i}`} className="px-1 text-xs text-muted-foreground">…</span>
+              ) : (
+                <Button
+                  key={p}
+                  variant={p === currentPage ? "outline" : "ghost"}
+                  size="sm"
+                  className="h-8 w-8 p-0 text-xs"
+                  onClick={() => setCurrentPage(p as number)}
+                >
+                  {p}
+                </Button>
+              )
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2 text-xs"
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              disabled={currentPage === totalPages}
+            >
+              Następna
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
