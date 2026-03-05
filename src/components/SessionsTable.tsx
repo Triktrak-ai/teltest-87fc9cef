@@ -3,11 +3,14 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { AlertTriangle, Lock, WifiOff, ShieldAlert, Loader } from "lucide-react";
-import { useMemo, useState, useEffect } from "react";
+import { AlertTriangle, Lock, WifiOff, ShieldAlert, Loader, Download, BookOpen } from "lucide-react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useImeiOwners } from "@/hooks/useImeiOwners";
+import { useNavigate } from "react-router-dom";
+import { apiListDddFiles, apiDownloadDddFile } from "@/lib/api-client";
+import { toast } from "sonner";
 
 type SessionStatus = Session["status"];
 
@@ -211,8 +214,9 @@ function isActive(status: string): boolean {
 
 import { type AdminFilterResult } from "@/components/AdminFilter";
 
-function matchesFilter(imei: string, filter: AdminFilterResult): boolean {
-  return filter.imeis.includes(imei) || imei.toLowerCase().includes(filter.rawQuery);
+function hasDownloadableFiles(s: Session): boolean {
+  const eff = getEffectiveStatus(s);
+  return (eff === "completed" || eff === "partial") && (s.files_downloaded ?? 0) > 0;
 }
 
 interface SessionsTableProps {
