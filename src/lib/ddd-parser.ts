@@ -1159,10 +1159,13 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
           if (activityChangeCount > 0 && activityChangeCount <= 1440) {
             for (let i = 0; i < activityChangeCount && r.remaining >= 2 && r.position < dataEnd; i++) {
               const word = r.readUint16();
+              // Annex 1C Appendix 1 §2.1: scpaattttttttttt
+              // s=bit15 (slot), c=bit14 (crew), p=bit13 (card present),
+              // aa=bits12-11 (activity), ttttttttttt=bits10-0 (minutes)
               const slot = (word >> 15) & 0x01;
-              const cardInserted = ((word >> 14) & 0x01) === 1;
-              const activity = (word >> 12) & 0x03;
-              const minutes = word & 0x0FFF;
+              const cardInserted = ((word >> 13) & 0x01) === 0; // p=0 means card inserted
+              const activity = (word >> 11) & 0x03;
+              const minutes = word & 0x07FF; // 11 bits, max 1439
               if (minutes >= 1440) continue;
 
               const statusMap: Record<number, ActivityChangeEntry['status']> = {
@@ -1173,7 +1176,7 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
               let nextMinutes = 1440;
               if (i + 1 < activityChangeCount && r.remaining >= 2 && r.position < dataEnd) {
                 const nextWord = (bytes[r.position] << 8) | bytes[r.position + 1];
-                nextMinutes = nextWord & 0x0FFF;
+                nextMinutes = nextWord & 0x07FF;
               }
 
               const hFrom = Math.floor(minutes / 60);
@@ -1387,10 +1390,11 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
 
       for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
         const word = r.readUint16();
+        // Annex 1C Appendix 1 §2.1: scpaattttttttttt
         const slot = (word >> 15) & 0x01;
-        const cardInserted = ((word >> 14) & 0x01) === 1;
-        const activity = (word >> 12) & 0x03;
-        const minutes = word & 0x0FFF;
+        const cardInserted = ((word >> 13) & 0x01) === 0; // p=0 means card inserted
+        const activity = (word >> 11) & 0x03;
+        const minutes = word & 0x07FF; // 11 bits
 
         // Zmiana 3: walidacja minutes — pomijaj śmieci
         if (minutes >= 1440) continue;
@@ -1402,7 +1406,7 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
         let nextMinutes = 1440;
         if (i + 1 < activityChangeCount && r.remaining >= 2) {
           const peek = (r.readUint16());
-          nextMinutes = peek & 0x0FFF;
+          nextMinutes = peek & 0x07FF;
           r.position -= 2;
         }
 
