@@ -214,6 +214,10 @@ function isActive(status: string): boolean {
 
 import { type AdminFilterResult } from "@/components/AdminFilter";
 
+function matchesFilter(imei: string, filter: AdminFilterResult): boolean {
+  return filter.imeis.includes(imei) || imei.toLowerCase().includes(filter.rawQuery);
+}
+
 function hasDownloadableFiles(s: Session): boolean {
   const eff = getEffectiveStatus(s);
   return (eff === "completed" || eff === "partial") && (s.files_downloaded ?? 0) > 0;
