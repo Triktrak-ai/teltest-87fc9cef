@@ -362,7 +362,7 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                   </td>
                   <td className="px-5 py-3">
                     <span className="flex items-center gap-1.5">
-                      {s.status === "partial" ? (
+                      {effectiveStatus === "partial" ? (
                         <TooltipProvider>
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -381,7 +381,21 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                             </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
-                      ) : s.status === "error" && getErrorTooltip(s) ? (
+                      ) : effectiveStatus === "ignition_off" ? (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge variant="outline" className={sc.className}>
+                                <WifiOff className="h-3 w-3 mr-1" />
+                                {sc.label}
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>Stacyjka wyłączona przed rozpoczęciem pobierania</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : effectiveStatus === "error" && getErrorTooltip(s) ? (
                         <TooltipProvider>
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -414,7 +428,7 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                         </TooltipProvider>
                       )}
                     </span>
-                    {s.error_code && (
+                    {s.error_code && effectiveStatus === "error" && (
                       <span className="ml-2 font-mono text-xs text-destructive">
                         {s.error_code}
                       </span>
