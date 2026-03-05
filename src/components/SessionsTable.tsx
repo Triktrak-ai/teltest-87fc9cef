@@ -155,6 +155,25 @@ function classifyUnknownGeneration(s: Session): UnknownClassification | null {
   return null; // fallback — show raw "Unknown"
 }
 
+function getErrorBadgeInfo(s: Session): { label: string; icon?: React.ComponentType<{ className?: string }>; className: string } {
+  const cls = classifyUnknownGeneration(s);
+  if (cls) {
+    if (cls.label === "VU offline") return { label: "VU offline", icon: WifiOff, className: "bg-muted text-muted-foreground border-muted-foreground/20" };
+    if (cls.label === "Lockout") return { label: "Lockout", icon: Lock, className: "bg-destructive/20 text-destructive border-destructive/30" };
+    if (cls.label === "Auth błąd") return { label: "Auth błąd", icon: ShieldAlert, className: "bg-warning/20 text-warning border-warning/30" };
+  }
+  const files = s.files_downloaded ?? 0;
+  const total = s.total_files ?? 0;
+  if (files > 0 && total > 0) {
+    return { label: `Przerwane ${files}/${total}`, icon: AlertTriangle, className: "bg-warning/20 text-warning border-warning/30" };
+  }
+  const apdu = s.apdu_exchanges ?? 0;
+  if (apdu >= 20) {
+    return { label: "Auth błąd", icon: ShieldAlert, className: "bg-warning/20 text-warning border-warning/30" };
+  }
+  return { label: "Błąd", className: "bg-destructive/20 text-destructive border-destructive/30" };
+}
+
 function getErrorTooltip(s: Session): string | null {
   if (s.status !== "error") return null;
   const cls = classifyUnknownGeneration(s);
@@ -357,20 +376,25 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                             </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
-                      ) : effectiveStatus === "error" && getErrorTooltip(s) ? (
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Badge variant="outline" className={sc.className}>
-                                {sc.label}
-                              </Badge>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              <p>{getErrorTooltip(s)}</p>
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      ) : (
+                      ) : effectiveStatus === "error" ? (() => {
+                        const errInfo = getErrorBadgeInfo(s);
+                        const ErrIcon = errInfo.icon;
+                        const tooltip = getErrorTooltip(s);
+                        const badge = (
+                          <Badge variant="outline" className={errInfo.className}>
+                            {ErrIcon && <ErrIcon className="h-3 w-3 mr-1" />}
+                            {errInfo.label}
+                          </Badge>
+                        );
+                        return tooltip ? (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>{badge}</TooltipTrigger>
+                              <TooltipContent><p>{tooltip}</p></TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        ) : badge;
+                      })() : (
                         <Badge variant="outline" className={sc.className}>
                           {sc.label}
                         </Badge>
