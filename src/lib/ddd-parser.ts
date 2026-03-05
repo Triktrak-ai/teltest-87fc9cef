@@ -991,50 +991,49 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
   const events: EventRecord[] = [];
   const faults: FaultRecord[] = [];
 
-  // Events file format: records containing event type + timestamps + card numbers
-  // Card numbers are visible as ASCII strings like "17408150613900000" (18 chars)
-  // Each event record: eventType(1B) + beginTime(4B) + endTime(4B) + card1(18B) + card2?(18B)
+  // Gen2v2 VuEventRecord structure (Annex 1C Appendix 7):
+  // eventType(1B) + eventRecordPurpose(1B) + beginTime(4B) + endTime(4B)
+  // + FullCardNumberAndGen_driver(20B) + FullCardNumberAndGen_codriver(20B)
+  // + similarEventsNumber(1B) = 51B per record
+  // FullCardNumberAndGen = cardType(1B) + nation(1B) + cardNumber(16B) + generation(2B)
 
-  // Scan for card number patterns to identify event record boundaries
-  const cardPositions = findCardNumbers(bytes);
+  // Strategy: find card number digit patterns and calculate event record start
+  const cardPositions = findCardNumberDigits(bytes);
 
   if (cardPositions.length === 0) {
-    // Try the structured approach: header + event records
     return parseEventsStructured(bytes, warnings);
   }
 
-  // Parse events using card number positions as anchors
-  // Card number is 9 bytes into the event record (after type(1) + beginTime(4) + endTime(4))
-  for (const cardPos of cardPositions) {
-    const eventStart = cardPos - 9;
+  // For Gen2v2: card number digits start at offset 12 from event record start
+  // (eventType(1) + purpose(1) + beginTime(4) + endTime(4) + cardType(1) + nation(1) = 12)
+  for (const digitPos of cardPositions) {
+    // The FullCardNumber starts 2 bytes before the digits (cardType + nation)
+    const fullCardStart = digitPos - 2;
+    // Event record starts 10 bytes before FullCardNumber
+    const eventStart = fullCardStart - 10;
     if (eventStart < 0) continue;
 
     try {
       const r = new BinaryReader(toArrayBuffer(bytes), eventStart);
       const eventType = r.readUint8();
+      const eventRecordPurpose = r.readUint8(); // Gen2v2 has this field
       const eventBeginTime = r.readTimestamp();
       const eventEndTime = r.readTimestamp();
-      const cardNumberDriverSlot = r.readCardNumber();
 
-      // Check for second card number
+      // Read FullCardNumberAndGeneration for driver slot (20B)
+      const cardNumberDriverSlot = r.readFullCardNumberAndGen();
+
+      // Read FullCardNumberAndGeneration for codriver slot (20B)
       let cardNumberCodriverSlot = '';
-      if (r.remaining >= 18) {
-        const nextBytes = bytes.slice(r.position, r.position + 18);
-        // Check if it looks like a card number (has printable chars or all 0xFF)
-        const isPrintable = Array.from(nextBytes).some(b => b >= 0x30 && b <= 0x39);
-        const isAllFF = Array.from(nextBytes).every(b => b === 0xFF);
-        if (isPrintable || isAllFF) {
-          cardNumberCodriverSlot = r.readCardNumber();
-        }
+      if (r.remaining >= 20) {
+        cardNumberCodriverSlot = r.readFullCardNumberAndGen();
       }
 
-      // Validate: event type should be in valid range
-      if (eventType <= 0x0D) {
+      if (eventType <= 0x0D && (eventBeginTime || eventEndTime)) {
         events.push({
           eventType,
           eventTypeName: EVENT_TYPE_NAMES[eventType] || `Nieznany (0x${eventType.toString(16)})`,
-          eventBeginTime,
-          eventEndTime,
+          eventBeginTime, eventEndTime,
           cardNumberDriverSlot,
           cardNumberCodriverSlot,
         });
@@ -1044,7 +1043,7 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
     }
   }
 
-  // Deduplicate events (card number scanning may find overlapping records)
+  // Deduplicate
   const seen = new Set<string>();
   const uniqueEvents = events.filter(e => {
     const key = `${e.eventType}-${e.eventBeginTime?.getTime()}-${e.cardNumberDriverSlot}`;
@@ -1056,27 +1055,20 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
   return { events: uniqueEvents, faults };
 }
 
-function findCardNumbers(bytes: Uint8Array): number[] {
+/** Find positions where 10+ consecutive ASCII digits appear (card number patterns) */
+function findCardNumberDigits(bytes: Uint8Array): number[] {
   const positions: number[] = [];
-  // Card numbers are 18 bytes, typically starting with digits
-  // Format: countryCode(1B) + type(1B) + ASCII digits(16B)
-  // Example: 01 28 31 37 34 30 38 31 35 30 36 31 33 39 30 30 30 30
-  //          ^-- starts with digit indicator
-
-  for (let i = 0; i < bytes.length - 18; i++) {
-    // Look for the pattern: a byte followed by '(' (0x28) then digits
-    if (bytes[i + 1] === 0x28) { // '(' character before card number
-      let digitCount = 0;
-      for (let j = 2; j < 18 && i + j < bytes.length; j++) {
-        if (bytes[i + j] >= 0x30 && bytes[i + j] <= 0x39) digitCount++;
-        else break;
-      }
-      if (digitCount >= 10) {
-        positions.push(i);
-      }
+  for (let i = 0; i < bytes.length - 16; i++) {
+    let digitCount = 0;
+    for (let j = 0; j < 16 && i + j < bytes.length; j++) {
+      if (bytes[i + j] >= 0x30 && bytes[i + j] <= 0x39) digitCount++;
+      else break;
+    }
+    if (digitCount >= 13) {
+      positions.push(i);
+      i += digitCount; // skip past this card number
     }
   }
-
   return positions;
 }
 
