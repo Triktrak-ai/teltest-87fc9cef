@@ -397,7 +397,7 @@ export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileDat
   };
 
   // Check if this is an individual file (detected by filename)
-  const fileType = detectFileType(fileName);
+  if (fileType) {
   if (fileType) {
     console.log(`[DDD] Individual file detected: ${fileType} (${fileName})`);
     return parseIndividualFile(buffer, fileType, result);
