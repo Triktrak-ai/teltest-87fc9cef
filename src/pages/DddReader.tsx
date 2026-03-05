@@ -639,6 +639,29 @@ const DddReader = () => {
                     </CardContent>
                   </Card>
                 )}
+
+                {/* Raw file hex dumps */}
+                {data.rawFileBuffers.length > 0 && (
+                  <Card>
+                    <CardHeader className="py-3">
+                      <CardTitle className="text-sm">Hex dump surowych plików (pierwsze 200 bajtów)</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      {data.rawFileBuffers.map((fb, i) => (
+                        <div key={i}>
+                          <div className="flex items-center gap-2 mb-2">
+                            <Badge variant="outline" className="text-xs font-mono">{fb.fileType}</Badge>
+                            <span className="text-xs text-muted-foreground truncate">{fb.fileName}</span>
+                            <span className="text-xs text-muted-foreground ml-auto">{fb.data.length.toLocaleString()} B</span>
+                          </div>
+                          <pre className="text-[10px] leading-4 font-mono bg-muted/50 rounded-md p-3 overflow-x-auto whitespace-pre">
+                            {formatHexDumpBlock(fb.data, 200)}
+                          </pre>
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                )}
               </div>
             </TabsContent>
           </Tabs>
