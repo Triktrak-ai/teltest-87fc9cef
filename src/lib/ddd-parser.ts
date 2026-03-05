@@ -189,6 +189,7 @@ export function mergeDddData(existing: DddFileData, incoming: DddFileData): DddF
     bytesParsed: existing.bytesParsed + incoming.bytesParsed,
     generation: incoming.generation !== 'unknown' ? incoming.generation : existing.generation,
     driverCard: incoming.driverCard ?? existing.driverCard,
+    rawFileBuffers: [...existing.rawFileBuffers, ...incoming.rawFileBuffers],
   };
 }
 
@@ -374,6 +375,7 @@ function isValidTimestamp(value: number): boolean {
 
 export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileData {
   const warnings: ParserWarning[] = [];
+  const fileType = detectFileType(fileName);
   const result: DddFileData = {
     overview: null,
     activities: [],
@@ -387,6 +389,11 @@ export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileDat
     bytesParsed: 0,
     generation: 'unknown',
     driverCard: null,
+    rawFileBuffers: [{
+      fileName: fileName || 'unknown',
+      fileType: fileType || 'unknown',
+      data: new Uint8Array(buffer),
+    }],
   };
 
   // Check if this is an individual file (detected by filename)
