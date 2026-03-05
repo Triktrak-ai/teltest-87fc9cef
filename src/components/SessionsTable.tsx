@@ -100,7 +100,8 @@ function classifyUnknownGeneration(s: Session): UnknownClassification | null {
   if (s.status === "error") {
     const apdu = s.apdu_exchanges ?? 0;
     const errMsg = (s.error_message ?? "").toLowerCase();
-    const bothUnknown = gen === "Unknown" && (s.card_generation ?? "Unknown") === "Unknown";
+    const cardGen = s.card_generation ?? "Unknown";
+    const bothUnknown = gen === "Unknown" && cardGen === "Unknown";
 
     // VU offline — no APDU at all, both generations unknown
     if (apdu === 0 && bothUnknown) {
@@ -112,8 +113,28 @@ function classifyUnknownGeneration(s: Session): UnknownClassification | null {
       };
     }
 
-    // Lockout — low APDU count, certificate rejected
-    if (apdu <= 3 || errMsg.includes("certificate rejected") || errMsg.includes("cert")) {
+    // Generation mismatch — card known but VU unknown, low APDU
+    if (cardGen !== "Unknown" && apdu <= 3) {
+      return {
+        label: "Niezgodność",
+        icon: AlertTriangle,
+        className: "bg-warning/20 text-warning border-warning/30",
+        tooltip: `Karta ${cardGen} niezgodna z tachografem — błąd autoryzacji`,
+      };
+    }
+
+    // Lockout — low APDU, both unknown
+    if (apdu <= 3 && bothUnknown) {
+      return {
+        label: "Lockout",
+        icon: Lock,
+        className: "bg-destructive/20 text-destructive border-destructive/30",
+        tooltip: "Tachograf odrzucił certyfikat (blokada bezpieczeństwa)",
+      };
+    }
+
+    // Certificate error keywords
+    if (errMsg.includes("certificate rejected") || errMsg.includes("cert")) {
       return {
         label: "Lockout",
         icon: Lock,
