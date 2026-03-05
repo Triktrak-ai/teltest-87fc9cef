@@ -1241,80 +1241,72 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
 // ─── Raw overview file parser ────────────────────────────────────────────────
 
 function parseRawOverviewFile(bytes: Uint8Array, warnings: ParserWarning[]): DddOverview | null {
-  // Overview file is mostly certificates for Gen2v2
-  // Try to extract any recognizable overview data
-
-  // Look for VRN (vehicle registration number) - typically a short ASCII string
-  // Look for manufacturer name, serial numbers, etc.
-
   const overview: DddOverview = {
-    vuManufacturerName: '',
-    vuManufacturerAddress: '',
-    vuSerialNumber: '',
-    vuPartNumber: '',
-    vuSoftwareVersion: '',
-    vuManufacturingDate: null,
-    vuApprovalNumber: '',
-    vehicleRegistrationNation: '',
-    vehicleRegistrationNumber: '',
-    currentDateTime: null,
-    vuDownloadablePeriodBegin: null,
-    vuDownloadablePeriodEnd: null,
-    cardSlotsStatus: 0,
-    vuDownloadActivityDataLength: 0,
+    vuManufacturerName: '', vuManufacturerAddress: '', vuSerialNumber: '',
+    vuPartNumber: '', vuSoftwareVersion: '', vuManufacturingDate: null,
+    vuApprovalNumber: '', vehicleRegistrationNation: '', vehicleRegistrationNumber: '',
+    currentDateTime: null, vuDownloadablePeriodBegin: null, vuDownloadablePeriodEnd: null,
+    cardSlotsStatus: 0, vuDownloadActivityDataLength: 0,
   };
 
-  let foundAny = false;
-
-  // Scan for timestamps that could be download dates
+  // Gen2v2 overview file structure:
+  // RecordArray(MemberStateCert) + RecordArray(VuCert) + actual data
+  // RecordArray header: recordType(2B) + recordSize(2B) + noOfRecords(2B)
+  // Then recordSize × noOfRecords bytes of data
   const view = new DataView(toArrayBuffer(bytes));
+  let pos = 0;
+
+  // Try to skip RecordArray structures (certificates)
+  let skippedArrays = 0;
+  while (pos + 6 < bytes.length && skippedArrays < 4) {
+    const recordType = view.getUint16(pos, false);
+    const recordSize = view.getUint16(pos + 2, false);
+    const noOfRecords = view.getUint16(pos + 4, false);
+    const totalSize = 6 + recordSize * noOfRecords;
+
+    // Validate: record size should be reasonable for certificates (100-2000B)
+    if (recordSize >= 50 && recordSize <= 2000 && noOfRecords >= 1 && noOfRecords <= 10 && pos + totalSize <= bytes.length) {
+      pos += totalSize;
+      skippedArrays++;
+    } else {
+      break;
+    }
+  }
+
+  if (skippedArrays > 0 && pos + 17 < bytes.length) {
+    const r = new BinaryReader(toArrayBuffer(bytes), pos);
+    // VehicleIdentificationNumber (VIN) — 17 bytes
+    const _vin = r.remaining >= 17 ? r.readString(17) : '';
+    // VehicleRegistrationIdentification: nation(1B) + VRN(15B for Gen2v2)
+    const vehicleNationByte = r.remaining > 0 ? r.readUint8() : 0;
+    overview.vehicleRegistrationNation = NATION_CODES[vehicleNationByte] || `0x${vehicleNationByte.toString(16)}`;
+    overview.vehicleRegistrationNumber = r.remaining >= 15 ? r.readString(15) : '';
+    overview.currentDateTime = r.remaining >= 4 ? r.readTimestamp() : null;
+    overview.vuDownloadablePeriodBegin = r.remaining >= 4 ? r.readTimestamp() : null;
+    overview.vuDownloadablePeriodEnd = r.remaining >= 4 ? r.readTimestamp() : null;
+    overview.cardSlotsStatus = r.remaining > 0 ? r.readUint8() : 0;
+    overview.vuDownloadActivityDataLength = r.remaining >= 4 ? r.readUint32() : 0;
+
+    console.log(`[DDD] Overview: VRN="${overview.vehicleRegistrationNumber}", date=${overview.currentDateTime}, skipped ${skippedArrays} RecordArrays`);
+    return overview;
+  }
+
+  // Fallback: scan for recent timestamps only (after 2020)
+  const TS_RECENT = new Date('2020-01-01').getTime() / 1000;
   for (let i = 0; i < bytes.length - 4; i++) {
     const ts = view.getUint32(i, false);
-    if (isValidTimestamp(ts)) {
-      const date = new Date(ts * 1000);
-      if (!overview.currentDateTime) {
-        overview.currentDateTime = date;
-        foundAny = true;
-      }
+    if (ts >= TS_RECENT && ts <= TS_MAX) {
+      overview.currentDateTime = new Date(ts * 1000);
+      break;
     }
   }
 
-  // Scan for ASCII strings that could be VRN, serial numbers etc.
-  const asciiStrings: Array<{ offset: number; value: string }> = [];
-  let currentStr = '';
-  let strStart = -1;
-  for (let i = 0; i < bytes.length; i++) {
-    const b = bytes[i];
-    if (b >= 0x20 && b <= 0x7E) {
-      if (currentStr === '') strStart = i;
-      currentStr += String.fromCharCode(b);
-    } else {
-      if (currentStr.length >= 4) {
-        asciiStrings.push({ offset: strStart, value: currentStr.trim() });
-      }
-      currentStr = '';
-    }
-  }
-  if (currentStr.length >= 4) {
-    asciiStrings.push({ offset: strStart, value: currentStr.trim() });
-  }
-
-  // Try to identify strings
-  for (const s of asciiStrings) {
-    if (!overview.vuManufacturerName && s.value.length >= 10 && /[A-Z]/.test(s.value)) {
-      // Could be manufacturer name but skip common cert-related strings
-      if (!s.value.includes('OID') && !s.value.includes('0x')) {
-        // Only set if nothing else was set
-      }
-    }
-  }
-
-  if (!foundAny && asciiStrings.length === 0) {
-    warnings.push({ offset: 0, message: 'Overview file contains only certificate data, no extractable VU information' });
+  if (!overview.currentDateTime) {
+    warnings.push({ offset: 0, message: 'Overview file contains only certificate data' });
     return null;
   }
 
-  return foundAny ? overview : null;
+  return overview;
 }
 
 // ─── TLV section extraction (for merged VU files) ────────────────────────────
