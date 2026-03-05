@@ -435,7 +435,7 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                     )}
                   </td>
                   <td className="px-5 py-3 w-32">
-                    {s.status === "downloading" ? (
+                    {effectiveStatus === "downloading" ? (
                       <div className="flex items-center gap-2">
                         <Progress value={s.progress} className="h-1.5 flex-1" />
                         <span className="font-mono text-xs text-muted-foreground">{s.progress}%</span>
