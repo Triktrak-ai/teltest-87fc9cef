@@ -330,6 +330,7 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
               <th className="px-5 py-3">Pobrano</th>
               <th className="px-5 py-3">APDU</th>
               <th className="px-5 py-3">CRC err</th>
+              <th className="px-5 py-3">Akcje</th>
             </tr>
           </thead>
           <tbody>
@@ -565,6 +566,34 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                       <span className="text-destructive">{s.crc_errors}</span>
                     ) : (
                       "—"
+                    )}
+                  </td>
+                  <td className="px-5 py-3">
+                    {hasDownloadableFiles(s) ? (
+                      <span className="flex items-center gap-1">
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleDownloadFiles(s)}>
+                                <Download className="h-3.5 w-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent><p>Pobierz pliki DDD</p></TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleOpenInReader(s)}>
+                                <BookOpen className="h-3.5 w-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent><p>Otwórz w czytniku DDD</p></TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
                     )}
                   </td>
                 </tr>
