@@ -219,9 +219,25 @@ interface SessionsTableProps {
   adminFilter?: AdminFilterResult | null;
 }
 
+import { type AdminFilterResult } from "@/components/AdminFilter";
+
+function matchesFilter(imei: string, filter: AdminFilterResult): boolean {
+  return filter.imeis.includes(imei) || imei.toLowerCase().includes(filter.rawQuery);
+}
+
+function hasDownloadableFiles(s: Session): boolean {
+  const eff = getEffectiveStatus(s);
+  return (eff === "completed" || eff === "partial") && (s.files_downloaded ?? 0) > 0;
+}
+
+interface SessionsTableProps {
+  adminFilter?: AdminFilterResult | null;
+}
+
 export function SessionsTable({ adminFilter }: SessionsTableProps) {
   const { getOwner, isAdmin } = useImeiOwners();
   const { data: sessions, isLoading } = useSessions();
+  const navigate = useNavigate();
 
   const filtered = useMemo(() => {
     if (!sessions) return undefined;
@@ -255,6 +271,37 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
     if (totalPages > 1) pages.push(totalPages);
     return pages;
   }, [totalPages, currentPage]);
+
+  const handleDownloadFiles = useCallback(async (s: Session) => {
+    try {
+      const after = s.started_at ?? s.created_at ?? "";
+      const before = s.completed_at ?? s.last_activity ?? "";
+      const files = await apiListDddFiles(s.imei, after, before);
+      if (files.length === 0) {
+        toast.error("Brak plików DDD dla tej sesji");
+        return;
+      }
+      for (const f of files) {
+        const buf = await apiDownloadDddFile(s.imei, f.name);
+        const blob = new Blob([buf], { type: "application/octet-stream" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = f.name;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+      toast.success(`Pobrano ${files.length} plików`);
+    } catch (err) {
+      toast.error(`Błąd pobierania: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, []);
+
+  const handleOpenInReader = useCallback((s: Session) => {
+    const after = s.started_at ?? s.created_at ?? "";
+    const before = s.completed_at ?? s.last_activity ?? "";
+    navigate(`/ddd-reader?sessionImei=${s.imei}&after=${encodeURIComponent(after)}&before=${encodeURIComponent(before)}`);
+  }, [navigate]);
 
   return (
     <div className="rounded-lg border bg-card">
