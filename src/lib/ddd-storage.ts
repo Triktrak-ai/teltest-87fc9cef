@@ -31,18 +31,14 @@ export async function listDddFiles(
   if (error) throw new Error(error.message);
   if (!data) return [];
 
-  const afterDt = new Date(after).getTime();
-  const beforeDt = new Date(before).getTime();
-
+  // In cloud storage mode, return all .ddd files for the IMEI folder.
+  // Time-window filtering is only relevant on the VPS backend where
+  // file timestamps match download times; in storage, upload times differ.
   return data
-    .filter((f) => {
-      if (!f.name.endsWith(".ddd")) return false;
-      const ts = f.updated_at ? new Date(f.updated_at).getTime() : 0;
-      return ts >= afterDt - 5 * 60000 && ts <= beforeDt + 5 * 60000;
-    })
+    .filter((f) => f.name.endsWith(".ddd"))
     .map((f) => ({
       name: f.name,
-      size: f.metadata?.size ?? 0,
+      size: (f.metadata as Record<string, unknown>)?.size as number ?? 0,
       modified_at: f.updated_at ?? "",
     }));
 }
