@@ -329,6 +329,29 @@ class BinaryReader {
   readCardNumber(): string {
     return this.readString(18);
   }
+
+  /**
+   * Read a FullCardNumber (18B) and return only the 16-byte card number portion.
+   * Structure: cardType(1B) + issuingMemberState(1B) + cardNumber(16B)
+   */
+  readFullCardNumber(): string {
+    if (this.remaining < 18) return '';
+    const cardType = this.readUint8();
+    const nation = this.readUint8();
+    const cardNumber = this.readString(16);
+    return cardNumber;
+  }
+
+  /**
+   * Read FullCardNumberAndGeneration (20B for Gen2v2).
+   * Structure: cardType(1B) + nation(1B) + cardNumber(16B) + generation(2B)
+   */
+  readFullCardNumberAndGen(): string {
+    if (this.remaining < 20) return '';
+    const cardNumber = this.readFullCardNumber();
+    this.skip(2); // skip generation bytes
+    return cardNumber;
+  }
 }
 
 // ─── Timestamp validation ────────────────────────────────────────────────────
@@ -968,60 +991,52 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
   const events: EventRecord[] = [];
   const faults: FaultRecord[] = [];
 
-  // Events file format: records containing event type + timestamps + card numbers
-  // Card numbers are visible as ASCII strings like "17408150613900000" (18 chars)
-  // Each event record: eventType(1B) + beginTime(4B) + endTime(4B) + card1(18B) + card2?(18B)
-
-  // Scan for card number patterns to identify event record boundaries
-  const cardPositions = findCardNumbers(bytes);
+  const cardPositions = findCardNumberPatterns(bytes);
 
   if (cardPositions.length === 0) {
-    // Try the structured approach: header + event records
     return parseEventsStructured(bytes, warnings);
   }
 
-  // Parse events using card number positions as anchors
-  // Card number is 9 bytes into the event record (after type(1) + beginTime(4) + endTime(4))
+  // Card number pattern found at position i (cardType byte), digits at i+2
+  // Event record: eventType(1B) + [purpose(1B)?] + beginTime(4B) + endTime(4B) = 9 or 10 bytes before card
+  // Try both offsets and validate
   for (const cardPos of cardPositions) {
-    const eventStart = cardPos - 9;
-    if (eventStart < 0) continue;
+    for (const offset of [10, 9]) {
+      const eventStart = cardPos - offset;
+      if (eventStart < 0) continue;
 
-    try {
-      const r = new BinaryReader(toArrayBuffer(bytes), eventStart);
-      const eventType = r.readUint8();
-      const eventBeginTime = r.readTimestamp();
-      const eventEndTime = r.readTimestamp();
-      const cardNumberDriverSlot = r.readCardNumber();
+      try {
+        const r = new BinaryReader(toArrayBuffer(bytes), eventStart);
+        const eventType = r.readUint8();
+        if (eventType > 0x0D) continue;
+        
+        if (offset === 10) r.readUint8(); // skip eventRecordPurpose for Gen2v2
+        
+        const eventBeginTime = r.readTimestamp();
+        const eventEndTime = r.readTimestamp();
 
-      // Check for second card number
-      let cardNumberCodriverSlot = '';
-      if (r.remaining >= 18) {
-        const nextBytes = bytes.slice(r.position, r.position + 18);
-        // Check if it looks like a card number (has printable chars or all 0xFF)
-        const isPrintable = Array.from(nextBytes).some(b => b >= 0x30 && b <= 0x39);
-        const isAllFF = Array.from(nextBytes).every(b => b === 0xFF);
-        if (isPrintable || isAllFF) {
-          cardNumberCodriverSlot = r.readCardNumber();
-        }
-      }
+        if (!eventBeginTime && !eventEndTime) continue;
 
-      // Validate: event type should be in valid range
-      if (eventType <= 0x0D) {
+        // Read card number: skip cardType(1B) + nation(1B), read 16B digits
+        const _cardType = r.readUint8();
+        const _nation = r.readUint8();
+        const cardNumberDriverSlot = r.readString(16);
+
         events.push({
           eventType,
           eventTypeName: EVENT_TYPE_NAMES[eventType] || `Nieznany (0x${eventType.toString(16)})`,
-          eventBeginTime,
-          eventEndTime,
+          eventBeginTime, eventEndTime,
           cardNumberDriverSlot,
-          cardNumberCodriverSlot,
+          cardNumberCodriverSlot: '',
         });
+        break; // found valid parse at this offset
+      } catch {
+        continue;
       }
-    } catch {
-      // Skip malformed records
     }
   }
 
-  // Deduplicate events (card number scanning may find overlapping records)
+  // Deduplicate
   const seen = new Set<string>();
   const uniqueEvents = events.filter(e => {
     const key = `${e.eventType}-${e.eventBeginTime?.getTime()}-${e.cardNumberDriverSlot}`;
@@ -1033,16 +1048,11 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
   return { events: uniqueEvents, faults };
 }
 
-function findCardNumbers(bytes: Uint8Array): number[] {
+/** Find positions of card number patterns: any byte + 0x28 + 10+ digits */
+function findCardNumberPatterns(bytes: Uint8Array): number[] {
   const positions: number[] = [];
-  // Card numbers are 18 bytes, typically starting with digits
-  // Format: countryCode(1B) + type(1B) + ASCII digits(16B)
-  // Example: 01 28 31 37 34 30 38 31 35 30 36 31 33 39 30 30 30 30
-  //          ^-- starts with digit indicator
-
   for (let i = 0; i < bytes.length - 18; i++) {
-    // Look for the pattern: a byte followed by '(' (0x28) then digits
-    if (bytes[i + 1] === 0x28) { // '(' character before card number
+    if (bytes[i + 1] === 0x28) {
       let digitCount = 0;
       for (let j = 2; j < 18 && i + j < bytes.length; j++) {
         if (bytes[i + j] >= 0x30 && bytes[i + j] <= 0x39) digitCount++;
@@ -1053,7 +1063,6 @@ function findCardNumbers(bytes: Uint8Array): number[] {
       }
     }
   }
-
   return positions;
 }
 
@@ -1226,80 +1235,72 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
 // ─── Raw overview file parser ────────────────────────────────────────────────
 
 function parseRawOverviewFile(bytes: Uint8Array, warnings: ParserWarning[]): DddOverview | null {
-  // Overview file is mostly certificates for Gen2v2
-  // Try to extract any recognizable overview data
-
-  // Look for VRN (vehicle registration number) - typically a short ASCII string
-  // Look for manufacturer name, serial numbers, etc.
-
   const overview: DddOverview = {
-    vuManufacturerName: '',
-    vuManufacturerAddress: '',
-    vuSerialNumber: '',
-    vuPartNumber: '',
-    vuSoftwareVersion: '',
-    vuManufacturingDate: null,
-    vuApprovalNumber: '',
-    vehicleRegistrationNation: '',
-    vehicleRegistrationNumber: '',
-    currentDateTime: null,
-    vuDownloadablePeriodBegin: null,
-    vuDownloadablePeriodEnd: null,
-    cardSlotsStatus: 0,
-    vuDownloadActivityDataLength: 0,
+    vuManufacturerName: '', vuManufacturerAddress: '', vuSerialNumber: '',
+    vuPartNumber: '', vuSoftwareVersion: '', vuManufacturingDate: null,
+    vuApprovalNumber: '', vehicleRegistrationNation: '', vehicleRegistrationNumber: '',
+    currentDateTime: null, vuDownloadablePeriodBegin: null, vuDownloadablePeriodEnd: null,
+    cardSlotsStatus: 0, vuDownloadActivityDataLength: 0,
   };
 
-  let foundAny = false;
-
-  // Scan for timestamps that could be download dates
+  // Gen2v2 overview file structure:
+  // RecordArray(MemberStateCert) + RecordArray(VuCert) + actual data
+  // RecordArray header: recordType(2B) + recordSize(2B) + noOfRecords(2B)
+  // Then recordSize × noOfRecords bytes of data
   const view = new DataView(toArrayBuffer(bytes));
+  let pos = 0;
+
+  // Try to skip RecordArray structures (certificates)
+  let skippedArrays = 0;
+  while (pos + 6 < bytes.length && skippedArrays < 4) {
+    const recordType = view.getUint16(pos, false);
+    const recordSize = view.getUint16(pos + 2, false);
+    const noOfRecords = view.getUint16(pos + 4, false);
+    const totalSize = 6 + recordSize * noOfRecords;
+
+    // Validate: record size should be reasonable for certificates (100-2000B)
+    if (recordSize >= 50 && recordSize <= 2000 && noOfRecords >= 1 && noOfRecords <= 10 && pos + totalSize <= bytes.length) {
+      pos += totalSize;
+      skippedArrays++;
+    } else {
+      break;
+    }
+  }
+
+  if (skippedArrays > 0 && pos + 17 < bytes.length) {
+    const r = new BinaryReader(toArrayBuffer(bytes), pos);
+    // VehicleIdentificationNumber (VIN) — 17 bytes
+    const _vin = r.remaining >= 17 ? r.readString(17) : '';
+    // VehicleRegistrationIdentification: nation(1B) + VRN(15B for Gen2v2)
+    const vehicleNationByte = r.remaining > 0 ? r.readUint8() : 0;
+    overview.vehicleRegistrationNation = NATION_CODES[vehicleNationByte] || `0x${vehicleNationByte.toString(16)}`;
+    overview.vehicleRegistrationNumber = r.remaining >= 15 ? r.readString(15) : '';
+    overview.currentDateTime = r.remaining >= 4 ? r.readTimestamp() : null;
+    overview.vuDownloadablePeriodBegin = r.remaining >= 4 ? r.readTimestamp() : null;
+    overview.vuDownloadablePeriodEnd = r.remaining >= 4 ? r.readTimestamp() : null;
+    overview.cardSlotsStatus = r.remaining > 0 ? r.readUint8() : 0;
+    overview.vuDownloadActivityDataLength = r.remaining >= 4 ? r.readUint32() : 0;
+
+    console.log(`[DDD] Overview: VRN="${overview.vehicleRegistrationNumber}", date=${overview.currentDateTime}, skipped ${skippedArrays} RecordArrays`);
+    return overview;
+  }
+
+  // Fallback: scan for recent timestamps only (after 2020)
+  const TS_RECENT = new Date('2020-01-01').getTime() / 1000;
   for (let i = 0; i < bytes.length - 4; i++) {
     const ts = view.getUint32(i, false);
-    if (isValidTimestamp(ts)) {
-      const date = new Date(ts * 1000);
-      if (!overview.currentDateTime) {
-        overview.currentDateTime = date;
-        foundAny = true;
-      }
+    if (ts >= TS_RECENT && ts <= TS_MAX) {
+      overview.currentDateTime = new Date(ts * 1000);
+      break;
     }
   }
 
-  // Scan for ASCII strings that could be VRN, serial numbers etc.
-  const asciiStrings: Array<{ offset: number; value: string }> = [];
-  let currentStr = '';
-  let strStart = -1;
-  for (let i = 0; i < bytes.length; i++) {
-    const b = bytes[i];
-    if (b >= 0x20 && b <= 0x7E) {
-      if (currentStr === '') strStart = i;
-      currentStr += String.fromCharCode(b);
-    } else {
-      if (currentStr.length >= 4) {
-        asciiStrings.push({ offset: strStart, value: currentStr.trim() });
-      }
-      currentStr = '';
-    }
-  }
-  if (currentStr.length >= 4) {
-    asciiStrings.push({ offset: strStart, value: currentStr.trim() });
-  }
-
-  // Try to identify strings
-  for (const s of asciiStrings) {
-    if (!overview.vuManufacturerName && s.value.length >= 10 && /[A-Z]/.test(s.value)) {
-      // Could be manufacturer name but skip common cert-related strings
-      if (!s.value.includes('OID') && !s.value.includes('0x')) {
-        // Only set if nothing else was set
-      }
-    }
-  }
-
-  if (!foundAny && asciiStrings.length === 0) {
-    warnings.push({ offset: 0, message: 'Overview file contains only certificate data, no extractable VU information' });
+  if (!overview.currentDateTime) {
+    warnings.push({ offset: 0, message: 'Overview file contains only certificate data' });
     return null;
   }
 
-  return foundAny ? overview : null;
+  return overview;
 }
 
 // ─── TLV section extraction (for merged VU files) ────────────────────────────
