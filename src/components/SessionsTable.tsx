@@ -20,7 +20,23 @@ const statusConfig: Record<string, { label: string; className: string }> = {
   error: { label: "Błąd", className: "bg-destructive/20 text-destructive border-destructive/30" },
   waiting: { label: "Oczekuje", className: "bg-warning/20 text-warning border-warning/30" },
   skipped: { label: "Pominięto", className: "bg-muted text-muted-foreground border-muted-foreground/20" },
+  ignition_off: { label: "Stacyjka OFF", className: "bg-muted text-muted-foreground border-muted-foreground/20" },
 };
+
+function getEffectiveStatus(s: Session): string {
+  // Fix race condition: completed_at set but status stuck on "downloading"
+  if (s.completed_at && s.status === "downloading") {
+    if ((s.total_files ?? 0) > 0 && (s.files_downloaded ?? 0) < (s.total_files ?? 0)) {
+      return "partial";
+    }
+    return "completed";
+  }
+  // Fix false success: completed with 0 files and 0 APDU = ignition OFF
+  if (s.status === "completed" && (s.files_downloaded ?? 0) === 0 && (s.apdu_exchanges ?? 0) === 0) {
+    return "ignition_off";
+  }
+  return s.status;
+}
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -123,11 +139,24 @@ function classifyUnknownGeneration(s: Session): UnknownClassification | null {
 function getErrorTooltip(s: Session): string | null {
   if (s.status !== "error") return null;
   const cls = classifyUnknownGeneration(s);
-  if (!cls) return null;
-  if (cls.label === "Lockout") return "Blokada bezpieczeństwa tachografu (lockout)";
-  if (cls.label === "VU offline") return "VU nie odpowiada — możliwe wyłączenie stacyjki";
-  if (cls.label === "Auth błąd") return "Certyfikat odrzucony po pełnej autentykacji";
-  return null;
+  if (cls) {
+    if (cls.label === "Lockout") return "Blokada bezpieczeństwa tachografu (lockout)";
+    if (cls.label === "VU offline") return "VU nie odpowiada — możliwe wyłączenie stacyjki";
+    if (cls.label === "Auth błąd") return "Certyfikat odrzucony po pełnej autentykacji";
+    if (cls.label === "Niezgodność") return cls.tooltip;
+    return cls.tooltip;
+  }
+  // Universal error context for ALL error sessions (even with known generation)
+  const files = s.files_downloaded ?? 0;
+  const total = s.total_files ?? 0;
+  const apdu = s.apdu_exchanges ?? 0;
+  if (files > 0 && total > 0) {
+    return `Pobieranie przerwane po ${files}/${total} plikach`;
+  }
+  if (apdu >= 20) {
+    return `Błąd po autentykacji (${apdu} APDU)`;
+  }
+  return s.error_message || null;
 }
 
 function genBadgeClass(gen: string): string {
@@ -218,8 +247,9 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
               </tr>
             )}
             {filtered?.map((s) => {
-              const sc = statusConfig[s.status] ?? statusConfig.connecting;
-              const active = isActive(s.status);
+              const effectiveStatus = getEffectiveStatus(s);
+              const sc = statusConfig[effectiveStatus] ?? statusConfig.connecting;
+              const active = isActive(effectiveStatus);
               const stale = isStaleSession(s);
               const staleMinutes = stale
                 ? Math.round((Date.now() - new Date(s.last_activity).getTime()) / 60000)
