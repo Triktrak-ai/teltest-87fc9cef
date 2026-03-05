@@ -11,18 +11,19 @@ import { useImeiOwners } from "@/hooks/useImeiOwners";
 
 type SessionStatus = Session["status"];
 
+const ERR_CLASS = "bg-destructive/20 text-destructive border-destructive/30";
 const statusConfig: Record<string, { label: string; className: string }> = {
-  connecting: { label: "Łączenie", className: "bg-info/20 text-info border-info/30" },
-  auth_gen1: { label: "Auth Gen1", className: "bg-primary/20 text-primary border-primary/30" },
-  auth_gen2v1: { label: "Auth Gen2v1", className: "bg-primary/20 text-primary border-primary/30" },
-  auth_gen2v2: { label: "Auth Gen2v2", className: "bg-accent text-accent-foreground border-primary/30" },
-  downloading: { label: "Pobieranie", className: "bg-info/20 text-info border-info/30" },
+  connecting: { label: "Łączenie", className: ERR_CLASS },
+  auth_gen1: { label: "Auth Gen1", className: ERR_CLASS },
+  auth_gen2v1: { label: "Auth Gen2v1", className: ERR_CLASS },
+  auth_gen2v2: { label: "Auth Gen2v2", className: ERR_CLASS },
+  downloading: { label: "Pobieranie", className: ERR_CLASS },
   completed: { label: "Ukończono", className: "bg-success/20 text-success border-success/30" },
-  partial: { label: "Częściowe", className: "bg-warning/20 text-warning border-warning/30" },
-  error: { label: "Błąd", className: "bg-destructive/20 text-destructive border-destructive/30" },
-  waiting: { label: "Oczekuje", className: "bg-warning/20 text-warning border-warning/30" },
-  skipped: { label: "Pominięto", className: "bg-muted text-muted-foreground border-muted-foreground/20" },
-  ignition_off: { label: "Stacyjka OFF", className: "bg-muted text-muted-foreground border-muted-foreground/20" },
+  partial: { label: "Częściowe", className: ERR_CLASS },
+  error: { label: "Błąd", className: ERR_CLASS },
+  waiting: { label: "Oczekuje", className: ERR_CLASS },
+  skipped: { label: "Pominięto", className: ERR_CLASS },
+  ignition_off: { label: "Stacyjka OFF", className: ERR_CLASS },
 };
 
 function getEffectiveStatus(s: Session): string {
