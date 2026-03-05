@@ -475,47 +475,59 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
     places: [],
   };
 
-  // Driver card files use 2-byte tags + 2-byte length TLV structure
-  // Tags are in 0x00xx-0x05xx range
+  // Driver card files use 3-byte tags + 2-byte length TLV structure
+  // Per Annex 1C Appendix 2 §4.1-4.2:
+  // Tag: 2 bytes EF FID + 1 byte (00=Gen1 data, 01=Gen1 sig, 02=Gen2 data, 03=Gen2 sig)
+  // Length: 2 bytes big-endian
   const view = new DataView(toArrayBuffer(bytes));
   let pos = 0;
 
-  while (pos < bytes.length - 4) {
-    const tag = view.getUint16(pos, false);
-    const len = view.getUint16(pos + 2, false);
+  while (pos < bytes.length - 5) {
+    if (pos + 5 > bytes.length) break;
 
-    if (len === 0 || pos + 4 + len > bytes.length) {
+    const tagHigh = view.getUint16(pos, false);  // 2-byte EF FID
+    const tagType = bytes[pos + 2];              // 00=data1, 01=sig1, 02=data2, 03=sig2
+    const len = view.getUint16(pos + 3, false);  // 2-byte length
+
+    if (len === 0 || pos + 5 + len > bytes.length) {
       pos++;
+      continue;
+    }
+
+    // Only process data tags (00=Gen1, 02=Gen2), skip signatures (01, 03)
+    const isData = tagType === 0x00 || tagType === 0x02;
+    if (!isData) {
+      pos += 5 + len;
       continue;
     }
 
     // Validate tag is in expected range for driver cards
-    const tagHigh = (tag >> 8) & 0xFF;
-    if (tagHigh > 0x0C && tag !== 0xC100 && tag !== 0xC108) {
+    const tagHighByte = (tagHigh >> 8) & 0xFF;
+    if (tagHighByte > 0x0C && tagHigh !== 0xC100 && tagHigh !== 0xC108 && tagHigh !== 0xC109) {
       pos++;
       continue;
     }
 
-    const sectionData = bytes.slice(pos + 4, pos + 4 + len);
+    const sectionData = bytes.slice(pos + 5, pos + 5 + len);
 
     try {
-      switch (tag) {
-        case 0x0002: // CardIdentification
+      switch (tagHigh) {
+        case 0x0520: // CardIdentificationAndDriverCardHolderIdentification
           result.identification = parseCardIdentification(sectionData);
           console.log(`[DDD] Driver card identification: ${result.identification?.cardNumber}`);
           break;
 
-        case 0x0005: // CardDriverActivity
+        case 0x0504: // CardDriverActivity
           result.activities = parseCardActivities(sectionData, warnings);
           console.log(`[DDD] Driver card activities: ${result.activities.length} days`);
           break;
 
-        case 0x0006: // VehiclesUsed
+        case 0x0505: // CardVehiclesUsed
           result.vehiclesUsed = parseVehiclesUsed(sectionData);
           console.log(`[DDD] Driver card vehicles: ${result.vehiclesUsed.length}`);
           break;
 
-        case 0x0520: // CardEventData
+        case 0x0502: // CardEventData
           result.events = parseCardEvents(sectionData);
           console.log(`[DDD] Driver card events: ${result.events.length}`);
           break;
@@ -525,16 +537,17 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
           console.log(`[DDD] Driver card faults: ${result.faults.length}`);
           break;
 
-        case 0x0508: // CardPlaceDailyWorkPeriod
+        case 0x0506: // CardPlaceDailyWorkPeriod (Gen1) 
+        case 0x0526: // CardPlaceAuthDailyWorkPeriod (Gen2v2)
           result.places = parseCardPlaces(sectionData);
           console.log(`[DDD] Driver card places: ${result.places.length}`);
           break;
       }
     } catch (e) {
-      warnings.push({ offset: pos, message: `Driver card tag 0x${tag.toString(16)}: ${e}` });
+      warnings.push({ offset: pos, message: `Driver card tag 0x${tagHigh.toString(16)} type ${tagType}: ${e}` });
     }
 
-    pos += 4 + len;
+    pos += 5 + len;
   }
 
   // If TLV parsing found nothing, try pattern-based scanning
