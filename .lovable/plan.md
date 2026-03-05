@@ -1,49 +1,26 @@
 
-# Kategoryzacja sesji "Unknown" na dashboardzie
+
+# Opisowy status błędu w badge'u sesji
 
 ## Problem
-Kolumna "Tachograf" wyswietla "Unknown" dla wielu sesji, ktore tak naprawde maja rozne, rozpoznawalne przyczyny. Uzytkownik widzi monotonna liste "Unknown" bez zadnej informacji o tym co sie stalo.
+Obecnie kolumna Status zawsze wyświetla generyczny "Błąd" dla wszystkich sesji z `status === "error"`. Szczegóły są dostępne dopiero po najechaniu (tooltip). Użytkownik chce widzieć typ błędu od razu w badge'u.
 
-## Analiza danych
-Z bazy wynika 5 jasnych kategorii sesji z "Unknown":
+## Podejście
+Zmienić label badge'a dla sesji error na podstawie istniejącej logiki klasyfikacji (`classifyUnknownGeneration` + `getErrorTooltip`):
 
-| Kategoria | Ilosc | Wzorzec | Znaczenie |
-|---|---|---|---|
-| Lockout (cert rejected) | 37 | APDU 0-3, error | Tachograf odrzucil certyfikat (blokada bezpieczenstwa) |
-| Brak odpowiedzi VU | 13 | APDU 0, error, oba Unknown | VU nie odpowiedzialo (stacyjka wylaczona / offline) |
-| Auth zaawansowany blad | 8 | APDU 20+, error | Autentykacja przeszla daleko ale ostatecznie odrzucona |
-| Wykrywanie | 10 | connecting, APDU 0 | Sesja w trakcie - generacja jeszcze nieznana |
-| Pominieto | 6 | skipped | Sesja pominieta przez harmonogram |
+| Warunek | Nowy label w badge | Ikona |
+|---|---|---|
+| VU offline (0 APDU, unknown gen) | `VU offline` | WifiOff |
+| Lockout (≤3 APDU lub cert rejected) | `Lockout` | Lock |
+| Auth błąd (≥20 APDU) | `Auth błąd` | ShieldAlert |
+| Przerwane pobieranie (files > 0) | `Przerwane X/Y` | AlertTriangle |
+| Inne błędy | `Błąd` | — |
 
-## Rozwiazanie
+## Zmiany w `src/components/SessionsTable.tsx`
 
-### 1. Nowa funkcja `classifyUnknownGeneration()` w `SessionsTable.tsx`
+1. **Nowa funkcja `getErrorBadgeInfo(s: Session)`** — zwraca `{ label, icon?, className }` na podstawie klasyfikacji błędu
+2. **Zmiana renderowania badge'a** w sekcji `effectiveStatus === "error"` — zamiast stałego `sc.label` ("Błąd"), użyć label z nowej funkcji
+3. Tooltip pozostaje bez zmian (szczegółowy opis)
 
-Zamiast wyswietlac surowe "Unknown", dodac funkcje ktora na podstawie `status`, `apdu_exchanges`, `error_message` i kontekstu z `session_events` zwraca:
+Logika jest już zaimplementowana w `classifyUnknownGeneration` i `getErrorTooltip` — wystarczy ją wykorzystać do zmiany labela badge'a.
 
-```text
-- "Lockout"       → ikona Lock, kolor destructive, tooltip "Tachograf odrzucil certyfikat"
-- "VU offline"    → ikona WifiOff, kolor muted, tooltip "Brak odpowiedzi VU (stacyjka wylaczona?)"  
-- "Auth blad"     → ikona ShieldX, kolor warning, tooltip "Autentykacja przerwana po N wymianach APDU"
-- "Wykrywanie..." → ikona Loader, kolor info, animacja pulse
-- "Unknown"       → fallback dla niepasujacych przypadkow
-```
-
-### 2. Zmiana wyswietlania w kolumnie "Tachograf"
-
-Zamiast Badge "Unknown" wyswietlic nowy Badge z odpowiednia ikona, kolorem i tooltipem. Zastosowac to tylko gdy `generation === "Unknown"` — znane generacje (Gen1, Gen2, Gen2v2) pozostaja bez zmian.
-
-### 3. Zmiana wyswietlania w kolumnie "Status" dla bledow
-
-Dla sesji z `status === "error"` i rozpoznanym wzorcem, wzbogacic tooltip Badge "Blad" o szczegoly:
-- "Blokada bezpieczenstwa tachografu (lockout)" 
-- "VU nie odpowiada — mozliwe wylaczenie stacyjki"
-- "Certyfikat odrzucony po pelnej autentykacji"
-
-### Zmiany w plikach
-
-**`src/components/SessionsTable.tsx`** — jedyny plik:
-- Dodac funkcje `classifyUnknownGeneration(session)` zwracajaca `{ label, icon, color, tooltip }`
-- Zmodyfikowac renderowanie kolumny "Tachograf" (linia 169-188) aby uzywac klasyfikacji zamiast surowego "Unknown"
-- Dodac tooltips do kolumny "Status" dla rozpoznanych wzorcow bledow
-- Import dodatkowych ikon: `Lock`, `WifiOff`, `ShieldX`, `Loader`
