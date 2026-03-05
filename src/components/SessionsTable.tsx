@@ -3,11 +3,14 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { AlertTriangle, Lock, WifiOff, ShieldAlert, Loader } from "lucide-react";
-import { useMemo, useState, useEffect } from "react";
+import { AlertTriangle, Lock, WifiOff, ShieldAlert, Loader, Download, BookOpen } from "lucide-react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useImeiOwners } from "@/hooks/useImeiOwners";
+import { useNavigate } from "react-router-dom";
+import { apiListDddFiles, apiDownloadDddFile } from "@/lib/api-client";
+import { toast } from "sonner";
 
 type SessionStatus = Session["status"];
 
@@ -215,13 +218,20 @@ function matchesFilter(imei: string, filter: AdminFilterResult): boolean {
   return filter.imeis.includes(imei) || imei.toLowerCase().includes(filter.rawQuery);
 }
 
+function hasDownloadableFiles(s: Session): boolean {
+  const eff = getEffectiveStatus(s);
+  return (eff === "completed" || eff === "partial") && (s.files_downloaded ?? 0) > 0;
+}
+
 interface SessionsTableProps {
   adminFilter?: AdminFilterResult | null;
 }
 
+
 export function SessionsTable({ adminFilter }: SessionsTableProps) {
   const { getOwner, isAdmin } = useImeiOwners();
   const { data: sessions, isLoading } = useSessions();
+  const navigate = useNavigate();
 
   const filtered = useMemo(() => {
     if (!sessions) return undefined;
@@ -256,6 +266,37 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
     return pages;
   }, [totalPages, currentPage]);
 
+  const handleDownloadFiles = useCallback(async (s: Session) => {
+    try {
+      const after = s.started_at ?? s.created_at ?? "";
+      const before = s.completed_at ?? s.last_activity ?? "";
+      const files = await apiListDddFiles(s.imei, after, before);
+      if (files.length === 0) {
+        toast.error("Brak plików DDD dla tej sesji");
+        return;
+      }
+      for (const f of files) {
+        const buf = await apiDownloadDddFile(s.imei, f.name);
+        const blob = new Blob([buf], { type: "application/octet-stream" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = f.name;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+      toast.success(`Pobrano ${files.length} plików`);
+    } catch (err) {
+      toast.error(`Błąd pobierania: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, []);
+
+  const handleOpenInReader = useCallback((s: Session) => {
+    const after = s.started_at ?? s.created_at ?? "";
+    const before = s.completed_at ?? s.last_activity ?? "";
+    navigate(`/ddd-reader?sessionImei=${s.imei}&after=${encodeURIComponent(after)}&before=${encodeURIComponent(before)}`);
+  }, [navigate]);
+
   return (
     <div className="rounded-lg border bg-card">
       <div className="border-b px-5 py-3 flex items-center justify-between">
@@ -289,6 +330,7 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
               <th className="px-5 py-3">Pobrano</th>
               <th className="px-5 py-3">APDU</th>
               <th className="px-5 py-3">CRC err</th>
+              <th className="px-5 py-3">Akcje</th>
             </tr>
           </thead>
           <tbody>
@@ -524,6 +566,34 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                       <span className="text-destructive">{s.crc_errors}</span>
                     ) : (
                       "—"
+                    )}
+                  </td>
+                  <td className="px-5 py-3">
+                    {hasDownloadableFiles(s) ? (
+                      <span className="flex items-center gap-1">
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleDownloadFiles(s)}>
+                                <Download className="h-3.5 w-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent><p>Pobierz pliki DDD</p></TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleOpenInReader(s)}>
+                                <BookOpen className="h-3.5 w-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent><p>Otwórz w czytniku DDD</p></TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
                     )}
                   </td>
                 </tr>
