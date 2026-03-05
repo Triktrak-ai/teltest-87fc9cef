@@ -1,49 +1,56 @@
 
-# Kategoryzacja sesji "Unknown" na dashboardzie
 
-## Problem
-Kolumna "Tachograf" wyswietla "Unknown" dla wielu sesji, ktore tak naprawde maja rozne, rozpoznawalne przyczyny. Uzytkownik widzi monotonna liste "Unknown" bez zadnej informacji o tym co sie stalo.
+# Naprawa bledow identyfikacji statusow sesji
 
-## Analiza danych
-Z bazy wynika 5 jasnych kategorii sesji z "Unknown":
+## Znalezione bledy (analiza ostatnich 20 sesji)
 
-| Kategoria | Ilosc | Wzorzec | Znaczenie |
-|---|---|---|---|
-| Lockout (cert rejected) | 37 | APDU 0-3, error | Tachograf odrzucil certyfikat (blokada bezpieczenstwa) |
-| Brak odpowiedzi VU | 13 | APDU 0, error, oba Unknown | VU nie odpowiedzialo (stacyjka wylaczona / offline) |
-| Auth zaawansowany blad | 8 | APDU 20+, error | Autentykacja przeszla daleko ale ostatecznie odrzucona |
-| Wykrywanie | 10 | connecting, APDU 0 | Sesja w trakcie - generacja jeszcze nieznana |
-| Pominieto | 6 | skipped | Sesja pominieta przez harmonogram |
+### 1. "Pobieranie" zamiast "Ukonczone" — sesje `ca14f471` i `ed78481c`
+- Status = `downloading`, ale `completed_at` jest ustawione i `files_downloaded=6/7`
+- Sesja jest faktycznie zakonczona, ale UI wyswietla "Pobieranie" z animacja
+- **Przyczyna**: race condition w report-session — ostatni raport "downloading" nadpisal status po ustawieniu completed_at, albo status nie zostal zaktualizowany na "completed"
+- **Naprawa**: W `SessionsTable.tsx` — jesli `completed_at` jest ustawione a status to "downloading", nadpisac wyswietlany status na "completed" (lub "partial" jesli files < total)
 
-## Rozwiazanie
+### 2. "Ukonczone" z 0 plikami — sesja `db4c612a`
+- Status = `completed`, gen=Unknown, card=Unknown, files=0, apdu=0, bytes=72
+- Zdarzenia: "WaitingForStatus → Complete: Ignition OFF"
+- To NIE jest udane pobieranie — stacyjka zostala wylaczona zanim cos sie pobralo
+- **Naprawa**: Jesli status=completed ale files_downloaded=0 i apdu=0, wyswietlac "Stacyjka OFF" zamiast "Ukonczone"
 
-### 1. Nowa funkcja `classifyUnknownGeneration()` w `SessionsTable.tsx`
+### 3. "Lockout" zamiast "Niezgodnosc generacji" — sesja `88fdd3f4`
+- Status=error, gen=Unknown, card=Gen2, apdu=3
+- Zdarzenia: "GENERATION MISMATCH: Card is Gen2 but VU requires Gen1"
+- `classifyUnknownGeneration()` widzi apdu<=3 i klasyfikuje jako Lockout
+- Ale card_generation=Gen2 (NIE Unknown), a gen=Unknown z apdu=3 w kontekscie Gen2 karty w Gen1 VU oznacza niezgodnosc generacji, nie lockout
+- **Naprawa**: Dodac warunek — jesli card_generation != Unknown ale generation == Unknown i apdu <= 3, to moze byc niezgodnosc generacji (karta Gen2 w starym VU ktory nie moze negocjowac). Nowa kategoria: "Niezgodnosc" z ikona AlertTriangle
 
-Zamiast wyswietlac surowe "Unknown", dodac funkcje ktora na podstawie `status`, `apdu_exchanges`, `error_message` i kontekstu z `session_events` zwraca:
+### 4. Brak klasyfikacji dla bledow z rozpoznana generacja — sesja `2225362c`
+- Status=error, gen=Gen2v2, card=Gen2, files=3/7, apdu=20
+- `classifyUnknownGeneration()` zwraca null bo gen != "Unknown"
+- `getErrorTooltip()` tez zwraca null
+- Sesja wyswietla generyczny "Blad" bez zadnego kontekstu
+- **Naprawa**: Dodac `getErrorTooltip()` ktory dziala niezaleznie od generacji — dla sesji z bledami i czesciowym pobraniem wyswietlic "Pobieranie przerwane po X/Y plikach"
 
-```text
-- "Lockout"       → ikona Lock, kolor destructive, tooltip "Tachograf odrzucil certyfikat"
-- "VU offline"    → ikona WifiOff, kolor muted, tooltip "Brak odpowiedzi VU (stacyjka wylaczona?)"  
-- "Auth blad"     → ikona ShieldX, kolor warning, tooltip "Autentykacja przerwana po N wymianach APDU"
-- "Wykrywanie..." → ikona Loader, kolor info, animacja pulse
-- "Unknown"       → fallback dla niepasujacych przypadkow
+## Zmiany w kodzie
+
+### `src/components/SessionsTable.tsx`
+
+**A. Nowa funkcja `getEffectiveStatus(session)`** (przed renderowaniem):
+```
+- completed_at set + status "downloading" → "completed" (lub "partial" wg files)
+- status "completed" + files_downloaded=0 + apdu=0 → "ignition_off" (nowy status wizualny)
 ```
 
-### 2. Zmiana wyswietlania w kolumnie "Tachograf"
+**B. Rozbudowa `classifyUnknownGeneration()`** (linia ~84-117):
+- Przed sprawdzeniem Lockout: jesli `card_generation != "Unknown"` i `apdu <= 3`, klasyfikuj jako "Niezgodnosc" (AlertTriangle, kolor warning, tooltip "Karta {card} niezgodna z tachografem — blad autoryzacji")
+- To pokrywa scenariusz Gen2 karty w Gen1 VU
 
-Zamiast Badge "Unknown" wyswietlic nowy Badge z odpowiednia ikona, kolorem i tooltipem. Zastosowac to tylko gdy `generation === "Unknown"` — znane generacje (Gen1, Gen2, Gen2v2) pozostaja bez zmian.
+**C. Rozbudowa `getErrorTooltip()`** (linia ~123-130):
+- Dzialac dla WSZYSTKICH sesji z status=error, nie tylko Unknown:
+  - files_downloaded > 0: "Pobieranie przerwane po {files}/{total} plikach"
+  - apdu >= 20 i gen != Unknown: "Blad po autentykacji ({apdu} APDU)"
 
-### 3. Zmiana wyswietlania w kolumnie "Status" dla bledow
+**D. Dodanie statusu wizualnego "ignition_off"** do `statusConfig`:
+- label: "Stacyjka OFF", kolor muted, ikona WifiOff
 
-Dla sesji z `status === "error"` i rozpoznanym wzorcem, wzbogacic tooltip Badge "Blad" o szczegoly:
-- "Blokada bezpieczenstwa tachografu (lockout)" 
-- "VU nie odpowiada — mozliwe wylaczenie stacyjki"
-- "Certyfikat odrzucony po pelnej autentykacji"
+### Jeden plik do zmiany: `src/components/SessionsTable.tsx`
 
-### Zmiany w plikach
-
-**`src/components/SessionsTable.tsx`** — jedyny plik:
-- Dodac funkcje `classifyUnknownGeneration(session)` zwracajaca `{ label, icon, color, tooltip }`
-- Zmodyfikowac renderowanie kolumny "Tachograf" (linia 169-188) aby uzywac klasyfikacji zamiast surowego "Unknown"
-- Dodac tooltips do kolumny "Status" dla rozpoznanych wzorcow bledow
-- Import dodatkowych ikon: `Lock`, `WifiOff`, `ShieldX`, `Loader`
