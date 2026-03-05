@@ -394,8 +394,7 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
                             </Tooltip>
                           </TooltipProvider>
                         ) : badge;
-                      })()
-                      ) : (
+                      })() : (
                         <Badge variant="outline" className={sc.className}>
                           {sc.label}
                         </Badge>
