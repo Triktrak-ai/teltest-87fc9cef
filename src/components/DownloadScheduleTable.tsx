@@ -137,7 +137,7 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
     if (!tw) { toast.error("Brak daty ostatniego pobrania"); return; }
     try {
       toast.info("Przygotowywanie archiwum ZIP…");
-      const buf = await apiDownloadDddZip(s.imei, tw.after, tw.before);
+      const buf = await downloadDddZip(s.imei, tw.after, tw.before);
       const blob = new Blob([buf], { type: "application/zip" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
