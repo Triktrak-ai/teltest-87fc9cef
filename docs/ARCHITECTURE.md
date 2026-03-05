@@ -556,15 +556,28 @@ sequenceDiagram
 
 ---
 
-## 6. Diagram komponentów — Edge Functions
+## 6. Diagram komponentów — TachoWebApi + Edge Functions
 
 ```mermaid
 graph LR
-    subgraph "C# Server"
+    subgraph "C# Server (TachoDddServer)"
         WR[WebReporter]
     end
 
-    subgraph "Edge Functions"
+    subgraph "TachoWebApi (.NET 8)"
+        AUTH[AuthController]
+        SESS[SessionsController]
+        DEV[DevicesController]
+        DDD[DddFilesController]
+        SCHED[DownloadScheduleController]
+        REPORT[ReportSessionController]
+        ADMIN[AdminController]
+        PROF[ProfilesController]
+        SLOG[SessionLogsController]
+        HUB[DashboardHub - SignalR]
+    end
+
+    subgraph "Edge Functions (Lovable Cloud)"
         RS[report-session]
         CD[check-download]
         UL[upload-session-log]
@@ -577,14 +590,19 @@ graph LR
         SE[(session_events)]
         DS[(download_schedule)]
         AS[(app_settings)]
+        P[(profiles)]
+        UR[(user_roles)]
+        UD[(user_devices)]
     end
 
-    subgraph "Storage"
+    subgraph "File Storage"
         SL[(session-logs bucket)]
+        DDDFS[(DDD files on VPS disk)]
     end
 
-    subgraph "Dashboard"
+    subgraph "Dashboard (React)"
         UI[Web Dashboard]
+        READER[DDD Reader]
     end
 
     WR -->|POST + x-api-key| RS
@@ -602,16 +620,47 @@ graph LR
     UL -->|UPDATE log_uploaded| S
 
     TB -->|UPSERT| AS
-
     RDS -->|UPDATE| DS
+
+    DDD -->|Read| DDDFS
+    SLOG -->|Read| SL
 
     UI -->|Realtime subscribe| S
     UI -->|Realtime subscribe| SE
-    UI -->|SELECT| DS
+    UI -->|JWT fetch| SESS
+    UI -->|JWT fetch| SCHED
+    UI -->|JWT fetch| DDD
+    UI -->|JWT fetch| DEV
+    UI -->|JWT fetch| PROF
+    UI -->|SignalR| HUB
     UI -->|invoke| TB
     UI -->|invoke| RDS
-    UI -->|Download| SL
+    READER -->|JWT fetch| DDD
 ```
+
+---
+
+## 6a. Endpointy TachoWebApi
+
+| Kontroler | Metoda | Endpoint | Opis |
+|---|---|---|---|
+| **AuthController** | POST | `/api/auth/login` | Logowanie (JWT) |
+| | POST | `/api/auth/signup` | Rejestracja |
+| | POST | `/api/auth/refresh` | Odświeżenie tokena |
+| | POST | `/api/auth/forgot-password` | Reset hasła |
+| | POST | `/api/auth/reset-password` | Ustawienie nowego hasła |
+| **SessionsController** | GET | `/api/sessions` | Lista sesji (filtr po IMEI) |
+| **DevicesController** | GET/POST/PUT/DELETE | `/api/devices` | CRUD urządzeń użytkownika |
+| **DddFilesController** | GET | `/api/ddd-files/{imei}` | Lista plików DDD (okno czasowe) |
+| | GET | `/api/ddd-files/{imei}/{fileName}` | Pobieranie pojedynczego pliku |
+| | GET | `/api/ddd-files/{imei}/zip` | Pobieranie archiwum ZIP |
+| **DownloadScheduleController** | GET | `/api/download-schedule` | Harmonogram pobierania |
+| **ReportSessionController** | POST | `/api/report-session` | Raportowanie sesji (x-api-key) |
+| **ProfilesController** | GET/PUT | `/api/profiles` | Profil użytkownika |
+| **AdminController** | POST | `/api/admin/create-user` | Tworzenie użytkownika (admin) |
+| **SettingsController** | GET/PUT | `/api/settings` | Ustawienia aplikacji |
+| **SessionLogsController** | GET | `/api/session-logs/{sessionId}` | Pobieranie logów sesji |
+| **CheckDownloadController** | GET | `/api/check-download` | Sprawdzenie harmonogramu (x-api-key) |
 
 ---
 
@@ -656,6 +705,39 @@ graph TB
 
 ```mermaid
 erDiagram
+    auth_users {
+        uuid id PK
+        string email UK
+        string password_hash
+        timestamp created_at
+    }
+
+    profiles {
+        uuid id PK,FK "→ auth_users.id"
+        string full_name
+        string phone
+        boolean approved
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    user_roles {
+        uuid id PK
+        uuid user_id FK "→ auth_users.id"
+        enum role "admin|user"
+    }
+
+    user_devices {
+        uuid id PK
+        uuid user_id FK "→ profiles.id"
+        string imei
+        string label
+        string vehicle_plate
+        string sim_number
+        string comment
+        timestamp created_at
+    }
+
     sessions {
         uuid id PK
         string imei
@@ -707,7 +789,12 @@ erDiagram
         timestamp updated_at
     }
 
+    auth_users ||--|| profiles : "has one"
+    auth_users ||--o{ user_roles : "has many"
+    profiles ||--o{ user_devices : "has many"
     sessions ||--o{ session_events : "has many"
+    user_devices }o--o{ sessions : "imei match"
+    user_devices }o--o{ download_schedule : "imei match"
 ```
 
 ---
@@ -735,13 +822,28 @@ graph TB
         PCSC[PC/SC winscard.dll]
     end
 
-    subgraph Cloud["Lovable Cloud"]
-        DB[(sessions / events)]
+    subgraph WebApi["TachoWebApi (.NET 8, :5100)"]
+        API[REST Controllers]
+        SIGNALR[SignalR Hub]
+        DDDCTRL[DddFilesController]
+        STATIC["wwwroot/ React SPA"]
+    end
+
+    subgraph Cloud["Lovable Cloud / PostgreSQL"]
+        DB[(sessions / events / profiles)]
         EF1[report-session]
         EF2[check-download]
         EF3[upload-session-log]
         Storage[(session-logs bucket)]
-        Dashboard[Web Dashboard]
+    end
+
+    subgraph VPSDisk["VPS Disk"]
+        DDDFILES["DDD files<br/>C:\TachoDDD\Downloads\{imei}\"]
+    end
+
+    subgraph Dashboard["Web Dashboard (React)"]
+        MAIN[Dashboard + Schedule]
+        READER[DDD Reader]
     end
 
     VU -->|Codec 12 TCP| TCP
@@ -750,6 +852,7 @@ graph TB
     Session -->|APDU tunnel| WS
     WS --> PCSC
     Session --> FileWriter
+    FileWriter -->|save .ddd| DDDFILES
     Session --> Traffic
     Session --> Diag
     Session --> Reporter
@@ -758,8 +861,12 @@ graph TB
     EF1 --> DB
     EF3 --> Storage
     EF2 --> DB
-    Dashboard --> DB
-    Dashboard --> Storage
+    MAIN -->|JWT| API
+    MAIN -->|SignalR| SIGNALR
+    READER -->|JWT| DDDCTRL
+    DDDCTRL -->|read files| DDDFILES
+    API --> DB
+    STATIC -->|serves| MAIN
 ```
 
 ---
@@ -794,4 +901,57 @@ graph TB
 
 ---
 
-*Wygenerowano: 2026-02-28*
+## 10. Dostęp do plików DDD
+
+### Przepływ pobierania plików DDD z dashboardu
+
+```mermaid
+sequenceDiagram
+    participant U as Użytkownik
+    participant DS as Dashboard (Harmonogram)
+    participant API as TachoWebApi
+    participant FS as VPS Disk
+
+    U->>DS: Klik "Pobierz ZIP" / "Otwórz w czytniku"
+    DS->>DS: getTimeWindow(last_success_at ±10/5 min)
+    
+    alt Pobieranie ZIP
+        DS->>API: GET /api/ddd-files/{imei}/zip?after=...&before=...
+        API->>FS: GetMatchingFiles(imei, after, before)
+        FS-->>API: Lista plików .ddd
+        API->>API: ZipArchive → MemoryStream
+        API-->>DS: application/zip
+        DS->>U: Plik {imei}_ddd.zip
+    else Otwórz w czytniku
+        DS->>DS: navigate(/ddd-reader?sessionImei=...&after=...&before=...)
+        DS->>API: GET /api/ddd-files/{imei}?after=...&before=...
+        API->>FS: GetMatchingFiles()
+        FS-->>API: Lista plików
+        API-->>DS: JSON [{name, size, modified_at}]
+        loop Dla każdego pliku
+            DS->>API: GET /api/ddd-files/{imei}/{fileName}
+            API->>FS: File.OpenRead()
+            FS-->>API: byte[]
+            API-->>DS: application/octet-stream
+        end
+        DS->>DS: Parse DDD → wyświetl w czytniku
+    end
+```
+
+### Struktura plików na dysku VPS
+
+```
+C:\TachoDDD\Downloads\
+├── 358480081630115\
+│   ├── 358480081630115_overview_20260305_164750.ddd
+│   ├── 358480081630115_activities_20260305_164810.ddd
+│   ├── 358480081630115_events_20260305_164830.ddd
+│   ├── 358480081630115_speed_20260305_164900.ddd
+│   └── 358480081630115_technical_20260305_164920.ddd
+├── 350424060855218\
+│   └── ...
+```
+
+---
+
+*Wygenerowano: 2026-03-05*
