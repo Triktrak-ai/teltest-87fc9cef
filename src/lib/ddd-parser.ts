@@ -1334,30 +1334,56 @@ function extractSections(buffer: ArrayBuffer, warnings: ParserWarning[]): DddSec
 
 function parseOverview(data: Uint8Array): DddOverview {
   const r = new BinaryReader(toArrayBuffer(data));
-  const cardSlotsStatus = r.readUint8();
-  const downloadDate = r.readTimestamp();
-  const downloadPeriodBegin = r.readTimestamp();
-  const downloadPeriodEnd = r.readTimestamp();
+
+  // Gen1 VuOverview structure (Annex 1C, Appendix 7 §2.2.6.2):
+  // MemberStateCertificate (194B) + VuCertificate (194B) = 388B certificates
+  // Then: VehicleIdentificationNumber (17B)
+  //        VehicleRegistrationIdentification: nation(1B) + VRN(14B)
+  //        CurrentDateTime (4B)
+  //        VuDownloadablePeriod: begin(4B) + end(4B)
+  //        CardSlotsStatus (1B)
+  //        VuDownloadActivityData ...
+
+  // Skip certificates (2 × 194 = 388 bytes)
+  if (r.remaining > 388) {
+    r.skip(388);
+  }
+
+  // VehicleIdentificationNumber (VIN) — 17 bytes
+  const _vin = r.remaining >= 17 ? r.readString(17) : '';
+  // VehicleRegistrationIdentification
   const vehicleNationByte = r.remaining > 0 ? r.readUint8() : 0;
   const vehicleNation = NATION_CODES[vehicleNationByte] || `0x${vehicleNationByte.toString(16)}`;
   const vrn = r.remaining >= 14 ? r.readString(14) : '';
-  const vuManufacturerName = r.remaining >= 36 ? r.readString(36) : '';
-  const vuManufacturerAddress = r.remaining >= 36 ? r.readString(36) : '';
-  const vuSerialNumber = r.remaining >= 8 ? r.readString(8) : '';
-  const vuPartNumber = r.remaining >= 16 ? r.readString(16) : '';
-  const vuSoftwareVersion = r.remaining >= 4 ? r.readString(4) : '';
-  const vuManufacturingDate = r.remaining >= 4 ? r.readTimestamp() : null;
-  const vuApprovalNumber = r.remaining >= 16 ? r.readString(16) : '';
+  // CurrentDateTime
+  const downloadDate = r.readTimestamp();
+  // VuDownloadablePeriod
+  const downloadPeriodBegin = r.readTimestamp();
+  const downloadPeriodEnd = r.readTimestamp();
+  // CardSlotsStatus
+  const cardSlotsStatus = r.remaining > 0 ? r.readUint8() : 0;
+  // VuDownloadActivityData
   const vuDownloadActivityDataLength = r.remaining >= 4 ? r.readUint32() : 0;
 
+  // After VuDownloadActivityData, try reading VU identification if data remains
+  // The VU identification fields are in the VuCompanyLocksData section, not here
+  // For Gen1, manufacturer info would be in the Technical Data section
+
   return {
-    vuManufacturerName, vuManufacturerAddress, vuSerialNumber, vuPartNumber,
-    vuSoftwareVersion, vuManufacturingDate, vuApprovalNumber,
-    vehicleRegistrationNation: vehicleNation, vehicleRegistrationNumber: vrn,
+    vuManufacturerName: '',
+    vuManufacturerAddress: '',
+    vuSerialNumber: '',
+    vuPartNumber: '',
+    vuSoftwareVersion: '',
+    vuManufacturingDate: null,
+    vuApprovalNumber: '',
+    vehicleRegistrationNation: vehicleNation,
+    vehicleRegistrationNumber: vrn,
     currentDateTime: downloadDate,
     vuDownloadablePeriodBegin: downloadPeriodBegin,
     vuDownloadablePeriodEnd: downloadPeriodEnd,
-    cardSlotsStatus, vuDownloadActivityDataLength,
+    cardSlotsStatus,
+    vuDownloadActivityDataLength,
   };
 }
 
