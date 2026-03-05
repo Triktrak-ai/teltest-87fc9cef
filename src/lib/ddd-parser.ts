@@ -133,6 +133,12 @@ export interface DriverCardData {
   places: CardPlaceRecord[];
 }
 
+export interface RawFileBuffer {
+  fileName: string;
+  fileType: string;
+  data: Uint8Array;
+}
+
 export interface DddFileData {
   overview: DddOverview | null;
   activities: ActivityRecord[];
@@ -146,6 +152,7 @@ export interface DddFileData {
   bytesParsed: number;
   generation: 'gen1' | 'gen2' | 'unknown';
   driverCard: DriverCardData | null;
+  rawFileBuffers: RawFileBuffer[];
 }
 
 // ─── File type detection from filename ───────────────────────────────────────
@@ -199,7 +206,7 @@ export function emptyDddData(): DddFileData {
     overview: null, activities: [], events: [], faults: [],
     technicalData: null, speedRecords: [], rawSections: [],
     warnings: [], fileSize: 0, bytesParsed: 0, generation: 'unknown',
-    driverCard: null,
+    driverCard: null, rawFileBuffers: [],
   };
 }
 
