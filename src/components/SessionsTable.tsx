@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useImeiOwners } from "@/hooks/useImeiOwners";
 import { useNavigate } from "react-router-dom";
-import { apiListDddFiles, apiDownloadDddFile } from "@/lib/api-client";
+import { apiListDddFiles, apiDownloadDddFile, apiDownloadDddZip } from "@/lib/api-client";
 import { toast } from "sonner";
 
 type SessionStatus = Session["status"];
@@ -270,22 +270,16 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
     try {
       const after = s.started_at ?? s.created_at ?? "";
       const before = s.completed_at ?? s.last_activity ?? "";
-      const files = await apiListDddFiles(s.imei, after, before);
-      if (files.length === 0) {
-        toast.error("Brak plików DDD dla tej sesji");
-        return;
-      }
-      for (const f of files) {
-        const buf = await apiDownloadDddFile(s.imei, f.name);
-        const blob = new Blob([buf], { type: "application/octet-stream" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = f.name;
-        a.click();
-        URL.revokeObjectURL(url);
-      }
-      toast.success(`Pobrano ${files.length} plików`);
+      toast.info("Przygotowywanie archiwum ZIP…");
+      const buf = await apiDownloadDddZip(s.imei, after, before);
+      const blob = new Blob([buf], { type: "application/zip" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${s.imei}_ddd.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("Pobrano archiwum ZIP");
     } catch (err) {
       toast.error(`Błąd pobierania: ${err instanceof Error ? err.message : String(err)}`);
     }
