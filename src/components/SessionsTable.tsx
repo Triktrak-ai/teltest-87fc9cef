@@ -228,18 +228,18 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
           <thead>
             <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
               {isAdmin && <th className="px-5 py-3">Użytkownik</th>}
+              <th className="px-5 py-3">Data / Czas</th>
+              <th className="px-5 py-3">Status</th>
               <th className="px-5 py-3">IMEI</th>
               <th className="px-5 py-3">Pojazd</th>
               <th className="px-5 py-3">Tachograf</th>
               <th className="px-5 py-3">Karta</th>
-              <th className="px-5 py-3">Status</th>
               <th className="px-5 py-3">Postęp</th>
               <th className="px-5 py-3">Pliki</th>
               <th className="px-5 py-3">Akt. plik</th>
               <th className="px-5 py-3">Pobrano</th>
               <th className="px-5 py-3">APDU</th>
               <th className="px-5 py-3">CRC err</th>
-              <th className="px-5 py-3">Akt. aktywność</th>
             </tr>
           </thead>
           <tbody>
