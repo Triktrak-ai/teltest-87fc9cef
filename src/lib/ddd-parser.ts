@@ -1968,7 +1968,7 @@ function parseTechnicalData(data: Uint8Array): TechnicalData {
         calibrationPurpose,
         calibrationPurposeName: CALIBRATION_PURPOSE_NAMES[calibrationPurpose] || `Nieznany (${calibrationPurpose})`,
         workshopName, workshopAddress, workshopCardNumber, workshopCardExpiryDate,
-        vehicleIdentificationNumber: vin,
+        vehicleIdentificationNumber: '',
         vehicleRegistrationNumber: vrn,
         vehicleRegistrationNation: NATION_CODES[vrnNation] || `0x${vrnNation.toString(16)}`,
         wFactor, kFactor, tyreSize, authorisedSpeed,
