@@ -617,12 +617,24 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
   }
 
   if (fileType === 'activities' && sections.length > 0) {
-    const actSection = sections.find(s => s.tag === 0x36 || s.tag === 0x26 || s.tag === 0x06);
-    if (actSection) {
+    // Activities tags: Gen1=0x02, Gen2=0x22, Gen2v2=0x32
+    const actSections = sections.filter(s => s.tag === 0x32 || s.tag === 0x22 || s.tag === 0x02);
+    if (actSections.length > 0) {
       try {
-        result.activities = parseActivities(actSection.data);
+        const allRecords: ActivityRecord[] = [];
+        for (const sect of actSections) {
+          const parsed = parseActivities(sect.data);
+          allRecords.push(...parsed);
+        }
+        // Deduplicate by date+dailyPresenceCounter
+        const seen = new Map<string, ActivityRecord>();
+        for (const r of allRecords) {
+          const key = `${r.date.getTime()}-${r.dailyPresenceCounter}`;
+          if (!seen.has(key)) seen.set(key, r);
+        }
+        result.activities = Array.from(seen.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
         result.bytesParsed = buffer.byteLength;
-        console.log(`[DDD] Activities from TLV section 0x${actSection.tag.toString(16)}: ${result.activities.length} days`);
+        console.log(`[DDD] Activities from ${actSections.length} TLV sections (0x${actSections[0].tag.toString(16)}): ${result.activities.length} days`);
         if (result.activities.length > 0) return result;
       } catch (e) {
         console.warn('[DDD] TLV activities parse failed, falling back to raw:', e);
