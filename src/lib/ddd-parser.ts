@@ -1035,15 +1035,96 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
   const events: EventRecord[] = [];
   const faults: FaultRecord[] = [];
 
-  const cardPositions = findCardNumberPatterns(bytes);
+  // Gen2v2 events file uses RecordArray format:
+  // arrayType(1B) + recordSize(2B) + noOfRecords(2B) = 5B header, then records
+  // Multiple RecordArrays concatenated for different event/fault types.
+  const view = new DataView(toArrayBuffer(bytes));
+  let pos = 0;
+  let parsedRecordArrays = 0;
 
+  while (pos + 5 < bytes.length) {
+    const arrayType = bytes[pos];
+    const recordSize = view.getUint16(pos + 1, false);
+    const noOfRecords = view.getUint16(pos + 3, false);
+
+    // Validate RecordArray header
+    if (recordSize >= 10 && recordSize <= 200 && noOfRecords >= 0 && noOfRecords <= 100 &&
+        pos + 5 + recordSize * noOfRecords <= bytes.length) {
+      const arrayEnd = pos + 5 + recordSize * noOfRecords;
+
+      for (let i = 0; i < noOfRecords; i++) {
+        const recStart = pos + 5 + i * recordSize;
+        if (recStart + 10 > bytes.length) break;
+
+        const r = new BinaryReader(toArrayBuffer(bytes), recStart);
+        const eventType = r.readUint8();
+        const eventRecordPurpose = r.readUint8();
+        const eventBeginTime = r.readTimestamp();
+        const eventEndTime = r.readTimestamp();
+
+        if (!eventBeginTime && !eventEndTime) continue;
+
+        // Read FullCardNumberAndGeneration (20B) for driver slot
+        let cardNumberDriverSlot = '';
+        if (r.remaining >= 20) {
+          cardNumberDriverSlot = r.readFullCardNumberAndGen();
+        } else if (r.remaining >= 18) {
+          cardNumberDriverSlot = r.readFullCardNumber();
+        }
+
+        // Read codriver slot
+        let cardNumberCodriverSlot = '';
+        if (r.remaining >= 20) {
+          cardNumberCodriverSlot = r.readFullCardNumberAndGen();
+        } else if (r.remaining >= 18) {
+          cardNumberCodriverSlot = r.readFullCardNumber();
+        }
+
+        // Filter out empty codriver
+        if (cardNumberCodriverSlot.replace(/\xff/g, '').replace(/\x00/g, '').length === 0) {
+          cardNumberCodriverSlot = '';
+        }
+
+        // Determine if this is an event or fault based on type ranges
+        const isFault = (eventType >= 0x00 && eventType <= 0x07 && arrayType >= 0x18) ? false : false;
+
+        events.push({
+          eventType,
+          eventTypeName: EVENT_TYPE_NAMES[eventType] || `Zdarzenie 0x${eventType.toString(16)}`,
+          eventBeginTime, eventEndTime,
+          cardNumberDriverSlot,
+          cardNumberCodriverSlot,
+        });
+      }
+
+      pos = arrayEnd;
+      parsedRecordArrays++;
+      continue;
+    }
+
+    // If RecordArray validation failed, try next byte
+    pos++;
+  }
+
+  if (parsedRecordArrays > 0) {
+    console.log(`[DDD] Events: parsed ${parsedRecordArrays} RecordArrays, ${events.length} events`);
+    // Deduplicate
+    const seen = new Set<string>();
+    const uniqueEvents = events.filter(e => {
+      const key = `${e.eventType}-${e.eventBeginTime?.getTime()}-${e.cardNumberDriverSlot}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return { events: uniqueEvents, faults };
+  }
+
+  // Fallback: pattern-based scanning (card number patterns)
+  const cardPositions = findCardNumberPatterns(bytes);
   if (cardPositions.length === 0) {
     return parseEventsStructured(bytes, warnings);
   }
 
-  // Card number pattern found at position i (cardType byte), digits at i+2
-  // Event record: eventType(1B) + [purpose(1B)?] + beginTime(4B) + endTime(4B) = 9 or 10 bytes before card
-  // Try both offsets and validate
   for (const cardPos of cardPositions) {
     for (const offset of [10, 9]) {
       const eventStart = cardPos - offset;
@@ -1052,35 +1133,34 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
       try {
         const r = new BinaryReader(toArrayBuffer(bytes), eventStart);
         const eventType = r.readUint8();
-        if (eventType > 0x0D) continue;
-        
+        // Allow full Gen2v2 event type range (0x00-0x3F)
+        if (eventType > 0x3F) continue;
+
         if (offset === 10) r.readUint8(); // skip eventRecordPurpose for Gen2v2
-        
+
         const eventBeginTime = r.readTimestamp();
         const eventEndTime = r.readTimestamp();
 
         if (!eventBeginTime && !eventEndTime) continue;
 
-        // Read card number: skip cardType(1B) + nation(1B), read 16B digits
         const _cardType = r.readUint8();
         const _nation = r.readUint8();
         const cardNumberDriverSlot = r.readString(16);
 
         events.push({
           eventType,
-          eventTypeName: EVENT_TYPE_NAMES[eventType] || `Nieznany (0x${eventType.toString(16)})`,
+          eventTypeName: EVENT_TYPE_NAMES[eventType] || `Zdarzenie 0x${eventType.toString(16)}`,
           eventBeginTime, eventEndTime,
           cardNumberDriverSlot,
           cardNumberCodriverSlot: '',
         });
-        break; // found valid parse at this offset
+        break;
       } catch {
         continue;
       }
     }
   }
 
-  // Deduplicate
   const seen = new Set<string>();
   const uniqueEvents = events.filter(e => {
     const key = `${e.eventType}-${e.eventBeginTime?.getTime()}-${e.cardNumberDriverSlot}`;
