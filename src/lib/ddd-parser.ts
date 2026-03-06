@@ -1768,7 +1768,6 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
   // Do NOT jump over candidate lengths here: noisy buffers may contain false positives
   // and jumping can skip real records.
   const dayPositions: number[] = [];
-  const dayTimestamps: number[] = [];
   for (let i = 0; i < bytes.length - 10; i++) {
     const ts = view.getUint32(i, false);
     if (!isValidTimestamp(ts)) continue;
@@ -1776,7 +1775,6 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
     const changes = view.getUint16(i + 8, false);
     if (dist <= 9999 && changes <= 1440 && i + 10 + changes * 2 <= bytes.length) {
       dayPositions.push(i);
-      dayTimestamps.push(ts);
     }
   }
 
