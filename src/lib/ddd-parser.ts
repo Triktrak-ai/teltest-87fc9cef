@@ -1584,31 +1584,19 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
   // followed by plausible dailyPresenceCounter, dayDistance, and changeCount
   const dayPositions: number[] = [];
   const dayTimestamps: number[] = [];
-  // First pass: find all valid timestamps and log what we see
-  let validTsCount = 0;
   for (let i = 0; i < bytes.length - 10; i++) {
     const ts = view.getUint32(i, false);
     if (!isValidTimestamp(ts)) continue;
-    validTsCount++;
-    const dailyPresence = view.getUint16(i + 4, false);
     const dist = view.getUint16(i + 6, false);
     const changes = view.getUint16(i + 8, false);
-    
-    // Log first few candidates for debugging
-    if (dayPositions.length < 3 && validTsCount <= 20) {
-      const date = new Date(ts * 1000);
-      console.log(`[DDD] Activity candidate @${i}: ts=${ts} (${date.toISOString().split('T')[0]}), presence=${dailyPresence}, dist=${dist}, changes=${changes}, midnight=${ts % 86400 === 0}`);
-    }
-    
-    // Plausibility: distance < 10000km, changes > 0 and <= 1440, and enough bytes for the changes
-    if (dist <= 9999 && changes > 0 && changes <= 1440 && i + 10 + changes * 2 <= bytes.length) {
+    // Plausibility: distance < 10000km, changes <= 1440, and enough bytes for the changes
+    if (dist <= 9999 && changes <= 1440 && i + 10 + changes * 2 <= bytes.length) {
       dayPositions.push(i);
       dayTimestamps.push(ts);
       // Skip past this record to avoid finding timestamps within activity data
       i += 10 + changes * 2 - 1;
     }
   }
-  console.log(`[DDD] Activity scanner: ${validTsCount} valid timestamps found, ${dayPositions.length} plausible records`);
 
   // Filter out stale records from circular buffer: keep only records within 1 year of the newest
   if (dayTimestamps.length > 0) {
