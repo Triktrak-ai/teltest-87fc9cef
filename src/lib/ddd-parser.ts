@@ -899,62 +899,114 @@ function parseRawSpeedFile(bytes: Uint8Array, warnings: ParserWarning[]): SpeedR
 // ─── Raw technical file parser ───────────────────────────────────────────────
 
 function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): TechnicalData {
-  const r = new BinaryReader(toArrayBuffer(bytes));
   const calibrations: CalibrationRecord[] = [];
+  const view = new DataView(toArrayBuffer(bytes));
 
-  // Technical file format (Gen2v2):
-  // Header bytes, then VuIdentification data
-  // Scan for the VU identification by looking for printable ASCII manufacturer name
+  // Technical file (Gen2v2) uses RecordArray format:
+  // [arrayType 1B][recordSize 2B][noOfRecords 2B] then recordSize*noOfRecords bytes of data
+  // We scan for valid RecordArray headers sequentially.
 
   let vuManufacturerName = '';
   let vuManufacturerAddress = '';
   let vuSerialNumber = '';
   let sensorSerialNumber = '';
 
-  // Find manufacturer name: look for a long run of printable ASCII
-  const identStart = findAsciiString(bytes, 20); // Look for at least 20 printable chars
-  if (identStart >= 0) {
-    const identReader = new BinaryReader(toArrayBuffer(bytes), identStart);
-    vuManufacturerName = identReader.remaining >= 36 ? identReader.readString(36) : '';
-    // Skip the country code byte between manufacturer name and address
-    if (identReader.remaining > 0) {
-      const nextByte = identReader.readUint8();
-      // If it's a printable char, it might be part of the address - go back
-      if (nextByte >= 0x20 && nextByte < 0x7F) {
-        identReader.position -= 1;
+  let pos = 0;
+  let parsedArrays = 0;
+
+  // Known calibration record sizes for Gen2v2 (CalibrationRecord ~= 167-180B)
+  // and Gen1 (~= 147-155B). We accept a wider range to be safe.
+  const MIN_CAL_RECORD_SIZE = 100;
+  const MAX_CAL_RECORD_SIZE = 300;
+
+  while (pos + 5 <= bytes.length) {
+    const arrayType = bytes[pos];
+    const recordSize = view.getUint16(pos + 1, false);
+    const noOfRecords = view.getUint16(pos + 3, false);
+    const totalArraySize = 5 + recordSize * noOfRecords;
+
+    // Validate RecordArray header
+    if (recordSize >= 2 && recordSize <= 2000 &&
+        noOfRecords <= 500 &&
+        totalArraySize >= 5 &&
+        pos + totalArraySize <= bytes.length) {
+
+      console.log(`[DDD] Tech RecordArray @${pos}: type=0x${arrayType.toString(16)}, recSize=${recordSize}, count=${noOfRecords}, total=${totalArraySize}`);
+
+      // arrayType 0x0c = VuCalibrationRecordArray (Gen2v2 calibration records)
+      // arrayType 0x08 = VuCalibrationRecordArray (Gen1)
+      if ((arrayType === 0x0c || arrayType === 0x08) && noOfRecords > 0 && recordSize >= MIN_CAL_RECORD_SIZE) {
+        for (let i = 0; i < noOfRecords; i++) {
+          const recStart = pos + 5 + i * recordSize;
+          try {
+            const cal = parseCalibrationAt(bytes, recStart, recordSize);
+            if (cal) calibrations.push(cal);
+          } catch (e) {
+            warnings.push({ offset: recStart, message: `Calibration parse error: ${e}` });
+          }
+        }
       }
+
+      // For VU identification records (typically smaller, ~80-120B, single record)
+      if (noOfRecords === 1 && recordSize >= 40 && recordSize < MIN_CAL_RECORD_SIZE) {
+        const recStart = pos + 5;
+        const r = new BinaryReader(toArrayBuffer(bytes), recStart);
+        // Try to extract manufacturer name (36B) + address (36B)
+        if (r.remaining >= 72) {
+          const name = r.readString(36);
+          const addr = r.readString(36);
+          if (/[A-Za-z]{3,}/.test(name)) {
+            vuManufacturerName = name;
+            vuManufacturerAddress = addr;
+            console.log(`[DDD] Tech VU Ident: name="${name}", addr="${addr}"`);
+          }
+        }
+      }
+
+      // For serial number records
+      if (noOfRecords === 1 && recordSize >= 8 && recordSize < 40) {
+        const candidate = readStringAt(bytes, pos + 5, Math.min(recordSize, 8));
+        if (candidate && /^[A-Z0-9\-]{4,}$/.test(candidate)) {
+          if (!vuSerialNumber) {
+            vuSerialNumber = candidate;
+          } else if (!sensorSerialNumber) {
+            sensorSerialNumber = candidate;
+          }
+        }
+      }
+
+      pos += totalArraySize;
+      parsedArrays++;
+      continue;
     }
-    vuManufacturerAddress = identReader.remaining >= 36 ? identReader.readString(36) : '';
 
-    console.log(`[DDD] Tech: Manufacturer="${vuManufacturerName}", Address="${vuManufacturerAddress}"`);
-
-    // After address, look for serial numbers and calibration data
-    // Skip forward to find calibration records by looking for known patterns
+    // No valid RecordArray at this position — advance one byte
+    pos++;
   }
 
-  // Scan for calibration records: look for workshopName patterns
-  // Calibration records contain workshop names (printable ASCII) and timestamps
-  const calPositions = findCalibrationRecords(bytes, warnings);
-  for (const calPos of calPositions) {
-    try {
-      const cal = parseCalibrationAt(bytes, calPos);
-      if (cal) calibrations.push(cal);
-    } catch (e) {
-      warnings.push({ offset: calPos, message: `Calibration parse error: ${e}` });
-    }
-  }
-
-  // Try to find VU and sensor serial numbers in the data
-  // They're typically 8-byte strings near the beginning
-  const serialSearchStart = identStart >= 0 ? identStart + 72 : 0;
-  if (serialSearchStart + 16 <= bytes.length) {
-    const sr = new BinaryReader(toArrayBuffer(bytes), serialSearchStart);
-    // Look for serial-like strings (alphanumeric, 8 chars)
-    for (let off = serialSearchStart; off < Math.min(bytes.length - 8, serialSearchStart + 200); off++) {
-      const candidate = readStringAt(bytes, off, 8);
-      if (candidate && /^[A-Za-z0-9\-]{4,}$/.test(candidate)) {
-        if (!vuSerialNumber) {
-          // Check context to determine if this is a VU or sensor serial
+  if (parsedArrays > 0) {
+    console.log(`[DDD] Tech: parsed ${parsedArrays} RecordArrays, ${calibrations.length} calibrations`);
+  } else {
+    // Fallback: heuristic scan for calibration purpose byte + ASCII workshop name
+    warnings.push({ offset: 0, message: 'No RecordArray headers found, using heuristic fallback' });
+    for (let i = 0; i < bytes.length - 100; i++) {
+      const purposeByte = bytes[i];
+      if (purposeByte < 0x01 || purposeByte > 0x05) continue;
+      let asciiCount = 0;
+      for (let j = 1; j <= 36 && i + j < bytes.length; j++) {
+        const b = bytes[i + j];
+        if (b >= 0x20 && b <= 0x7E) asciiCount++;
+        else if (b === 0) asciiCount++;
+        else break;
+      }
+      if (asciiCount >= 20) {
+        const workshopName = readStringAt(bytes, i + 1, 36);
+        if (workshopName.length >= 3) {
+          try {
+            const cal = parseCalibrationAt(bytes, i, 170);
+            if (cal) calibrations.push(cal);
+          } catch (e) { /* skip */ }
+          i += 50; // skip ahead
         }
       }
     }
@@ -987,60 +1039,44 @@ function readStringAt(bytes: Uint8Array, offset: number, len: number): string {
   return s.trim();
 }
 
-function findCalibrationRecords(bytes: Uint8Array, warnings: ParserWarning[]): number[] {
-  const positions: number[] = [];
-
-  // Look for calibration workshop names: long ASCII strings followed by timestamps
-  // A calibration record has:
-  //   purpose (1B) + workshopName (36B) + workshopAddress (36B) + cardNumber (18B) + ...
-  // The workshop name is typically a company name in ASCII
-
-  for (let i = 0; i < bytes.length - 100; i++) {
-    // Look for calibration purpose byte (0x01-0x05) followed by printable ASCII
-    const purposeByte = bytes[i];
-    if (purposeByte < 0x01 || purposeByte > 0x05) continue;
-
-    // Check if the next 20+ bytes are printable ASCII (workshop name)
-    let asciiCount = 0;
-    for (let j = 1; j <= 36 && i + j < bytes.length; j++) {
-      const b = bytes[i + j];
-      if (b >= 0x20 && b <= 0x7E) asciiCount++;
-      else if (b === 0) asciiCount++; // null padding OK
-      else break;
-    }
-
-    if (asciiCount >= 20) {
-      // Verify this looks like a real calibration record
-      const workshopName = readStringAt(bytes, i + 1, 36);
-      if (workshopName.length >= 3) {
-        // Check it's not overlapping with a previous find
-        if (positions.length === 0 || i - positions[positions.length - 1] > 50) {
-          positions.push(i);
-        }
-      }
-    }
+function isAlphanumericRun(bytes: Uint8Array, offset: number, minLen: number): boolean {
+  let count = 0;
+  for (let i = 0; i < minLen && offset + i < bytes.length; i++) {
+    const b = bytes[offset + i];
+    if ((b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A)) count++;
+    else break;
   }
-
-  return positions;
+  return count >= minLen;
 }
 
-function parseCalibrationAt(bytes: Uint8Array, offset: number): CalibrationRecord | null {
+function parseCalibrationAt(bytes: Uint8Array, offset: number, maxLen?: number): CalibrationRecord | null {
   const r = new BinaryReader(toArrayBuffer(bytes), offset);
-  if (r.remaining < 100) return null;
+  const limit = maxLen ? Math.min(maxLen, r.remaining) : r.remaining;
+  if (limit < 100) return null;
 
   const calibrationPurpose = r.readUint8();
   const workshopName = r.readString(36);
   const workshopAddress = r.remaining >= 36 ? r.readString(36) : '';
 
-  // Gen2v2: FullCardNumberAndGeneration (20B), Gen1: FullCardNumber (18B)
+  // Card number format detection:
+  // Gen2v2 FullCardNumberAndGeneration = cardType(1) + nation(1) + cardNumber(16) + generation(2) = 20B
+  // Gen1 FullCardNumber = cardType(1) + nation(1) + cardNumber(16) = 18B
+  // Strategy: try 18B first, check if VIN at offset+18 looks like a valid alphanumeric string.
+  // If not, try 20B.
   let workshopCardNumber = '';
   if (r.remaining >= 20) {
-    // Try Gen2v2 first (20B)
     const cardStart = r.position;
-    workshopCardNumber = r.readFullCardNumberAndGen();
-    // If card number is empty, try 18B variant
-    if (!workshopCardNumber && r.remaining > 0) {
-      r.position = cardStart;
+    // Peek ahead: check VIN at +18 and +20 from current position
+    const vinAt18 = cardStart + 18 + 4; // +4 for expiry date
+    const vinAt20 = cardStart + 20 + 4;
+    const vin18valid = vinAt18 + 17 <= bytes.length && isAlphanumericRun(bytes, vinAt18, 10);
+    const vin20valid = vinAt20 + 17 <= bytes.length && isAlphanumericRun(bytes, vinAt20, 10);
+    
+    if (vin20valid && !vin18valid) {
+      // Gen2v2 format confirmed
+      workshopCardNumber = r.readFullCardNumberAndGen();
+    } else {
+      // Default to Gen1 18B format (more common, or when both look valid prefer shorter)
       workshopCardNumber = r.readFullCardNumber();
     }
   } else if (r.remaining >= 18) {
@@ -1052,16 +1088,20 @@ function parseCalibrationAt(bytes: Uint8Array, offset: number): CalibrationRecor
   // VehicleIdentificationNumber (17B) — VIN
   const vehicleIdentificationNumber = r.remaining >= 17 ? r.readString(17) : '';
 
-  // VehicleRegistrationIdentification: nation(1B) + codepage(1B for Gen2v2) + VRN
+  // VehicleRegistrationIdentification:
+  // Gen2v2: nation(1B) + codepage(1B) + VRN(15B) = 17B total
+  // Gen1:   nation(1B) + VRN(14B) = 15B total
   const vrnNation = r.remaining > 0 ? r.readUint8() : 0;
   let vrn = '';
   if (r.remaining > 0) {
+    // Gen2v2 codepage byte: typically 0x00-0x0F
     const nextByte = bytes[r.position];
-    if (nextByte <= 0x0F && r.remaining >= 14) {
-      // Gen2v2: codepage(1B) + VRN(13B)
+    if (nextByte <= 0x0F && r.remaining >= 16) {
+      // Gen2v2: codepage(1B) + VRN(15B)
       r.skip(1);
-      vrn = r.readString(13);
+      vrn = r.readString(15);
     } else if (r.remaining >= 14) {
+      // Gen1: VRN(14B)
       vrn = r.readString(14);
     }
   }
@@ -1087,7 +1127,7 @@ function parseCalibrationAt(bytes: Uint8Array, offset: number): CalibrationRecor
     workshopAddress,
     workshopCardNumber,
     workshopCardExpiryDate,
-    vehicleRegistrationNumber: vrn,
+    vehicleRegistrationNumber: vrn.replace(/[^A-Za-z0-9 ]/g, '').trim(),
     vehicleRegistrationNation: NATION_CODES[vrnNation] || `0x${vrnNation.toString(16)}`,
     wFactor, kFactor, tyreSize, authorisedSpeed,
     oldOdometerValue, newOdometerValue,
