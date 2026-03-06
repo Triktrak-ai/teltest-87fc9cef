@@ -411,7 +411,10 @@ class BinaryReader {
     let s = '';
     for (const b of bytes) {
       if (b === 0) break;
-      s += String.fromCharCode(b);
+      // Only include printable ASCII (0x20-0x7E) and common Latin-1 supplement (0xC0-0xFF)
+      if ((b >= 0x20 && b <= 0x7E) || (b >= 0xC0 && b <= 0xFF)) {
+        s += String.fromCharCode(b);
+      }
     }
     return s.trim();
   }
