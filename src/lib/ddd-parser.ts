@@ -1048,13 +1048,27 @@ function parseCalibrationAt(bytes: Uint8Array, offset: number, maxLen?: number):
   const workshopName = r.readString(36);
   const workshopAddress = r.remaining >= 36 ? r.readString(36) : '';
 
-  // Gen2v2: FullCardNumberAndGeneration (20B), Gen1: FullCardNumber (18B)
-  // Determine format based on record size: Gen2v2 calibration records are ~252B, Gen1 ~167B
+  // Card number format detection:
+  // Gen2v2 FullCardNumberAndGeneration = cardType(1) + nation(1) + cardNumber(16) + generation(2) = 20B
+  // Gen1 FullCardNumber = cardType(1) + nation(1) + cardNumber(16) = 18B
+  // Strategy: try 18B first, check if VIN at offset+18 looks like a valid alphanumeric string.
+  // If not, try 20B.
   let workshopCardNumber = '';
-  const isGen2v2 = maxLen ? maxLen >= 200 : false;
-  if (isGen2v2 && r.remaining >= 20) {
-    // Gen2v2: always read 20B, don't fallback to 18B (would shift all subsequent fields)
-    workshopCardNumber = r.readFullCardNumberAndGen();
+  if (r.remaining >= 20) {
+    const cardStart = r.position;
+    // Peek ahead: check VIN at +18 and +20 from current position
+    const vinAt18 = cardStart + 18 + 4; // +4 for expiry date
+    const vinAt20 = cardStart + 20 + 4;
+    const vin18valid = vinAt18 + 17 <= bytes.length && isAlphanumericRun(bytes, vinAt18, 10);
+    const vin20valid = vinAt20 + 17 <= bytes.length && isAlphanumericRun(bytes, vinAt20, 10);
+    
+    if (vin20valid && !vin18valid) {
+      // Gen2v2 format confirmed
+      workshopCardNumber = r.readFullCardNumberAndGen();
+    } else {
+      // Default to Gen1 18B format (more common, or when both look valid prefer shorter)
+      workshopCardNumber = r.readFullCardNumber();
+    }
   } else if (r.remaining >= 18) {
     workshopCardNumber = r.readFullCardNumber();
   }
