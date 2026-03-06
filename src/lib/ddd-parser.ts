@@ -111,6 +111,21 @@ export interface CompanyLockRecord {
   companyCardNumber: string;
 }
 
+export interface DownloadActivityRecord {
+  downloadTimestamp: Date | null;
+  companyOrWorkshopName: string;
+  cardNumber: string;
+}
+
+export interface ControlActivityRecord {
+  controlType: number;
+  controlTypeName: string;
+  controlTimestamp: Date | null;
+  controlCardNumber: string;
+  downloadPeriodBegin: Date | null;
+  downloadPeriodEnd: Date | null;
+}
+
 export interface TechnicalData {
   vuSerialNumber: string;
   sensorSerialNumber: string;
@@ -120,6 +135,8 @@ export interface TechnicalData {
   sensorsPaired: SensorPairedRecord[];
   gnssRecords: GnssAccumulatedRecord[];
   companyLocks: CompanyLockRecord[];
+  downloadActivities: DownloadActivityRecord[];
+  controlActivities: ControlActivityRecord[];
 }
 
 export interface SpeedRecord {
@@ -982,6 +999,8 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
   const sensorsPaired: SensorPairedRecord[] = [];
   const gnssRecords: GnssAccumulatedRecord[] = [];
   const companyLocks: CompanyLockRecord[] = [];
+  const downloadActivities: DownloadActivityRecord[] = [];
+  const controlActivities: ControlActivityRecord[] = [];
   const view = new DataView(toArrayBuffer(bytes));
 
   let vuIdentification: VuIdentification | null = null;
