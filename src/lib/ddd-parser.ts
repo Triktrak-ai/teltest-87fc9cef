@@ -1696,35 +1696,17 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
   // followed by plausible dailyPresenceCounter, dayDistance, and changeCount
   const dayPositions: number[] = [];
   const dayTimestamps: number[] = [];
-  
-  // Debug: log first 5 valid timestamps found regardless of other checks
-  let debugTsCount = 0;
   for (let i = 0; i < bytes.length - 10; i++) {
     const ts = view.getUint32(i, false);
     if (!isValidTimestamp(ts)) continue;
-    
-    if (debugTsCount < 10) {
-      const dist = view.getUint16(i + 6, false);
-      const changes = view.getUint16(i + 8, false);
-      // Also try offset+7 for 3-byte dailyPresenceCounter (Gen2v2 OdometerShort)
-      const dist3 = view.getUint16(i + 7, false);
-      const changes3 = view.getUint16(i + 9, false);
-      console.log(`[DDD-ACT-DBG] Valid TS @${i}: ${new Date(ts * 1000).toISOString()} | 2B-layout: dist=${dist} changes=${changes} | 3B-layout: dist=${dist3} changes=${changes3}`);
-      debugTsCount++;
-    }
-    
     const dist = view.getUint16(i + 6, false);
     const changes = view.getUint16(i + 8, false);
-    // Plausibility: distance < 10000km, changes <= 1440, and enough bytes for the changes
     if (dist <= 9999 && changes <= 1440 && i + 10 + changes * 2 <= bytes.length) {
       dayPositions.push(i);
       dayTimestamps.push(ts);
-      // Skip past this record to avoid finding timestamps within activity data
       i += 10 + changes * 2 - 1;
     }
   }
-  
-  console.log(`[DDD-ACT-DBG] Scanner found ${dayPositions.length} day positions from ${bytes.length} bytes`);
 
   // Filter out stale records from circular buffer: keep only records within 1 year of the newest
   if (dayTimestamps.length > 0) {
