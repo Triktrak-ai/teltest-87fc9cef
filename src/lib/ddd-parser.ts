@@ -616,10 +616,7 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
     }
   }
 
-  // For activities, skip TLV-based parsing — the VuActivityDailyData_2_2 sections contain 
-  // complex nested structures (card insertion/withdrawal records) that require the raw scanner.
-  // The raw scanner works on the entire file and finds daily records by timestamp + plausibility.
-
+  // For activities, use TLV sections if available (Gen2/Gen2v2), otherwise fall back to raw scanner
   try {
     switch (fileType) {
       case 'speed':
@@ -637,10 +634,20 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         result.bytesParsed = buffer.byteLength;
         break;
       }
-      case 'activities':
-        result.activities = parseRawActivitiesFile(bytes, result.warnings);
+      case 'activities': {
+        // Try TLV-section-based parsing first (Gen2/Gen2v2)
+        const actSections = sections.filter(s => s.tag === 0x32 || s.tag === 0x22 || s.tag === 0x02);
+        if (actSections.length > 0) {
+          result.activities = parseActivitiesFromSections(actSections, result.warnings);
+          console.log(`[DDD] Activities from ${actSections.length} TLV sections: ${result.activities.length} days`);
+        }
+        // Fall back to raw scanner if TLV parsing yielded nothing
+        if (result.activities.length === 0) {
+          result.activities = parseRawActivitiesFile(bytes, result.warnings);
+        }
         result.bytesParsed = buffer.byteLength;
         break;
+      }
       case 'overview':
         result.overview = parseRawOverviewFile(bytes, result.warnings);
         result.bytesParsed = buffer.byteLength;
