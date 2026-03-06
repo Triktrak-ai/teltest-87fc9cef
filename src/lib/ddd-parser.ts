@@ -1068,17 +1068,21 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
             const recStart = dataStart + i * recordSize;
             const r = new BinaryReader(toArrayBuffer(bytes), recStart);
             const ts = r.remaining >= 4 ? r.readTimestamp() : null;
+            // Skip if timestamp is invalid (epoch noise)
+            if (!ts || ts.getFullYear() < 2000) { continue; }
             // GNSSPlainCoordinates: latitude(4B, signed) + longitude(4B, signed)
-            // Values in 1/10000 minutes (Annex 1C)
+            // Values in 1/10 of arc-second (Annex 1C Appendix 7)
             if (r.remaining >= 8) {
               const latRaw = view.getInt32(r.position, false);
               r.skip(4);
               const lonRaw = view.getInt32(r.position, false);
               r.skip(4);
-              const latitude = latRaw / 600000; // 1/10000 minutes → degrees
-              const longitude = lonRaw / 600000;
+              // 1/10 arc-second → degrees: divide by 36000
+              const latitude = latRaw / 36000;
+              const longitude = lonRaw / 36000;
               const odo = r.remaining >= 3 ? ((r.readUint8() << 16) | r.readUint16()) : 0;
-              if (ts) {
+              // Validate: reasonable GPS coordinates
+              if (Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180 && (latitude !== 0 || longitude !== 0)) {
                 gnssRecords.push({ timestamp: ts, latitude, longitude, vehicleOdometerValue: odo });
               }
             }
