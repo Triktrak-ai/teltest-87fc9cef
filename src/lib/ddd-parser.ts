@@ -1039,6 +1039,16 @@ function readStringAt(bytes: Uint8Array, offset: number, len: number): string {
   return s.trim();
 }
 
+function isAlphanumericRun(bytes: Uint8Array, offset: number, minLen: number): boolean {
+  let count = 0;
+  for (let i = 0; i < minLen && offset + i < bytes.length; i++) {
+    const b = bytes[offset + i];
+    if ((b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A)) count++;
+    else break;
+  }
+  return count >= minLen;
+}
+
 function parseCalibrationAt(bytes: Uint8Array, offset: number, maxLen?: number): CalibrationRecord | null {
   const r = new BinaryReader(toArrayBuffer(bytes), offset);
   const limit = maxLen ? Math.min(maxLen, r.remaining) : r.remaining;
