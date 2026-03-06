@@ -521,29 +521,87 @@ const DddReader = () => {
             <TabsContent value="technical">
               {data.technicalData ? (
                 <div className="space-y-4">
-                  <div className="grid gap-4 sm:grid-cols-2">
+                  {/* VU Identification */}
+                  {data.technicalData.vuIdentification && (
                     <Card>
-                      <CardContent className="py-4">
-                        <p className="text-xs text-muted-foreground">Nr seryjny VU</p>
-                        <p className="mt-1 font-mono font-semibold">{data.technicalData.vuSerialNumber || "—"}</p>
+                      <CardHeader className="py-3"><CardTitle className="text-sm">Identyfikacja VU</CardTitle></CardHeader>
+                      <CardContent className="p-0">
+                        <div className="grid gap-px bg-border sm:grid-cols-2 lg:grid-cols-4">
+                          {[
+                            { label: 'Producent', value: data.technicalData.vuIdentification.vuManufacturerName },
+                            { label: 'Adres producenta', value: data.technicalData.vuIdentification.vuManufacturerAddress },
+                            { label: 'Nr seryjny VU', value: data.technicalData.vuIdentification.vuSerialNumber },
+                            { label: 'Nr części', value: data.technicalData.vuIdentification.vuPartNumber },
+                            { label: 'Wersja oprogramowania', value: data.technicalData.vuIdentification.vuSoftwareVersion },
+                            { label: 'Data produkcji', value: data.technicalData.vuIdentification.vuManufacturingDate ? formatDateTime(data.technicalData.vuIdentification.vuManufacturingDate) : '—' },
+                            { label: 'Nr homologacji', value: data.technicalData.vuIdentification.vuApprovalNumber },
+                          ].map((item, i) => (
+                            <div key={i} className="bg-card p-3">
+                              <p className="text-xs text-muted-foreground">{item.label}</p>
+                              <p className="mt-0.5 font-mono text-sm font-semibold">{item.value || '—'}</p>
+                            </div>
+                          ))}
+                        </div>
                       </CardContent>
                     </Card>
+                  )}
+
+                  {/* Fallback serial numbers if no VU identification */}
+                  {!data.technicalData.vuIdentification && (
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <Card>
+                        <CardContent className="py-4">
+                          <p className="text-xs text-muted-foreground">Nr seryjny VU</p>
+                          <p className="mt-1 font-mono font-semibold">{data.technicalData.vuSerialNumber || "—"}</p>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="py-4">
+                          <p className="text-xs text-muted-foreground">Nr seryjny czujnika</p>
+                          <p className="mt-1 font-mono font-semibold">{data.technicalData.sensorSerialNumber || "—"}</p>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  )}
+
+                  {/* Sensors Paired */}
+                  {data.technicalData.sensorsPaired.length > 0 && (
                     <Card>
-                      <CardContent className="py-4">
-                        <p className="text-xs text-muted-foreground">Nr seryjny czujnika</p>
-                        <p className="mt-1 font-mono font-semibold">{data.technicalData.sensorSerialNumber || "—"}</p>
+                      <CardHeader className="py-3"><CardTitle className="text-sm">Sparowane czujniki ({data.technicalData.sensorsPaired.length})</CardTitle></CardHeader>
+                      <CardContent className="p-0">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Nr seryjny</TableHead>
+                              <TableHead>Nr homologacji</TableHead>
+                              <TableHead>Data sparowania</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {data.technicalData.sensorsPaired.map((s, i) => (
+                              <TableRow key={i}>
+                                <TableCell className="font-mono text-xs">{s.sensorSerialNumber}</TableCell>
+                                <TableCell className="text-xs">{s.sensorApprovalNumber || '—'}</TableCell>
+                                <TableCell className="text-xs">{formatDateTime(s.sensorPairingDate)}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
                       </CardContent>
                     </Card>
-                  </div>
+                  )}
+
+                  {/* Calibrations */}
                   {data.technicalData.calibrations.length > 0 && (
                     <Card>
-                      <CardHeader className="py-3"><CardTitle className="text-sm">Kalibracje</CardTitle></CardHeader>
+                      <CardHeader className="py-3"><CardTitle className="text-sm">Kalibracje ({data.technicalData.calibrations.length})</CardTitle></CardHeader>
                       <CardContent className="p-0">
                         <Table>
                           <TableHeader>
                             <TableRow>
                               <TableHead>Cel</TableHead>
                               <TableHead>Warsztat</TableHead>
+                              <TableHead>VIN</TableHead>
                               <TableHead>VRN</TableHead>
                               <TableHead>Data</TableHead>
                               <TableHead>Przebieg</TableHead>
@@ -554,9 +612,64 @@ const DddReader = () => {
                               <TableRow key={i}>
                                 <TableCell className="text-xs">{c.calibrationPurposeName}</TableCell>
                                 <TableCell className="text-xs">{c.workshopName || "—"}</TableCell>
+                                <TableCell className="font-mono text-xs">{c.vehicleIdentificationNumber || "—"}</TableCell>
                                 <TableCell className="text-xs">{c.vehicleRegistrationNumber || "—"}</TableCell>
                                 <TableCell className="text-xs">{formatDateTime(c.newDateTime)}</TableCell>
-                                <TableCell className="text-xs">{c.newOdometerValue > 0 ? `${c.newOdometerValue} km` : "—"}</TableCell>
+                                <TableCell className="text-xs">{c.newOdometerValue > 0 && c.newOdometerValue < 16777215 ? `${c.newOdometerValue} km` : "—"}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Seals */}
+                  {data.technicalData.seals.length > 0 && (
+                    <Card>
+                      <CardHeader className="py-3"><CardTitle className="text-sm">Plomby ({data.technicalData.seals.length})</CardTitle></CardHeader>
+                      <CardContent className="p-0">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Element</TableHead>
+                              <TableHead>Identyfikator plomby</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {data.technicalData.seals.map((s, i) => (
+                              <TableRow key={i}>
+                                <TableCell className="text-xs">{s.equipmentTypeName}</TableCell>
+                                <TableCell className="font-mono text-xs">{s.sealIdentifier || '—'}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* GNSS Records */}
+                  {data.technicalData.gnssRecords.length > 0 && (
+                    <Card>
+                      <CardHeader className="py-3"><CardTitle className="text-sm">Rekordy GNSS ({data.technicalData.gnssRecords.length})</CardTitle></CardHeader>
+                      <CardContent className="p-0">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Data/czas</TableHead>
+                              <TableHead>Szerokość</TableHead>
+                              <TableHead>Długość</TableHead>
+                              <TableHead>Przebieg</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {data.technicalData.gnssRecords.map((g, i) => (
+                              <TableRow key={i}>
+                                <TableCell className="text-xs">{formatDateTime(g.timestamp)}</TableCell>
+                                <TableCell className="font-mono text-xs">{g.latitude.toFixed(6)}°</TableCell>
+                                <TableCell className="font-mono text-xs">{g.longitude.toFixed(6)}°</TableCell>
+                                <TableCell className="text-xs">{g.vehicleOdometerValue > 0 ? `${g.vehicleOdometerValue} km` : '—'}</TableCell>
                               </TableRow>
                             ))}
                           </TableBody>
