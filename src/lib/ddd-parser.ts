@@ -1974,7 +1974,7 @@ function parseTechnicalData(data: Uint8Array): TechnicalData {
     }
   }
 
-  return { vuSerialNumber, sensorSerialNumber, calibrations };
+  return { vuSerialNumber, sensorSerialNumber, calibrations, vuIdentification: null, seals: [], sensorsPaired: [], gnssRecords: [], companyLocks: [] };
 }
 
 function parseDetailedSpeed(data: Uint8Array): SpeedRecord[] {
