@@ -1049,16 +1049,12 @@ function parseCalibrationAt(bytes: Uint8Array, offset: number, maxLen?: number):
   const workshopAddress = r.remaining >= 36 ? r.readString(36) : '';
 
   // Gen2v2: FullCardNumberAndGeneration (20B), Gen1: FullCardNumber (18B)
+  // Determine format based on record size: Gen2v2 calibration records are ~252B, Gen1 ~167B
   let workshopCardNumber = '';
-  if (r.remaining >= 20) {
-    // Try Gen2v2 first (20B)
-    const cardStart = r.position;
+  const isGen2v2 = maxLen ? maxLen >= 200 : false;
+  if (isGen2v2 && r.remaining >= 20) {
+    // Gen2v2: always read 20B, don't fallback to 18B (would shift all subsequent fields)
     workshopCardNumber = r.readFullCardNumberAndGen();
-    // If card number is empty, try 18B variant
-    if (!workshopCardNumber && r.remaining > 0) {
-      r.position = cardStart;
-      workshopCardNumber = r.readFullCardNumber();
-    }
   } else if (r.remaining >= 18) {
     workshopCardNumber = r.readFullCardNumber();
   }
