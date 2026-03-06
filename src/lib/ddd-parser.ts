@@ -933,8 +933,9 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
 
       console.log(`[DDD] Tech RecordArray @${pos}: type=0x${arrayType.toString(16)}, recSize=${recordSize}, count=${noOfRecords}, total=${totalArraySize}`);
 
-      // Check if this looks like calibration records based on size
-      if (recordSize >= MIN_CAL_RECORD_SIZE && recordSize <= MAX_CAL_RECORD_SIZE && noOfRecords > 0) {
+      // arrayType 0x0c = VuCalibrationRecordArray (Gen2v2 calibration records)
+      // arrayType 0x08 = VuCalibrationRecordArray (Gen1)
+      if ((arrayType === 0x0c || arrayType === 0x08) && noOfRecords > 0 && recordSize >= MIN_CAL_RECORD_SIZE) {
         for (let i = 0; i < noOfRecords; i++) {
           const recStart = pos + 5 + i * recordSize;
           try {
