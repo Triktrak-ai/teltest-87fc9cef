@@ -1692,40 +1692,6 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
   const view = new DataView(toArrayBuffer(bytes));
   const r = new BinaryReader(toArrayBuffer(bytes));
 
-  // Debug: dump first few bytes of each TLV section to understand Gen2v2 layout
-  let debugPos = 0;
-  let sectionIdx = 0;
-  while (debugPos < bytes.length - 4) {
-    if (bytes[debugPos] === 0x76) {
-      const tagLow = bytes[debugPos + 1];
-      if (tagLow >= 0x01 && tagLow <= 0x39) {
-        const secLen = view.getUint16(debugPos + 2, false);
-        if (secLen > 0 && secLen <= 100000) {
-          const dataStart = debugPos + 4;
-          const hexDump: string[] = [];
-          for (let b = 0; b < Math.min(20, secLen); b++) {
-            if (dataStart + b < bytes.length) {
-              hexDump.push(bytes[dataStart + b].toString(16).padStart(2, '0'));
-            }
-          }
-          // Try reading as Gen2v2 layout: timestamp(4) + dailyPresenceCounter(2) + dayDistance(2) + changeCount(2)
-          if (dataStart + 10 <= bytes.length) {
-            const ts = view.getUint32(dataStart, false);
-            const field1 = view.getUint16(dataStart + 4, false);
-            const field2 = view.getUint16(dataStart + 6, false);
-            const field3 = view.getUint16(dataStart + 8, false);
-            const tsDate = isValidTimestamp(ts) ? new Date(ts * 1000).toISOString() : 'INVALID';
-            console.log(`[DDD-ACT-DBG] Section ${sectionIdx} @${debugPos} tag=0x${tagLow.toString(16)} len=${secLen} hex=[${hexDump.join(' ')}] ts=${tsDate} f1=${field1} f2=${field2} f3=${field3}`);
-          }
-          sectionIdx++;
-          debugPos += 4 + secLen;
-          continue;
-        }
-      }
-    }
-    debugPos++;
-  }
-
   // Scan for all valid daily record positions by looking for valid timestamps
   // followed by plausible dailyPresenceCounter, dayDistance, and changeCount
   const dayPositions: number[] = [];
