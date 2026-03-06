@@ -226,20 +226,46 @@ const NATION_CODES: Record<number, string> = {
 // ─── Event/Fault type names ──────────────────────────────────────────────────
 
 const EVENT_TYPE_NAMES: Record<number, string> = {
+  // General events (0x00-0x0F) — Annex 1C
   0x00: 'Brak dalszych szczegółów',
   0x01: 'Włożenie karty podczas jazdy',
   0x02: 'Konflikt kart',
-  0x03: 'Jazda bez karty',
-  0x04: 'Konflikt pomiaru ruchu',
-  0x05: 'Jazda po przekroczeniu czasu',
-  0x06: 'Próba naruszenia bezpieczeństwa',
-  0x07: 'Czas zmodyfikowany',
+  0x03: 'Nakładanie się czasu',
+  0x04: 'Jazda bez odpowiedniej karty',
+  0x05: 'Włożenie karty podczas jazdy',
+  0x06: 'Ostatnia sesja niepoprawnie zamknięta',
+  0x07: 'Przekroczenie prędkości',
   0x08: 'Przerwa w zasilaniu',
-  0x09: 'Błąd komunikacji',
-  0x0A: 'Brak komunikacji z czytnikiem',
-  0x0B: 'Przekroczenie prędkości',
-  0x0C: 'Zakłócenie zasilania',
-  0x0D: 'Błąd czujnika ruchu',
+  0x09: 'Błąd danych ruchu',
+  0x0A: 'Konflikt ruchu pojazdu',
+  0x0B: 'Konflikt czasu',
+  0x0C: 'Błąd komunikacji z czytnikiem',
+  0x0D: 'Brak komunikacji z czytnikiem',
+  // Sensor events (0x10-0x1F)
+  0x10: 'Zdarzenie czujnika',
+  0x11: 'Błąd uwierzytelniania czujnika',
+  0x12: 'Parowanie czujnika niemożliwe',
+  0x13: 'Błąd integralności czujnika',
+  0x14: 'Błąd danych czujnika',
+  0x15: 'Wewnętrzna usterka czujnika',
+  // Recording equipment events (0x20-0x2F)
+  0x20: 'Zdarzenie urządzenia',
+  0x21: 'Wewnętrzna usterka VU',
+  0x22: 'Usterka drukarki',
+  0x23: 'Usterka wyświetlacza',
+  0x24: 'Usterka pobierania danych',
+  0x25: 'Usterka czujnika',
+  0x26: 'Zdarzenie GNSS',
+  0x27: 'Zdarzenie ITS',
+  0x28: 'Zdarzenie DSRC',
+  // Card events (0x30-0x3F)
+  0x30: 'Zdarzenie karty',
+  0x31: 'Błąd uwierzytelniania karty',
+  0x32: 'Błąd integralności karty',
+  0x33: 'Błąd transferu danych karty',
+  0x34: 'Karta nieuwierzytelniona',
+  0x35: 'Karta wykryta',
+  0x36: 'Sesja karty otwarta z ważną kartą',
 };
 
 const FAULT_TYPE_NAMES: Record<number, string> = {
@@ -251,6 +277,11 @@ const FAULT_TYPE_NAMES: Record<number, string> = {
   0x05: 'Wewnętrzna usterka VU',
   0x06: 'Usterka drukarki',
   0x07: 'Usterka czujnika prędkości',
+  0x10: 'Usterka czujnika',
+  0x11: 'Błąd uwierzytelniania czujnika',
+  0x20: 'Usterka urządzenia',
+  0x21: 'Wewnętrzna usterka VU',
+  0x30: 'Usterka karty',
 };
 
 const CALIBRATION_PURPOSE_NAMES: Record<number, string> = {
