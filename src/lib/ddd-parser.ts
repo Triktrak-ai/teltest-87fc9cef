@@ -620,25 +620,19 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
     // Activities tags: Gen1=0x02, Gen2=0x22, Gen2v2=0x32
     const actSections = sections.filter(s => s.tag === 0x32 || s.tag === 0x22 || s.tag === 0x02);
     if (actSections.length > 0) {
-      try {
-        const allRecords: ActivityRecord[] = [];
-        for (const sect of actSections) {
-          const parsed = parseActivities(sect.data);
-          allRecords.push(...parsed);
-        }
-        // Deduplicate by date+dailyPresenceCounter
-        const seen = new Map<string, ActivityRecord>();
-        for (const r of allRecords) {
-          const key = `${r.date.getTime()}-${r.dailyPresenceCounter}`;
-          if (!seen.has(key)) seen.set(key, r);
-        }
-        result.activities = Array.from(seen.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
-        result.bytesParsed = buffer.byteLength;
-        console.log(`[DDD] Activities from ${actSections.length} TLV sections (0x${actSections[0].tag.toString(16)}): ${result.activities.length} days`);
-        if (result.activities.length > 0) return result;
-      } catch (e) {
-        console.warn('[DDD] TLV activities parse failed, falling back to raw:', e);
+      // Concatenate all activity section data — these are pages from the VU circular buffer
+      const totalLen = actSections.reduce((sum, s) => sum + s.data.length, 0);
+      const combined = new Uint8Array(totalLen);
+      let offset = 0;
+      for (const sect of actSections) {
+        combined.set(sect.data, offset);
+        offset += sect.data.length;
       }
+      console.log(`[DDD] Concatenated ${actSections.length} activity TLV sections → ${totalLen} bytes`);
+      result.activities = parseRawActivitiesFile(combined, result.warnings);
+      result.bytesParsed = buffer.byteLength;
+      console.log(`[DDD] Activities from TLV sections: ${result.activities.length} days`);
+      if (result.activities.length > 0) return result;
     }
   }
 
