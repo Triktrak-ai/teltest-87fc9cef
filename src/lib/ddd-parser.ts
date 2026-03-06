@@ -1454,18 +1454,15 @@ function parseRawOverviewFile(bytes: Uint8Array, warnings: ParserWarning[]): Ddd
     }
   }
 
-  // Strategy 2: Scan for 3 consecutive valid timestamps (currentDateTime + period begin + period end)
-  // These are preceded by VIN(17B) + nation(1B) + VRN(13-15B)
-  for (let i = 0; i < bytes.length - 12; i++) {
+  // Strategy 2: Scan for 3 consecutive valid timestamps ONLY after cert sections
+  // Don't scan inside certificate data (bytes 0..pos) as it produces false positives
+  const searchStart = skippedTlvSections > 0 ? pos : 0;
+  for (let i = searchStart; i < bytes.length - 12; i++) {
     const ts1 = view.getUint32(i, false);
     const ts2 = view.getUint32(i + 4, false);
     const ts3 = view.getUint32(i + 8, false);
     if (ts1 >= TS_RECENT && ts1 <= TS_MAX && ts2 >= TS_MIN && ts2 <= TS_MAX && ts3 >= TS_MIN && ts3 <= TS_MAX) {
-      // ts2 (period begin) should be before ts3 (period end)
       if (ts2 <= ts3) {
-        // Work backwards: timestamps are preceded by VIN(17) + VRI(1 nation + 13-15 VRN)
-        // Try Gen2v2 layout: 17 VIN + 1 nation + 1 codepage + 13 VRN = 32 bytes before timestamps
-        // Try Gen1 layout: 17 VIN + 1 nation + 14 VRN = 32 bytes before timestamps
         for (const vrnLen of [15, 14, 13]) {
           const vinStart = i - (17 + 1 + vrnLen);
           if (vinStart >= 0) {
@@ -1476,17 +1473,19 @@ function parseRawOverviewFile(bytes: Uint8Array, warnings: ParserWarning[]): Ddd
             }
           }
         }
-        // Even without VIN, extract timestamps
-        overview.currentDateTime = new Date(ts1 * 1000);
-        overview.vuDownloadablePeriodBegin = new Date(ts2 * 1000);
-        overview.vuDownloadablePeriodEnd = new Date(ts3 * 1000);
-        console.log(`[DDD] Overview (timestamps only): date=${overview.currentDateTime}`);
-        return overview;
+        // Only accept timestamps without VIN if they're after cert sections
+        if (i >= searchStart && searchStart > 0) {
+          overview.currentDateTime = new Date(ts1 * 1000);
+          overview.vuDownloadablePeriodBegin = new Date(ts2 * 1000);
+          overview.vuDownloadablePeriodEnd = new Date(ts3 * 1000);
+          console.log(`[DDD] Overview (timestamps only, post-cert): date=${overview.currentDateTime}`);
+          return overview;
+        }
       }
     }
   }
 
-  warnings.push({ offset: 0, message: 'Could not parse overview data from file' });
+  warnings.push({ offset: 0, message: 'Could not parse overview data — file may be truncated (only certificates present)' });
   return null;
 }
 
