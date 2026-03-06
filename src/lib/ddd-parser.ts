@@ -416,7 +416,8 @@ class BinaryReader {
         s += String.fromCharCode(b);
       }
     }
-    return s.trim();
+    // Trim whitespace and trailing binary garbage (keep letters, digits, dots, hyphens, spaces, parens)
+    return s.trim().replace(/[^a-zA-Z0-9.\- ()]+$/, '').trim();
   }
 
   /**
@@ -1012,6 +1013,7 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
             const r = new BinaryReader(toArrayBuffer(bytes), dataStart);
             const mfgName = r.remaining >= 36 ? r.readString(36) : '';
             const mfgAddr = r.remaining >= 36 ? r.readString(36) : '';
+            // Continental VU: serialNumber(8B) then partNumber(16B)
             const serial = r.remaining >= 8 ? r.readExtendedSerialNumber() : '';
             const partNum = r.remaining >= 16 ? r.readString(16) : '';
             const swVer = r.remaining >= 4 ? r.readString(4) : '';
@@ -1024,7 +1026,7 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
               vuApprovalNumber: approvalNum,
             };
             if (serial) vuSerialNumber = serial;
-            console.log(`[DDD] VuIdent: "${mfgName}", serial="${serial}", part="${partNum}", sw="${swVer}"`);
+            console.log(`[DDD] VuIdent: "${mfgName}", serial="${serial}", part="${partNum}", sw="${swVer}", approval="${approvalNum}"`);
           }
           break;
         }
@@ -1052,18 +1054,14 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
             const recStart = dataStart + i * recordSize;
             const r = new BinaryReader(toArrayBuffer(bytes), recStart);
             const equipmentType = r.remaining > 0 ? r.readUint8() : 0;
-            // Seal identifier is typically a mix of printable/binary data
-            // Read raw bytes and present as hex + printable
             const sealBytes = recordSize > 1 ? bytes.slice(recStart + 1, recStart + recordSize) : new Uint8Array(0);
-            let sealId = '';
-            // Try printable first
-            const printable = Array.from(sealBytes).map(b => (b >= 0x20 && b <= 0x7E) ? String.fromCharCode(b) : '').join('').trim();
-            if (printable.length >= 4) {
-              sealId = printable;
-            } else {
-              // Show as hex
-              sealId = Array.from(sealBytes).filter(b => b !== 0).map(b => b.toString(16).padStart(2, '0')).join(' ').toUpperCase();
-            }
+            
+            // SealDataV2 is binary — always format as hex pairs for readability
+            const nonZeroBytes = Array.from(sealBytes).filter(b => b !== 0);
+            const sealId = nonZeroBytes.length > 0
+              ? nonZeroBytes.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
+              : '';
+            
             if (sealId || equipmentType > 0) {
               seals.push({
                 sealIdentifier: sealId,
