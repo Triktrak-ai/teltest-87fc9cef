@@ -1014,9 +1014,34 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
   return { vuSerialNumber, sensorSerialNumber, calibrations };
 }
 
-function parseCalibrationAt(bytes: Uint8Array, offset: number): CalibrationRecord | null {
+function findAsciiString(bytes: Uint8Array, minLen: number): number {
+  for (let i = 0; i <= bytes.length - minLen; i++) {
+    let count = 0;
+    for (let j = 0; j < minLen && i + j < bytes.length; j++) {
+      const b = bytes[i + j];
+      if (b >= 0x20 && b <= 0x7E) count++;
+      else break;
+    }
+    if (count >= minLen) return i;
+  }
+  return -1;
+}
+
+function readStringAt(bytes: Uint8Array, offset: number, len: number): string {
+  let s = '';
+  for (let i = 0; i < len && offset + i < bytes.length; i++) {
+    const b = bytes[offset + i];
+    if (b === 0) break;
+    if (b >= 0x20 && b <= 0x7E) s += String.fromCharCode(b);
+    else return '';
+  }
+  return s.trim();
+}
+
+function parseCalibrationAt(bytes: Uint8Array, offset: number, maxLen?: number): CalibrationRecord | null {
   const r = new BinaryReader(toArrayBuffer(bytes), offset);
-  if (r.remaining < 100) return null;
+  const limit = maxLen ? Math.min(maxLen, r.remaining) : r.remaining;
+  if (limit < 100) return null;
 
   const calibrationPurpose = r.readUint8();
   const workshopName = r.readString(36);
