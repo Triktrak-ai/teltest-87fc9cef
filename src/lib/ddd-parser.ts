@@ -1593,17 +1593,36 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
   // Scan for all valid daily record positions by looking for valid timestamps
   // followed by plausible dailyPresenceCounter, dayDistance, and changeCount
   const dayPositions: number[] = [];
+  const dayTimestamps: number[] = [];
   for (let i = 0; i < bytes.length - 10; i++) {
     const ts = view.getUint32(i, false);
     if (!isValidTimestamp(ts)) continue;
+    // Activity records use midnight timestamps (00:00:00 UTC)
+    if (ts % 86400 !== 0) continue;
+    const dailyPresence = view.getUint16(i + 4, false);
     const dist = view.getUint16(i + 6, false);
     const changes = view.getUint16(i + 8, false);
-    // Plausibility: distance < 10000km, changes <= 1440, and enough bytes for the changes
-    if (dist <= 9999 && changes <= 1440 && i + 10 + changes * 2 <= bytes.length) {
+    // Plausibility: distance < 10000km, changes > 0 and <= 1440, and enough bytes for the changes
+    if (dist <= 9999 && changes > 0 && changes <= 1440 && i + 10 + changes * 2 <= bytes.length) {
       dayPositions.push(i);
+      dayTimestamps.push(ts);
       // Skip past this record to avoid finding timestamps within activity data
       i += 10 + changes * 2 - 1;
     }
+  }
+
+  // Filter out stale records from circular buffer: keep only records within 1 year of the newest
+  if (dayTimestamps.length > 0) {
+    const maxTs = Math.max(...dayTimestamps);
+    const oneYearSecs = 366 * 86400;
+    const filtered: number[] = [];
+    for (let i = 0; i < dayPositions.length; i++) {
+      if (maxTs - dayTimestamps[i] <= oneYearSecs) {
+        filtered.push(dayPositions[i]);
+      }
+    }
+    dayPositions.length = 0;
+    dayPositions.push(...filtered);
   }
 
   for (const pos of dayPositions) {
