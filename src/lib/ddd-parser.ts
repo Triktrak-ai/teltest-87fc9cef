@@ -416,8 +416,8 @@ class BinaryReader {
         s += String.fromCharCode(b);
       }
     }
-    // Trim whitespace and trailing non-alphanumeric garbage (padding artifacts)
-    return s.trim().replace(/[^a-zA-Z0-9]+$/, '').trim();
+    // Trim whitespace and trailing binary garbage (keep letters, digits, dots, hyphens, spaces, parens)
+    return s.trim().replace(/[^a-zA-Z0-9.\- ()]+$/, '').trim();
   }
 
   /**
