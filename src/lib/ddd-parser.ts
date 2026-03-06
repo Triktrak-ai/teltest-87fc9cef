@@ -1780,19 +1780,8 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
     }
   }
 
-  // Filter out stale records from circular buffer: keep only records within 1 year of the newest
-  if (dayTimestamps.length > 0) {
-    const maxTs = Math.max(...dayTimestamps);
-    const oneYearSecs = 366 * 86400;
-    const filtered: number[] = [];
-    for (let i = 0; i < dayPositions.length; i++) {
-      if (maxTs - dayTimestamps[i] <= oneYearSecs) {
-        filtered.push(dayPositions[i]);
-      }
-    }
-    dayPositions.length = 0;
-    dayPositions.push(...filtered);
-  }
+  // Freshness filtering is handled at higher level (section parser) where we can
+  // compare all candidate records together and reject outliers more reliably.
 
   for (const pos of dayPositions) {
     r.position = pos;
