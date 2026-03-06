@@ -157,6 +157,15 @@ export interface ParserWarning {
   message: string;
 }
 
+export interface ActivityRejection {
+  offset: number;
+  date: string;
+  reason: string;
+  dayDistance?: number;
+  changeCount?: number;
+  slotTotals?: { driver: number; codriver: number };
+}
+
 // ─── Driver Card types ───────────────────────────────────────────────────────
 
 export interface DriverCardIdentification {
@@ -208,6 +217,7 @@ export interface DddFileData {
   speedRecords: SpeedRecord[];
   rawSections: DddSection[];
   warnings: ParserWarning[];
+  activityRejections: ActivityRejection[];
   fileSize: number;
   bytesParsed: number;
   generation: 'gen1' | 'gen2' | 'unknown';
