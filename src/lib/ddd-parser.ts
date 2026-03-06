@@ -616,10 +616,7 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
     }
   }
 
-  // For activities, skip TLV-based parsing — the VuActivityDailyData_2_2 sections contain 
-  // complex nested structures (card insertion/withdrawal records) that require the raw scanner.
-  // The raw scanner works on the entire file and finds daily records by timestamp + plausibility.
-
+  // For activities, use TLV sections if available (Gen2/Gen2v2), otherwise fall back to raw scanner
   try {
     switch (fileType) {
       case 'speed':
@@ -637,10 +634,21 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         result.bytesParsed = buffer.byteLength;
         break;
       }
-      case 'activities':
-        result.activities = parseRawActivitiesFile(bytes, result.warnings);
+      case 'activities': {
+        // Try TLV-section-based parsing first (Gen2/Gen2v2)
+        const actSections = sections.filter(s => s.tag === 0x32 || s.tag === 0x22 || s.tag === 0x02);
+        console.log(`[DDD] Activities: ${sections.length} total sections, ${actSections.length} activity sections, tags: [${sections.map(s => '0x' + s.tag.toString(16)).join(', ')}]`);
+        if (actSections.length > 0) {
+          result.activities = parseActivitiesFromSections(actSections, result.warnings);
+          console.log(`[DDD] Activities from ${actSections.length} TLV sections: ${result.activities.length} days`);
+        }
+        // Fall back to raw scanner if TLV parsing yielded nothing
+        if (result.activities.length === 0) {
+          result.activities = parseRawActivitiesFile(bytes, result.warnings);
+        }
         result.bytesParsed = buffer.byteLength;
         break;
+      }
       case 'overview':
         result.overview = parseRawOverviewFile(bytes, result.warnings);
         result.bytesParsed = buffer.byteLength;
@@ -1571,6 +1579,110 @@ function parseEventsStructured(bytes: Uint8Array, warnings: ParserWarning[]): { 
   return { events, faults };
 }
 
+// ─── TLV-section-based activities parser (Gen2/Gen2v2) ──────────────────────
+
+function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWarning[]): ActivityRecord[] {
+  const records: ActivityRecord[] = [];
+  const statusMap: Record<number, ActivityChangeEntry['status']> = {
+    0: 'break', 1: 'availability', 2: 'work', 3: 'driving',
+  };
+
+  for (const section of sections) {
+    const data = section.data;
+    if (data.length < 14) continue;
+
+    const view = new DataView(toArrayBuffer(data));
+
+    // Find the timestamp within the first 20 bytes of section data
+    // Gen2v2 sections have a variable prefix (typically 3 bytes: recordType + counter)
+    let tsOffset = -1;
+    for (let probe = 0; probe <= Math.min(20, data.length - 10); probe++) {
+      const candidateTs = view.getUint32(probe, false);
+      if (isValidTimestamp(candidateTs)) {
+        // Verify plausibility of following fields
+        const probeDist = view.getUint16(probe + 6, false);
+        const probeChanges = view.getUint16(probe + 8, false);
+        if (probeDist <= 9999 && probeChanges <= 1440 && probe + 10 + probeChanges * 2 <= data.length) {
+          tsOffset = probe;
+          break;
+        }
+      }
+    }
+
+    if (tsOffset < 0) {
+      console.log(`[DDD] Activities section @${section.offset}: no valid timestamp found in first 20 bytes`);
+      continue;
+    }
+
+    try {
+      const r = new BinaryReader(toArrayBuffer(data));
+      r.position = tsOffset;
+
+      const tsValue = r.readUint32();
+      const ts = new Date(tsValue * 1000);
+      const dailyPresenceCounter = r.readUint16();
+      const dayDistance = r.readUint16();
+      const activityChangeCount = r.readUint16();
+
+      // Read activity change entries
+      const rawEntries: Array<{ slot: number; activity: number; minutes: number; cardInserted: boolean }> = [];
+      for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
+        const word = r.readUint16();
+        const slot = (word >> 15) & 0x01;
+        const cardInserted = ((word >> 13) & 0x01) === 0;
+        const activity = (word >> 11) & 0x03;
+        const minutes = word & 0x07FF;
+        if (minutes >= 1440) continue;
+        rawEntries.push({ slot, cardInserted, activity, minutes });
+      }
+
+      // Compute timeTo per entry using next entry with SAME slot
+      const entries: ActivityChangeEntry[] = [];
+      for (let i = 0; i < rawEntries.length; i++) {
+        const e = rawEntries[i];
+        let nextMinutes = 1440;
+        for (let j = i + 1; j < rawEntries.length; j++) {
+          if (rawEntries[j].slot === e.slot) {
+            nextMinutes = rawEntries[j].minutes;
+            break;
+          }
+        }
+        if (e.minutes >= nextMinutes) continue;
+
+        const hFrom = Math.floor(e.minutes / 60);
+        const mFrom = e.minutes % 60;
+        const hTo = Math.floor(Math.min(nextMinutes, 1440) / 60);
+        const mTo = Math.min(nextMinutes, 1440) % 60;
+
+        entries.push({
+          slot: e.slot === 0 ? 'driver' : 'codriver',
+          status: statusMap[e.activity] || 'unknown',
+          cardInserted: e.cardInserted,
+          minutes: e.minutes,
+          timeFrom: `${hFrom.toString().padStart(2, '0')}:${mFrom.toString().padStart(2, '0')}`,
+          timeTo: `${hTo.toString().padStart(2, '0')}:${mTo.toString().padStart(2, '0')}`,
+        });
+      }
+
+      // Validate slot totals
+      const slotTotals = { 0: 0, 1: 0 };
+      for (const e of entries) {
+        const [hF, mF] = e.timeFrom.split(':').map(Number);
+        const [hT, mT] = e.timeTo.split(':').map(Number);
+        slotTotals[e.slot === 'driver' ? 0 : 1] += (hT * 60 + mT) - (hF * 60 + mF);
+      }
+      if (slotTotals[0] > 1440 || slotTotals[1] > 1440) continue;
+
+      records.push({ date: ts, dailyPresenceCounter, dayDistance, entries });
+    } catch {
+      continue;
+    }
+  }
+
+  records.sort((a, b) => a.date.getTime() - b.date.getTime());
+  return records;
+}
+
 // ─── Raw activities file parser ──────────────────────────────────────────────
 
 function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): ActivityRecord[] {
@@ -1589,11 +1701,9 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
     if (!isValidTimestamp(ts)) continue;
     const dist = view.getUint16(i + 6, false);
     const changes = view.getUint16(i + 8, false);
-    // Plausibility: distance < 10000km, changes <= 1440, and enough bytes for the changes
     if (dist <= 9999 && changes <= 1440 && i + 10 + changes * 2 <= bytes.length) {
       dayPositions.push(i);
       dayTimestamps.push(ts);
-      // Skip past this record to avoid finding timestamps within activity data
       i += 10 + changes * 2 - 1;
     }
   }
