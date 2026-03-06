@@ -648,8 +648,9 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
       }
       case 'activities': {
         // Try TLV-section-based parsing first (Gen2/Gen2v2)
-        // Activities data tags per Annex 1C: Gen1=0x06, Gen2=0x26, Gen2v2=0x36
-        const actSections = sections.filter(s => s.tag === 0x36 || s.tag === 0x26 || s.tag === 0x06);
+        // Activities tags seen in the wild: TRTP file-type tags (0x02/0x22/0x32)
+        // and legacy section tags (0x06/0x26/0x36). Accept both for compatibility.
+        const actSections = sections.filter(s => [0x32, 0x22, 0x02, 0x36, 0x26, 0x06].includes(s.tag));
         console.log(`[DDD] Activities: ${sections.length} total sections, ${actSections.length} activity sections, tags: [${sections.map(s => '0x' + s.tag.toString(16)).join(', ')}]`);
         if (actSections.length > 0) {
           result.activities = parseActivitiesFromSections(actSections, result.warnings, result.activityRejections);
