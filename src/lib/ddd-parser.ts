@@ -616,19 +616,9 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
     }
   }
 
-  if (fileType === 'activities' && sections.length > 0) {
-    const actSection = sections.find(s => s.tag === 0x36 || s.tag === 0x26 || s.tag === 0x06);
-    if (actSection) {
-      try {
-        result.activities = parseActivities(actSection.data);
-        result.bytesParsed = buffer.byteLength;
-        console.log(`[DDD] Activities from TLV section 0x${actSection.tag.toString(16)}: ${result.activities.length} days`);
-        if (result.activities.length > 0) return result;
-      } catch (e) {
-        console.warn('[DDD] TLV activities parse failed, falling back to raw:', e);
-      }
-    }
-  }
+  // For activities, skip TLV-based parsing — the VuActivityDailyData_2_2 sections contain 
+  // complex nested structures (card insertion/withdrawal records) that require the raw scanner.
+  // The raw scanner works on the entire file and finds daily records by timestamp + plausibility.
 
   try {
     switch (fileType) {
@@ -1597,13 +1587,10 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
   for (let i = 0; i < bytes.length - 10; i++) {
     const ts = view.getUint32(i, false);
     if (!isValidTimestamp(ts)) continue;
-    // Activity records use midnight timestamps (00:00:00 UTC)
-    if (ts % 86400 !== 0) continue;
-    const dailyPresence = view.getUint16(i + 4, false);
     const dist = view.getUint16(i + 6, false);
     const changes = view.getUint16(i + 8, false);
-    // Plausibility: distance < 10000km, changes > 0 and <= 1440, and enough bytes for the changes
-    if (dist <= 9999 && changes > 0 && changes <= 1440 && i + 10 + changes * 2 <= bytes.length) {
+    // Plausibility: distance < 10000km, changes <= 1440, and enough bytes for the changes
+    if (dist <= 9999 && changes <= 1440 && i + 10 + changes * 2 <= bytes.length) {
       dayPositions.push(i);
       dayTimestamps.push(ts);
       // Skip past this record to avoid finding timestamps within activity data
@@ -1977,8 +1964,17 @@ function parseOverview(data: Uint8Array): DddOverview {
 function parseActivities(data: Uint8Array): ActivityRecord[] {
   const records: ActivityRecord[] = [];
   const r = new BinaryReader(toArrayBuffer(data));
-  if (r.remaining < 8) return records;
-  r.skip(8);
+  if (r.remaining < 10) return records;
+
+  // Try to find the start position — skip possible RecordArray header or other prefix
+  const possibleRecSize = (data[1] << 8) | data[2];
+  const possibleCount = (data[3] << 8) | data[4];
+  
+  if (possibleCount > 0 && possibleCount <= 366 && possibleRecSize > 0 && possibleRecSize <= 3000) {
+    r.position = 5;
+  } else {
+    r.position = 8; // Legacy default
+  }
 
   while (r.remaining >= 12) {
     try {
@@ -1993,7 +1989,8 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
       const activityChangeCount = r.remaining >= 2 ? r.readUint16() : 0;
       if (activityChangeCount > 1440) break;
 
-      const entries: ActivityChangeEntry[] = [];
+      // First pass: read all raw change entries
+      const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
 
       for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
         const word = r.readUint16();
@@ -2002,27 +1999,36 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
         const activity = (word >> 11) & 0x03;
         const minutes = word & 0x07FF;
         if (minutes >= 1440) continue;
+        rawEntries.push({ slot, cardInserted, activity, minutes });
+      }
 
-        const statusMap: Record<number, ActivityChangeEntry['status']> = {
-          0: 'break', 1: 'availability', 2: 'work', 3: 'driving',
-        };
+      const statusMap: Record<number, ActivityChangeEntry['status']> = {
+        0: 'break', 1: 'availability', 2: 'work', 3: 'driving',
+      };
 
+      // Second pass: compute timeTo per entry using next entry with SAME slot
+      const entries: ActivityChangeEntry[] = [];
+      for (let i = 0; i < rawEntries.length; i++) {
+        const e = rawEntries[i];
         let nextMinutes = 1440;
-        if (i + 1 < activityChangeCount && r.remaining >= 2) {
-          const peek = r.readUint16();
-          nextMinutes = peek & 0x07FF;
-          r.position -= 2;
+        for (let j = i + 1; j < rawEntries.length; j++) {
+          if (rawEntries[j].slot === e.slot) {
+            nextMinutes = rawEntries[j].minutes;
+            break;
+          }
         }
+        if (e.minutes >= nextMinutes) continue;
 
-        const hFrom = Math.floor(minutes / 60);
-        const mFrom = minutes % 60;
+        const hFrom = Math.floor(e.minutes / 60);
+        const mFrom = e.minutes % 60;
         const hTo = Math.floor(Math.min(nextMinutes, 1440) / 60);
         const mTo = Math.min(nextMinutes, 1440) % 60;
 
         entries.push({
-          slot: slot === 0 ? 'driver' : 'codriver',
-          status: statusMap[activity] || 'unknown',
-          cardInserted, minutes,
+          slot: e.slot === 0 ? 'driver' : 'codriver',
+          status: statusMap[e.activity] || 'unknown',
+          cardInserted: e.cardInserted,
+          minutes: e.minutes,
           timeFrom: `${hFrom.toString().padStart(2, '0')}:${mFrom.toString().padStart(2, '0')}`,
           timeTo: `${hTo.toString().padStart(2, '0')}:${mTo.toString().padStart(2, '0')}`,
         });
