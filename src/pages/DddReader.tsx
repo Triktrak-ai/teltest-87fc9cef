@@ -680,7 +680,64 @@ const DddReader = () => {
                     </Card>
                   )}
 
-                  {/* GNSS Records */}
+                  {/* Download Activities */}
+                  {data.technicalData.downloadActivities.length > 0 && (
+                    <Card>
+                      <CardHeader className="py-3"><CardTitle className="text-sm">Pobieranie danych z VU ({data.technicalData.downloadActivities.length})</CardTitle></CardHeader>
+                      <CardContent className="p-0">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Data pobrania</TableHead>
+                              <TableHead>Firma / Warsztat</TableHead>
+                              <TableHead>Nr karty</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {data.technicalData.downloadActivities.map((d, i) => (
+                              <TableRow key={i}>
+                                <TableCell className="text-xs">{formatDateTime(d.downloadTimestamp)}</TableCell>
+                                <TableCell className="text-xs">{d.companyOrWorkshopName || '—'}</TableCell>
+                                <TableCell className="font-mono text-xs">{d.cardNumber || '—'}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Control Activities */}
+                  {data.technicalData.controlActivities.length > 0 && (
+                    <Card>
+                      <CardHeader className="py-3"><CardTitle className="text-sm">Kontrole drogowe ({data.technicalData.controlActivities.length})</CardTitle></CardHeader>
+                      <CardContent className="p-0">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Data kontroli</TableHead>
+                              <TableHead>Typ</TableHead>
+                              <TableHead>Nr karty kontrolera</TableHead>
+                              <TableHead>Okres od</TableHead>
+                              <TableHead>Okres do</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {data.technicalData.controlActivities.map((c, i) => (
+                              <TableRow key={i}>
+                                <TableCell className="text-xs">{formatDateTime(c.controlTimestamp)}</TableCell>
+                                <TableCell className="text-xs">{c.controlTypeName}</TableCell>
+                                <TableCell className="font-mono text-xs">{c.controlCardNumber || '—'}</TableCell>
+                                <TableCell className="text-xs">{formatDateTime(c.downloadPeriodBegin)}</TableCell>
+                                <TableCell className="text-xs">{formatDateTime(c.downloadPeriodEnd)}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </CardContent>
+                    </Card>
+                  )}
+
                   {data.technicalData.gnssRecords.length > 0 && (
                     <Card>
                       <CardHeader className="py-3"><CardTitle className="text-sm">Rekordy GNSS ({data.technicalData.gnssRecords.length})</CardTitle></CardHeader>
