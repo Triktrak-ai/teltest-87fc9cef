@@ -15,13 +15,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { listDddFiles, downloadDddFile } from "@/lib/ddd-storage";
 import { toast } from "sonner";
 
-const ACTIVITY_COLORS: Record<string, string> = {
-  driving: "bg-red-500",
-  work: "bg-amber-500",
-  availability: "bg-sky-500",
-  break: "bg-emerald-500",
-  unknown: "bg-muted",
-};
+
 
 const formatDate = (d: Date | null) => d ? d.toLocaleDateString("pl-PL") : "—";
 const formatDateTime = (d: Date | null) => d ? d.toLocaleString("pl-PL") : "—";
