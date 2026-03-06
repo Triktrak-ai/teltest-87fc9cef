@@ -1597,6 +1597,9 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
   for (let i = 0; i < bytes.length - 10; i++) {
     const ts = view.getUint32(i, false);
     if (!isValidTimestamp(ts)) continue;
+    // Activity records use midnight timestamps (00:00:00 UTC)
+    if (ts % 86400 !== 0) continue;
+    const dailyPresence = view.getUint16(i + 4, false);
     const dist = view.getUint16(i + 6, false);
     const changes = view.getUint16(i + 8, false);
     // Plausibility: distance < 10000km, changes > 0 and <= 1440, and enough bytes for the changes
