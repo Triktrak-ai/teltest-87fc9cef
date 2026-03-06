@@ -1588,48 +1588,35 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
   if (bytes.length < 12) return records;
 
   const view = new DataView(toArrayBuffer(bytes));
+  const r = new BinaryReader(toArrayBuffer(bytes));
 
-  // Find first valid timestamp with plausible activity data after it
-  let startPos = -1;
-  for (let i = 0; i < Math.min(bytes.length - 10, 40); i++) {
+  // Scan for all valid daily record positions by looking for valid timestamps
+  // followed by plausible dailyPresenceCounter, dayDistance, and changeCount
+  const dayPositions: number[] = [];
+  for (let i = 0; i < bytes.length - 10; i++) {
     const ts = view.getUint32(i, false);
-    if (isValidTimestamp(ts)) {
-      const dist = view.getUint16(i + 6, false);
-      const changes = view.getUint16(i + 8, false);
-      if (dist <= 9999 && changes <= 1440) {
-        startPos = i;
-        break;
-      }
+    if (!isValidTimestamp(ts)) continue;
+    const dist = view.getUint16(i + 6, false);
+    const changes = view.getUint16(i + 8, false);
+    // Plausibility: distance < 10000km, changes <= 1440, and enough bytes for the changes
+    if (dist <= 9999 && changes <= 1440 && i + 10 + changes * 2 <= bytes.length) {
+      dayPositions.push(i);
+      // Skip past this record to avoid finding timestamps within activity data
+      i += 10 + changes * 2 - 1;
     }
   }
 
-  if (startPos < 0) {
-    warnings.push({ offset: 0, message: 'Could not find valid activity data start' });
-    return records;
-  }
-
-  const r = new BinaryReader(toArrayBuffer(bytes));
-  r.position = startPos;
-
-  while (r.remaining >= 10) {
+  for (const pos of dayPositions) {
+    r.position = pos;
     try {
       const tsValue = r.readUint32();
-      if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) break;
       const ts = new Date(tsValue * 1000);
-
       const dailyPresenceCounter = r.readUint16();
       const dayDistance = r.readUint16();
-      if (dayDistance > 9999) break;
-
-      if (r.remaining < 2) break;
       const activityChangeCount = r.readUint16();
-      if (activityChangeCount > 1440) break;
-
-      const neededBytes = activityChangeCount * 2;
-      const availableChanges = r.remaining >= neededBytes ? activityChangeCount : Math.floor(r.remaining / 2);
 
       const entries: ActivityChangeEntry[] = [];
-      for (let i = 0; i < availableChanges && r.remaining >= 2; i++) {
+      for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
         const word = r.readUint16();
         const slot = (word >> 15) & 0x01;
         const cardInserted = ((word >> 13) & 0x01) === 0;
@@ -1642,10 +1629,8 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
         };
 
         let nextMinutes = 1440;
-        if (i + 1 < availableChanges && r.remaining >= 2) {
-          const hi = bytes[r.position];
-          const lo = bytes[r.position + 1];
-          nextMinutes = ((hi << 8) | lo) & 0x07FF;
+        if (i + 1 < activityChangeCount && r.remaining >= 2) {
+          nextMinutes = ((bytes[r.position] << 8) | bytes[r.position + 1]) & 0x07FF;
         }
 
         const hFrom = Math.floor(minutes / 60);
@@ -1663,11 +1648,13 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
       }
 
       records.push({ date: ts, dailyPresenceCounter, dayDistance, entries });
-      if (availableChanges < activityChangeCount) break; // partial data, stop
     } catch {
-      break;
+      continue;
     }
   }
+
+  // Sort by date
+  records.sort((a, b) => a.date.getTime() - b.date.getTime());
 
   if (records.length === 0) {
     warnings.push({ offset: 0, message: 'Could not extract activity records from raw file' });
