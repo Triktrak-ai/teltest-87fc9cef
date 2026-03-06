@@ -711,7 +711,7 @@ function parseCardEvents(data: Uint8Array): EventRecord[] {
 
     // Skip empty records
     if (!eventBeginTime && !eventEndTime) continue;
-    if (eventType > 0x0D) continue;
+    if (eventType > 0x3F) continue;
 
     // Try reading VRN if available
     let cardNumberDriverSlot = '';
