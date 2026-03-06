@@ -478,54 +478,66 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
   const bytes = new Uint8Array(buffer);
   result.generation = 'gen2'; // Individual files from TRTP are typically Gen2/Gen2v2
 
+  // Extract TLV sections first — individual TRTP files may contain TLV-wrapped data
+  const sections = extractSections(buffer, result.warnings);
+  result.rawSections = sections;
+
+  // For overview and events, try using TLV sections first
+  if (fileType === 'overview' && sections.length > 0) {
+    const overviewSection = sections.find(s => s.tag === 0x35 || s.tag === 0x25 || s.tag === 0x05);
+    if (overviewSection) {
+      try {
+        const isGen2v2 = overviewSection.tag === 0x35;
+        const isGen2 = overviewSection.tag === 0x25;
+        // Gen2v2/Gen2 overview sections contain data directly (no certs inside)
+        if (isGen2v2 || isGen2) {
+          result.overview = parseOverviewDirect(overviewSection.data);
+        } else {
+          result.overview = parseOverview(overviewSection.data);
+        }
+        result.bytesParsed = buffer.byteLength;
+        console.log(`[DDD] Overview from TLV section 0x${overviewSection.tag.toString(16)}: VRN="${result.overview?.vehicleRegistrationNumber}"`);
+        return result;
+      } catch (e) {
+        console.warn('[DDD] TLV overview parse failed, falling back to raw:', e);
+      }
+    }
+  }
+
   try {
     switch (fileType) {
       case 'speed':
         result.speedRecords = parseRawSpeedFile(bytes, result.warnings);
         result.bytesParsed = buffer.byteLength;
-        console.log(`[DDD] Speed: ${result.speedRecords.length} records`);
         break;
-
       case 'technical':
         result.technicalData = parseRawTechnicalFile(bytes, result.warnings);
         result.bytesParsed = buffer.byteLength;
-        console.log(`[DDD] Technical: ${result.technicalData?.calibrations.length ?? 0} calibrations`);
         break;
-
-      case 'events':
+      case 'events': {
         const ef = parseRawEventsFile(bytes, result.warnings);
         result.events = ef.events;
         result.faults = ef.faults;
         result.bytesParsed = buffer.byteLength;
-        console.log(`[DDD] Events: ${result.events.length} events, ${result.faults.length} faults`);
         break;
-
+      }
       case 'activities':
         result.activities = parseRawActivitiesFile(bytes, result.warnings);
         result.bytesParsed = buffer.byteLength;
-        console.log(`[DDD] Activities: ${result.activities.length} days`);
         break;
-
       case 'overview':
         result.overview = parseRawOverviewFile(bytes, result.warnings);
         result.bytesParsed = buffer.byteLength;
-        console.log(`[DDD] Overview: ${result.overview ? 'parsed' : 'empty (certificates only)'}`);
         break;
-
       case 'driver_card':
         result.driverCard = parseDriverCardFile(bytes, result.warnings);
         result.bytesParsed = buffer.byteLength;
-        console.log(`[DDD] Driver card: ${result.driverCard?.identification?.cardNumber ?? 'no ID'}, ${result.driverCard?.vehiclesUsed.length ?? 0} vehicles`);
         break;
     }
   } catch (e) {
     console.warn(`[DDD] Error parsing individual ${fileType} file:`, e);
     result.warnings.push({ offset: 0, message: `Parse error: ${e instanceof Error ? e.message : String(e)}` });
   }
-
-  // Also extract any TLV sections for diagnostics
-  const sections = extractSections(buffer, result.warnings);
-  result.rawSections = sections;
 
   return result;
 }
