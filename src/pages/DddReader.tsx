@@ -950,6 +950,42 @@ const DddReader = () => {
                   </Card>
                 )}
 
+                {/* Activity rejections log */}
+                {data.activityRejections.length > 0 && (
+                  <Card className="border-orange-500/30">
+                    <CardHeader className="py-3"><CardTitle className="text-sm text-orange-600">Odrzucone rekordy czynności ({data.activityRejections.length})</CardTitle></CardHeader>
+                    <CardContent className="p-0">
+                      <ScrollArea className="max-h-[400px]">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="w-20">Offset</TableHead>
+                              <TableHead className="w-24">Data</TableHead>
+                              <TableHead>Powód odrzucenia</TableHead>
+                              <TableHead className="w-16">Dystans</TableHead>
+                              <TableHead className="w-16">Wpisy</TableHead>
+                              <TableHead className="w-28">K1/K2 min</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {data.activityRejections.map((r, i) => (
+                              <TableRow key={i}>
+                                <TableCell className="text-xs font-mono">{r.offset}</TableCell>
+                                <TableCell className="text-xs font-mono">{r.date}</TableCell>
+                                <TableCell className="text-xs">{r.reason}</TableCell>
+                                <TableCell className="text-xs font-mono">{r.dayDistance != null ? `${r.dayDistance} km` : '—'}</TableCell>
+                                <TableCell className="text-xs font-mono">{r.changeCount ?? '—'}</TableCell>
+                                <TableCell className="text-xs font-mono">
+                                  {r.slotTotals ? `${r.slotTotals.driver}/${r.slotTotals.codriver}` : '—'}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </ScrollArea>
+                    </CardContent>
+                  </Card>
+
                 {/* Raw file hex dumps */}
                 {data.rawFileBuffers.length > 0 && (
                   <HexDumpExplorer buffers={data.rawFileBuffers} />
