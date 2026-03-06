@@ -1086,11 +1086,6 @@ function parseCalibrationAt(bytes: Uint8Array, offset: number, maxLen?: number):
   const workshopCardExpiryDate = r.remaining >= 4 ? r.readTimestamp() : null;
 
   // VehicleIdentificationNumber (17B) — VIN
-  const vinPos = r.position;
-  // Debug: show bytes around VIN with context (5 bytes before, 22 bytes after)
-  const ctxStart = Math.max(0, vinPos - 5);
-  const ctxEnd = Math.min(bytes.length, vinPos + 22);
-  console.log(`[DDD] CalibrationAt: offset=${offset}, VIN@${vinPos} (rel=${vinPos - offset}), context: ${Array.from(bytes.slice(ctxStart, ctxEnd)).map((b, i) => (ctxStart + i === vinPos ? '[' : '') + b.toString(16).padStart(2, '0') + (ctxStart + i === vinPos + 16 ? ']' : '')).join(' ')}`);
   const vehicleIdentificationNumber = r.remaining >= 17 ? r.readString(17) : '';
 
   // VehicleRegistrationIdentification:
