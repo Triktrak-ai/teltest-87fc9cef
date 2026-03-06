@@ -1966,35 +1966,14 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
   const r = new BinaryReader(toArrayBuffer(data));
   if (r.remaining < 10) return records;
 
-  // Gen2/Gen2v2 VuActivityDailyData section structure:
-  // RecordArray header: recordType(1B) + recordSize(2B) + noOfRecords(2B) = 5 bytes
-  // Then noOfRecords × records, each being: timestamp(4B) + dailyPresence(2B) + dayDistance(2B) + changeCount(2B) + changes(changeCount×2B)
-  // OR it could be raw data without RecordArray header — try both approaches
-  
-  const firstByte = data[0];
+  // Try to find the start position — skip possible RecordArray header or other prefix
   const possibleRecSize = (data[1] << 8) | data[2];
   const possibleCount = (data[3] << 8) | data[4];
   
-  console.log(`[DDD] parseActivities: ${data.length}B, first bytes: ${Array.from(data.slice(0, 12)).map(b => b.toString(16).padStart(2, '0')).join(' ')}, recSize=${possibleRecSize}, count=${possibleCount}`);
-  
-  // Try RecordArray format first (5-byte header)
   if (possibleCount > 0 && possibleCount <= 366 && possibleRecSize > 0 && possibleRecSize <= 3000) {
-    r.position = 5; // Skip RecordArray header
+    r.position = 5;
   } else {
-    // Try skipping various header sizes
-    const ts0 = r.remaining >= 4 ? new DataView(toArrayBuffer(data)).getUint32(0, false) : 0;
-    const ts4 = r.remaining >= 8 ? new DataView(toArrayBuffer(data)).getUint32(4, false) : 0;
-    const ts8 = r.remaining >= 12 ? new DataView(toArrayBuffer(data)).getUint32(8, false) : 0;
-    
-    if (isValidTimestamp(ts0) && ts0 % 86400 === 0) {
-      r.position = 0;
-    } else if (isValidTimestamp(ts4) && ts4 % 86400 === 0) {
-      r.position = 4;
-    } else if (isValidTimestamp(ts8) && ts8 % 86400 === 0) {
-      r.position = 8;
-    } else {
-      r.position = 5; // Default: assume RecordArray header
-    }
+    r.position = 8; // Legacy default
   }
 
   while (r.remaining >= 12) {
