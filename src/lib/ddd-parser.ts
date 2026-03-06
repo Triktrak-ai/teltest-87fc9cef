@@ -1701,7 +1701,9 @@ function parseRawOverviewFile(bytes: Uint8Array, warnings: ParserWarning[]): Ddd
     }
   }
 
-  warnings.push({ offset: 0, message: 'Could not parse overview data — file may be truncated (only certificates present)' });
+  // Overview data not found in this file — likely truncated (only certificates).
+  // Data will be populated from technical/events files via mergeDddData.
+  console.log('[DDD] Overview file contains only certificates — overview data will come from other files');
   return null;
 }
 
