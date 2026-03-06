@@ -1615,7 +1615,8 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
       const dayDistance = r.readUint16();
       const activityChangeCount = r.readUint16();
 
-      const entries: ActivityChangeEntry[] = [];
+      // First pass: read all raw change entries
+      const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
       for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
         const word = r.readUint16();
         const slot = (word >> 15) & 0x01;
@@ -1623,29 +1624,52 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
         const activity = (word >> 11) & 0x03;
         const minutes = word & 0x07FF;
         if (minutes >= 1440) continue;
+        rawEntries.push({ slot, cardInserted, activity, minutes });
+      }
 
-        const statusMap: Record<number, ActivityChangeEntry['status']> = {
-          0: 'break', 1: 'availability', 2: 'work', 3: 'driving',
-        };
+      const statusMap: Record<number, ActivityChangeEntry['status']> = {
+        0: 'break', 1: 'availability', 2: 'work', 3: 'driving',
+      };
 
+      // Second pass: compute timeTo per entry using next entry with SAME slot
+      const entries: ActivityChangeEntry[] = [];
+      for (let i = 0; i < rawEntries.length; i++) {
+        const e = rawEntries[i];
+        // Find next entry with same slot to determine end time
         let nextMinutes = 1440;
-        if (i + 1 < activityChangeCount && r.remaining >= 2) {
-          nextMinutes = ((bytes[r.position] << 8) | bytes[r.position + 1]) & 0x07FF;
+        for (let j = i + 1; j < rawEntries.length; j++) {
+          if (rawEntries[j].slot === e.slot) {
+            nextMinutes = rawEntries[j].minutes;
+            break;
+          }
         }
+        // Skip entries where timeFrom >= timeTo (zero or negative duration)
+        if (e.minutes >= nextMinutes) continue;
 
-        const hFrom = Math.floor(minutes / 60);
-        const mFrom = minutes % 60;
+        const hFrom = Math.floor(e.minutes / 60);
+        const mFrom = e.minutes % 60;
         const hTo = Math.floor(Math.min(nextMinutes, 1440) / 60);
         const mTo = Math.min(nextMinutes, 1440) % 60;
 
         entries.push({
-          slot: slot === 0 ? 'driver' : 'codriver',
-          status: statusMap[activity] || 'unknown',
-          cardInserted, minutes,
+          slot: e.slot === 0 ? 'driver' : 'codriver',
+          status: statusMap[e.activity] || 'unknown',
+          cardInserted: e.cardInserted,
+          minutes: e.minutes,
           timeFrom: `${hFrom.toString().padStart(2, '0')}:${mFrom.toString().padStart(2, '0')}`,
           timeTo: `${hTo.toString().padStart(2, '0')}:${mTo.toString().padStart(2, '0')}`,
         });
       }
+
+      // Validate: total minutes per slot must not exceed 1440
+      const slotTotals = { 0: 0, 1: 0 };
+      for (const e of entries) {
+        const [hF, mF] = e.timeFrom.split(':').map(Number);
+        const [hT, mT] = e.timeTo.split(':').map(Number);
+        const dur = (hT * 60 + mT) - (hF * 60 + mF);
+        slotTotals[e.slot === 'driver' ? 0 : 1] += dur;
+      }
+      if (slotTotals[0] > 1440 || slotTotals[1] > 1440) continue; // garbage record
 
       records.push({ date: ts, dailyPresenceCounter, dayDistance, entries });
     } catch {
