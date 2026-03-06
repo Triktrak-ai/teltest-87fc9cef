@@ -1845,14 +1845,23 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
     }
   }
 
-  // Sort by date
-  records.sort((a, b) => a.date.getTime() - b.date.getTime());
+  // Deduplicate by day+presence and keep richer record, then sort
+  const unique = new Map<string, ActivityRecord>();
+  for (const rec of records) {
+    const key = `${rec.date.getTime()}-${rec.dailyPresenceCounter}`;
+    const existing = unique.get(key);
+    if (!existing || rec.entries.length > existing.entries.length) {
+      unique.set(key, rec);
+    }
+  }
 
-  if (records.length === 0) {
+  const deduped = Array.from(unique.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  if (deduped.length === 0) {
     warnings.push({ offset: 0, message: 'Could not extract activity records from raw file' });
   }
 
-  return records;
+  return deduped;
 }
 
 // ─── Raw overview file parser ────────────────────────────────────────────────
