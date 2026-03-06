@@ -651,7 +651,7 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         const actSections = sections.filter(s => s.tag === 0x32 || s.tag === 0x22 || s.tag === 0x02);
         console.log(`[DDD] Activities: ${sections.length} total sections, ${actSections.length} activity sections, tags: [${sections.map(s => '0x' + s.tag.toString(16)).join(', ')}]`);
         if (actSections.length > 0) {
-          result.activities = parseActivitiesFromSections(actSections, result.warnings);
+          result.activities = parseActivitiesFromSections(actSections, result.warnings, result.activityRejections);
           console.log(`[DDD] Activities from ${actSections.length} TLV sections: ${result.activities.length} days`);
         }
         // Fall back to raw scanner if TLV parsing yielded nothing
