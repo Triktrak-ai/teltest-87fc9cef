@@ -174,12 +174,25 @@ function detectFileType(fileName?: string): IndividualFileType {
 // ─── Multi-file merge ────────────────────────────────────────────────────────
 
 export function mergeDddData(existing: DddFileData, incoming: DddFileData): DddFileData {
+  const overview = incoming.overview ?? existing.overview;
+  const technicalData = incoming.technicalData ?? existing.technicalData;
+
+  // Cross-populate VIN/VRN from calibration records when overview is missing them
+  if (overview && !overview.vehicleRegistrationNumber && technicalData) {
+    const calWithVrn = technicalData.calibrations.find(c => c.vehicleRegistrationNumber.length > 0);
+    if (calWithVrn) {
+      overview.vehicleRegistrationNumber = calWithVrn.vehicleRegistrationNumber;
+      overview.vehicleRegistrationNation = calWithVrn.vehicleRegistrationNation;
+      console.log(`[DDD] Cross-populated VRN from calibration: "${calWithVrn.vehicleRegistrationNumber}"`);
+    }
+  }
+
   return {
-    overview: incoming.overview ?? existing.overview,
+    overview,
     activities: deduplicateActivities([...existing.activities, ...incoming.activities]),
     events: [...existing.events, ...incoming.events],
     faults: [...existing.faults, ...incoming.faults],
-    technicalData: incoming.technicalData ?? existing.technicalData,
+    technicalData,
     speedRecords: [...existing.speedRecords, ...incoming.speedRecords].sort(
       (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
     ),
