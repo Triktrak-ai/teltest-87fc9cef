@@ -207,6 +207,44 @@ const DddReader = () => {
           />
         </div>
 
+        {/* Load test data button (dev) */}
+        {!data && !autoLoading && (
+          <div className="flex justify-center">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async (e) => {
+                e.stopPropagation();
+                const testFiles = [
+                  '358480081630115_overview_20260227_030316.ddd',
+                  '358480081630115_events_20260227_030447.ddd',
+                  '358480081630115_activities_20260227_030429.ddd',
+                  '358480081630115_speed_20260227_031233.ddd',
+                  '358480081630115_technical_20260227_031247.ddd',
+                ];
+                try {
+                  const files: File[] = [];
+                  for (const name of testFiles) {
+                    const res = await fetch(`/test-data/${name}`);
+                    if (!res.ok) continue;
+                    const buf = await res.arrayBuffer();
+                    files.push(new File([buf], name));
+                  }
+                  if (files.length > 0) {
+                    processFiles(files);
+                    toast.success(`Załadowano ${files.length} plików testowych`);
+                  }
+                } catch (err) {
+                  toast.error(`Błąd: ${err instanceof Error ? err.message : String(err)}`);
+                }
+              }}
+            >
+              <FileText className="mr-1.5 h-4 w-4" />
+              Załaduj dane testowe
+            </Button>
+          </div>
+        )}
+
         {error && (
           <Card className="border-destructive/50 bg-destructive/5">
             <CardContent className="py-4 text-sm text-destructive">{error}</CardContent>
