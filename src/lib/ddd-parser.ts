@@ -1724,19 +1724,21 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
 
   let records = Array.from(byDay.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
 
-  // Keep only recent window relative to newest record (circular buffer protection)
+  // Keep only recent window relative to the densest date cluster
+  // (more robust than anchoring to a single outlier max timestamp).
   if (records.length > 0) {
-    const maxTs = Math.max(...records.map(r => Math.floor(r.date.getTime() / 1000)));
+    const timestamps = records.map(r => Math.floor(r.date.getTime() / 1000));
+    const anchorTs = selectDenseTimestampAnchor(timestamps, 90 * 86400);
     const oneYearSecs = 366 * 86400;
-    const before = records.length;
+
     records = records.filter(r => {
       const ts = Math.floor(r.date.getTime() / 1000);
-      const keep = (maxTs - ts) <= oneYearSecs;
+      const keep = Math.abs(anchorTs - ts) <= oneYearSecs;
       if (!keep) {
         rejections?.push({
           offset: 0,
           date: r.date.toISOString().slice(0, 10),
-          reason: `Odrzucony przez filtr świeżości (> 1 rok od najnowszego rekordu ${new Date(maxTs * 1000).toISOString().slice(0, 10)})`,
+          reason: `Odrzucony przez filtr świeżości (> 1 rok od kotwicy ${new Date(anchorTs * 1000).toISOString().slice(0, 10)})`,
           dayDistance: r.dayDistance,
           changeCount: r.entries.length,
         });
