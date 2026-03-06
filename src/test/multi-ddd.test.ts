@@ -36,6 +36,12 @@ describe('Multi-file DDD merge with filename detection', () => {
         }
       }
       console.log(`  Warnings: ${result.warnings.map(w => w.message).join('; ')}`);
+      if (name.includes('activities')) {
+        console.log(`  Rejections: ${result.activityRejections.length}`);
+        for (const r of result.activityRejections.slice(0, 8)) {
+          console.log(`    - off=${r.offset} date=${r.date} reason=${r.reason} entries=${r.changeCount ?? '-'} dist=${r.dayDistance ?? '-'} totals=${r.slotTotals ? `${r.slotTotals.driver}/${r.slotTotals.codriver}` : '-'}`);
+        }
+      }
     }
   });
 
