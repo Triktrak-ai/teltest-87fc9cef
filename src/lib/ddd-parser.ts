@@ -526,6 +526,24 @@ function isValidTimestamp(value: number): boolean {
   return value >= TS_MIN && value <= TS_MAX;
 }
 
+function selectDenseTimestampAnchor(values: number[], windowSeconds = 90 * 86400): number {
+  if (values.length === 0) return 0;
+
+  let best = values[0];
+  let bestCount = -1;
+  for (const candidate of values) {
+    let count = 0;
+    for (const v of values) {
+      if (Math.abs(v - candidate) <= windowSeconds) count++;
+    }
+    if (count > bestCount || (count === bestCount && candidate > best)) {
+      best = candidate;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
 // ─── Main parser ─────────────────────────────────────────────────────────────
 
 export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileData {
