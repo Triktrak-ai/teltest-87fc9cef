@@ -352,6 +352,11 @@ const CALIBRATION_PURPOSE_NAMES: Record<number, string> = {
   0x03: 'Regularna kalibracja',
   0x04: 'Naprawa',
   0x05: 'Zainstalowanie nowego czujnika',
+  // Gen2v2 extended purposes (Annex 1C, Appendix 7)
+  0x80: 'Aktywacja (Gen2v2)',
+  0x81: 'Pierwsza kalibracja (Gen2v2)',
+  0x82: 'Regularna kalibracja (Gen2v2)',
+  0x83: 'Naprawa (Gen2v2)',
 };
 
 // ─── Parser helpers ──────────────────────────────────────────────────────────
@@ -1117,8 +1122,25 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
           break;
         }
 
-        // 0x17 — VuCompanyLocksRecord or VuPowerSupplyInterruptionRecord  
-        // We'll try to parse as company locks if recordSize is large enough
+        // 0x17 — VuCompanyLocksRecord
+        case 0x17: {
+          if (recordSize >= 98) {
+            for (let i = 0; i < noOfRecords; i++) {
+              const recStart = dataStart + i * recordSize;
+              const r = new BinaryReader(toArrayBuffer(bytes), recStart);
+              const lockInTime = r.remaining >= 4 ? r.readTimestamp() : null;
+              const lockOutTime = r.remaining >= 4 ? r.readTimestamp() : null;
+              const companyName = r.remaining >= 36 ? r.readString(36) : '';
+              const companyAddress = r.remaining >= 36 ? r.readString(36) : '';
+              const companyCardNumber = r.remaining >= 16 ? r.readString(16) : '';
+              if (lockInTime || companyName) {
+                companyLocks.push({ lockInTime, lockOutTime, companyName, companyAddress, companyCardNumber });
+              }
+            }
+          }
+          break;
+        }
+
         default:
           break;
       }
