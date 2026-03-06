@@ -1160,6 +1160,47 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
           break;
         }
 
+        // 0x15 — VuDownloadActivityRecord
+        case 0x15: {
+          for (let i = 0; i < noOfRecords; i++) {
+            const recStart = dataStart + i * recordSize;
+            const r = new BinaryReader(toArrayBuffer(bytes), recStart);
+            const downloadTimestamp = r.remaining >= 4 ? r.readTimestamp() : null;
+            const companyOrWorkshopName = r.remaining >= 36 ? r.readString(36) : '';
+            const cardNumber = r.remaining >= 16 ? r.readString(16) : '';
+            if (downloadTimestamp || companyOrWorkshopName) {
+              downloadActivities.push({ downloadTimestamp, companyOrWorkshopName, cardNumber });
+            }
+          }
+          break;
+        }
+
+        // 0x16 — VuControlActivityRecord
+        case 0x16: {
+          const CONTROL_TYPE_NAMES: Record<number, string> = {
+            0x00: 'Nieokreślony',
+            0x01: 'Kontrola drogowa',
+            0x02: 'Kontrola w siedzibie firmy',
+          };
+          for (let i = 0; i < noOfRecords; i++) {
+            const recStart = dataStart + i * recordSize;
+            const r = new BinaryReader(toArrayBuffer(bytes), recStart);
+            const controlType = r.remaining >= 1 ? r.readUint8() : 0;
+            const controlTimestamp = r.remaining >= 4 ? r.readTimestamp() : null;
+            const controlCardNumber = r.remaining >= 16 ? r.readString(16) : '';
+            const downloadPeriodBegin = r.remaining >= 4 ? r.readTimestamp() : null;
+            const downloadPeriodEnd = r.remaining >= 4 ? r.readTimestamp() : null;
+            if (controlTimestamp) {
+              controlActivities.push({
+                controlType,
+                controlTypeName: CONTROL_TYPE_NAMES[controlType] || `Typ ${controlType}`,
+                controlTimestamp, controlCardNumber, downloadPeriodBegin, downloadPeriodEnd,
+              });
+            }
+          }
+          break;
+        }
+
         default:
           break;
       }
@@ -1173,7 +1214,7 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
   }
 
   if (parsedArrays > 0) {
-    console.log(`[DDD] Tech: ${parsedArrays} arrays, ${calibrations.length} cal, ${seals.length} seals, ${sensorsPaired.length} sensors, ${gnssRecords.length} GNSS`);
+    console.log(`[DDD] Tech: ${parsedArrays} arrays, ${calibrations.length} cal, ${seals.length} seals, ${sensorsPaired.length} sensors, ${gnssRecords.length} GNSS, ${downloadActivities.length} downloads, ${controlActivities.length} controls`);
   } else {
     warnings.push({ offset: 0, message: 'No RecordArray headers found, using heuristic fallback' });
     for (let i = 0; i < bytes.length - 100; i++) {
@@ -1202,6 +1243,7 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
   return {
     vuSerialNumber, sensorSerialNumber, calibrations,
     vuIdentification, seals, sensorsPaired, gnssRecords, companyLocks,
+    downloadActivities, controlActivities,
   };
 }
 
@@ -2074,7 +2116,7 @@ function parseTechnicalData(data: Uint8Array): TechnicalData {
     }
   }
 
-  return { vuSerialNumber, sensorSerialNumber, calibrations, vuIdentification: null, seals: [], sensorsPaired: [], gnssRecords: [], companyLocks: [] };
+  return { vuSerialNumber, sensorSerialNumber, calibrations, vuIdentification: null, seals: [], sensorsPaired: [], gnssRecords: [], companyLocks: [], downloadActivities: [], controlActivities: [] };
 }
 
 function parseDetailedSpeed(data: Uint8Array): SpeedRecord[] {
