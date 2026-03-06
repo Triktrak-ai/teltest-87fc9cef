@@ -1439,6 +1439,38 @@ function parseRawOverviewFile(bytes: Uint8Array, warnings: ParserWarning[]): Ddd
   return overview;
 }
 
+// ─── Direct overview parser (Gen2v2/Gen2 — no certs inside TLV section) ──────
+
+function parseOverviewDirect(data: Uint8Array): DddOverview {
+  const r = new BinaryReader(toArrayBuffer(data));
+
+  // Gen2v2 overview section data: VIN(17B) + VRI(nation 1B + VRN 15B) + timestamps
+  const _vin = r.remaining >= 17 ? r.readString(17) : '';
+  const vehicleNationByte = r.remaining > 0 ? r.readUint8() : 0;
+  const vehicleNation = NATION_CODES[vehicleNationByte] || `0x${vehicleNationByte.toString(16)}`;
+  const vrn = r.remaining >= 15 ? r.readString(15) : '';
+  const downloadDate = r.remaining >= 4 ? r.readTimestamp() : null;
+  const downloadPeriodBegin = r.remaining >= 4 ? r.readTimestamp() : null;
+  const downloadPeriodEnd = r.remaining >= 4 ? r.readTimestamp() : null;
+  const cardSlotsStatus = r.remaining > 0 ? r.readUint8() : 0;
+  const vuDownloadActivityDataLength = r.remaining >= 4 ? r.readUint32() : 0;
+
+  console.log(`[DDD] OverviewDirect: VIN="${_vin}", VRN="${vrn}", date=${downloadDate}`);
+
+  return {
+    vuManufacturerName: '', vuManufacturerAddress: '', vuSerialNumber: '',
+    vuPartNumber: '', vuSoftwareVersion: '', vuManufacturingDate: null,
+    vuApprovalNumber: '',
+    vehicleRegistrationNation: vehicleNation,
+    vehicleRegistrationNumber: vrn,
+    currentDateTime: downloadDate,
+    vuDownloadablePeriodBegin: downloadPeriodBegin,
+    vuDownloadablePeriodEnd: downloadPeriodEnd,
+    cardSlotsStatus,
+    vuDownloadActivityDataLength,
+  };
+}
+
 // ─── TLV section extraction (for merged VU files) ────────────────────────────
 
 function extractSections(buffer: ArrayBuffer, warnings: ParserWarning[]): DddSection[] {
