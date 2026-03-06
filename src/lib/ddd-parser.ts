@@ -1631,6 +1631,10 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
 
   const checkPlausibility = (rec: ActivityRecord, offset: number): string | null => {
     if (!rec.date || Number.isNaN(rec.date.getTime())) return 'Nieprawidłowa data';
+    const nowPlus90Days = Date.now() + 90 * 86400 * 1000;
+    if (rec.date.getTime() > nowPlus90Days) {
+      return `Data zbyt odległa w przyszłości: ${rec.date.toISOString().slice(0, 10)}`;
+    }
     if (rec.entries.length === 0) return 'Brak wpisów czynności (entries.length === 0)';
 
     const slotTotals = { driver: 0, codriver: 0 };
