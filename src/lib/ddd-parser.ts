@@ -61,6 +61,7 @@ export interface CalibrationRecord {
   workshopAddress: string;
   workshopCardNumber: string;
   workshopCardExpiryDate: Date | null;
+  vehicleIdentificationNumber: string;
   vehicleRegistrationNumber: string;
   vehicleRegistrationNation: string;
   wFactor: number;
