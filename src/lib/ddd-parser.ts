@@ -1655,13 +1655,14 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
       continue;
     }
 
-    // 1) Try structured parser (handles RecordArray headers well)
-    let allParsed = parseActivities(data);
-    let source = 'structured';
+    // Parse both strategies and keep the richer result (avoids single false-positive day)
+    const structuredParsed = parseActivities(data);
+    const rawParsed = parseRawActivitiesFile(data, []);
 
-    // 2) Fallback to scanner parser for sections with non-standard prefixes
-    if (allParsed.length === 0) {
-      allParsed = parseRawActivitiesFile(data, []);
+    let allParsed = structuredParsed;
+    let source = 'structured';
+    if (rawParsed.length > structuredParsed.length) {
+      allParsed = rawParsed;
       source = 'raw-scanner';
     }
 
