@@ -1580,13 +1580,61 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
   const view = new DataView(toArrayBuffer(bytes));
   const r = new BinaryReader(toArrayBuffer(bytes));
 
+  // Debug: dump first few bytes of each TLV section to understand Gen2v2 layout
+  let debugPos = 0;
+  let sectionIdx = 0;
+  while (debugPos < bytes.length - 4) {
+    if (bytes[debugPos] === 0x76) {
+      const tagLow = bytes[debugPos + 1];
+      if (tagLow >= 0x01 && tagLow <= 0x39) {
+        const secLen = view.getUint16(debugPos + 2, false);
+        if (secLen > 0 && secLen <= 100000) {
+          const dataStart = debugPos + 4;
+          const hexDump: string[] = [];
+          for (let b = 0; b < Math.min(20, secLen); b++) {
+            if (dataStart + b < bytes.length) {
+              hexDump.push(bytes[dataStart + b].toString(16).padStart(2, '0'));
+            }
+          }
+          // Try reading as Gen2v2 layout: timestamp(4) + dailyPresenceCounter(2) + dayDistance(2) + changeCount(2)
+          if (dataStart + 10 <= bytes.length) {
+            const ts = view.getUint32(dataStart, false);
+            const field1 = view.getUint16(dataStart + 4, false);
+            const field2 = view.getUint16(dataStart + 6, false);
+            const field3 = view.getUint16(dataStart + 8, false);
+            const tsDate = isValidTimestamp(ts) ? new Date(ts * 1000).toISOString() : 'INVALID';
+            console.log(`[DDD-ACT-DBG] Section ${sectionIdx} @${debugPos} tag=0x${tagLow.toString(16)} len=${secLen} hex=[${hexDump.join(' ')}] ts=${tsDate} f1=${field1} f2=${field2} f3=${field3}`);
+          }
+          sectionIdx++;
+          debugPos += 4 + secLen;
+          continue;
+        }
+      }
+    }
+    debugPos++;
+  }
+
   // Scan for all valid daily record positions by looking for valid timestamps
   // followed by plausible dailyPresenceCounter, dayDistance, and changeCount
   const dayPositions: number[] = [];
   const dayTimestamps: number[] = [];
+  
+  // Debug: log first 5 valid timestamps found regardless of other checks
+  let debugTsCount = 0;
   for (let i = 0; i < bytes.length - 10; i++) {
     const ts = view.getUint32(i, false);
     if (!isValidTimestamp(ts)) continue;
+    
+    if (debugTsCount < 10) {
+      const dist = view.getUint16(i + 6, false);
+      const changes = view.getUint16(i + 8, false);
+      // Also try offset+7 for 3-byte dailyPresenceCounter (Gen2v2 OdometerShort)
+      const dist3 = view.getUint16(i + 7, false);
+      const changes3 = view.getUint16(i + 9, false);
+      console.log(`[DDD-ACT-DBG] Valid TS @${i}: ${new Date(ts * 1000).toISOString()} | 2B-layout: dist=${dist} changes=${changes} | 3B-layout: dist=${dist3} changes=${changes3}`);
+      debugTsCount++;
+    }
+    
     const dist = view.getUint16(i + 6, false);
     const changes = view.getUint16(i + 8, false);
     // Plausibility: distance < 10000km, changes <= 1440, and enough bytes for the changes
@@ -1597,6 +1645,8 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
       i += 10 + changes * 2 - 1;
     }
   }
+  
+  console.log(`[DDD-ACT-DBG] Scanner found ${dayPositions.length} day positions from ${bytes.length} bytes`);
 
   // Filter out stale records from circular buffer: keep only records within 1 year of the newest
   if (dayTimestamps.length > 0) {
