@@ -289,7 +289,7 @@ export function emptyDddData(): DddFileData {
   return {
     overview: null, activities: [], events: [], faults: [],
     technicalData: null, speedRecords: [], rawSections: [],
-    warnings: [], fileSize: 0, bytesParsed: 0, generation: 'unknown',
+    warnings: [], activityRejections: [], fileSize: 0, bytesParsed: 0, generation: 'unknown',
     driverCard: null, rawFileBuffers: [],
   };
 }
