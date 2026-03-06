@@ -23,14 +23,6 @@ const ACTIVITY_COLORS: Record<string, string> = {
   unknown: "bg-muted",
 };
 
-const ACTIVITY_LABELS: Record<string, string> = {
-  driving: "Jazda",
-  work: "Praca",
-  availability: "Dyspozycyjność",
-  break: "Odpoczynek",
-  unknown: "Nieznany",
-};
-
 const formatDate = (d: Date | null) => d ? d.toLocaleDateString("pl-PL") : "—";
 const formatDateTime = (d: Date | null) => d ? d.toLocaleString("pl-PL") : "—";
 
