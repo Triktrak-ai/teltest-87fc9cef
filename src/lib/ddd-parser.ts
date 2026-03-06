@@ -1012,9 +1012,9 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
             const r = new BinaryReader(toArrayBuffer(bytes), dataStart);
             const mfgName = r.remaining >= 36 ? r.readString(36) : '';
             const mfgAddr = r.remaining >= 36 ? r.readString(36) : '';
-            // Per Annex 1C: partNumber(16B) comes BEFORE serialNumber(8B)
-            const partNum = r.remaining >= 16 ? r.readString(16) : '';
+            // Continental VU: serialNumber(8B) then partNumber(16B)
             const serial = r.remaining >= 8 ? r.readExtendedSerialNumber() : '';
+            const partNum = r.remaining >= 16 ? r.readString(16) : '';
             const swVer = r.remaining >= 4 ? r.readString(4) : '';
             const mfgDate = r.remaining >= 4 ? r.readTimestamp() : null;
             const approvalNum = r.remaining >= 16 ? r.readString(16) : '';
