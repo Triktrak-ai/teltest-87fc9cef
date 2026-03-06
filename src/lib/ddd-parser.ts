@@ -411,7 +411,10 @@ class BinaryReader {
     let s = '';
     for (const b of bytes) {
       if (b === 0) break;
-      s += String.fromCharCode(b);
+      // Only include printable ASCII (0x20-0x7E) and common Latin-1 supplement (0xC0-0xFF)
+      if ((b >= 0x20 && b <= 0x7E) || (b >= 0xC0 && b <= 0xFF)) {
+        s += String.fromCharCode(b);
+      }
     }
     return s.trim();
   }
@@ -1022,12 +1025,22 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
           for (let i = 0; i < noOfRecords; i++) {
             const recStart = dataStart + i * recordSize;
             const r = new BinaryReader(toArrayBuffer(bytes), recStart);
-            // SealDataV2: equipmentType(1B) + sealIdentifier (remaining)
             const equipmentType = r.remaining > 0 ? r.readUint8() : 0;
-            const sealId = r.remaining >= 10 ? r.readString(Math.min(recordSize - 1, 40)) : '';
-            if (sealId.length > 0 || equipmentType > 0) {
+            // Seal identifier is typically a mix of printable/binary data
+            // Read raw bytes and present as hex + printable
+            const sealBytes = recordSize > 1 ? bytes.slice(recStart + 1, recStart + recordSize) : new Uint8Array(0);
+            let sealId = '';
+            // Try printable first
+            const printable = Array.from(sealBytes).map(b => (b >= 0x20 && b <= 0x7E) ? String.fromCharCode(b) : '').join('').trim();
+            if (printable.length >= 4) {
+              sealId = printable;
+            } else {
+              // Show as hex
+              sealId = Array.from(sealBytes).filter(b => b !== 0).map(b => b.toString(16).padStart(2, '0')).join(' ').toUpperCase();
+            }
+            if (sealId || equipmentType > 0) {
               seals.push({
-                sealIdentifier: sealId.trim(),
+                sealIdentifier: sealId,
                 equipmentType,
                 equipmentTypeName: SEAL_EQUIPMENT_TYPES[equipmentType] || `Typ ${equipmentType}`,
               });
@@ -1058,17 +1071,21 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
             const recStart = dataStart + i * recordSize;
             const r = new BinaryReader(toArrayBuffer(bytes), recStart);
             const ts = r.remaining >= 4 ? r.readTimestamp() : null;
+            // Skip if timestamp is invalid (epoch noise)
+            if (!ts || ts.getFullYear() < 2000) { continue; }
             // GNSSPlainCoordinates: latitude(4B, signed) + longitude(4B, signed)
-            // Values in 1/10000 minutes (Annex 1C)
+            // Values in 1/10 of arc-second (Annex 1C Appendix 7)
             if (r.remaining >= 8) {
               const latRaw = view.getInt32(r.position, false);
               r.skip(4);
               const lonRaw = view.getInt32(r.position, false);
               r.skip(4);
-              const latitude = latRaw / 600000; // 1/10000 minutes → degrees
-              const longitude = lonRaw / 600000;
+              // 1/10 arc-second → degrees: divide by 36000
+              const latitude = latRaw / 36000;
+              const longitude = lonRaw / 36000;
               const odo = r.remaining >= 3 ? ((r.readUint8() << 16) | r.readUint16()) : 0;
-              if (ts) {
+              // Validate: reasonable GPS coordinates
+              if (Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180 && (latitude !== 0 || longitude !== 0)) {
                 gnssRecords.push({ timestamp: ts, latitude, longitude, vehicleOdometerValue: odo });
               }
             }
