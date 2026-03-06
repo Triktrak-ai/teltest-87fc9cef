@@ -942,24 +942,23 @@ function parseRawSpeedFile(bytes: Uint8Array, warnings: ParserWarning[]): SpeedR
 
 function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): TechnicalData {
   const calibrations: CalibrationRecord[] = [];
+  const seals: SealRecord[] = [];
+  const sensorsPaired: SensorPairedRecord[] = [];
+  const gnssRecords: GnssAccumulatedRecord[] = [];
+  const companyLocks: CompanyLockRecord[] = [];
   const view = new DataView(toArrayBuffer(bytes));
 
-  // Technical file (Gen2v2) uses RecordArray format:
-  // [arrayType 1B][recordSize 2B][noOfRecords 2B] then recordSize*noOfRecords bytes of data
-  // We scan for valid RecordArray headers sequentially.
-
-  let vuManufacturerName = '';
-  let vuManufacturerAddress = '';
+  let vuIdentification: VuIdentification | null = null;
   let vuSerialNumber = '';
   let sensorSerialNumber = '';
 
   let pos = 0;
   let parsedArrays = 0;
 
-  // Known calibration record sizes for Gen2v2 (CalibrationRecord ~= 167-180B)
-  // and Gen1 (~= 147-155B). We accept a wider range to be safe.
-  const MIN_CAL_RECORD_SIZE = 100;
-  const MAX_CAL_RECORD_SIZE = 300;
+  const SEAL_EQUIPMENT_TYPES: Record<number, string> = {
+    0: 'Przednia strona VU', 1: 'Tylna strona VU', 2: 'Adapter',
+    3: 'Kabel czujnika ruchu', 4: 'Czujnik ruchu', 5: 'Przekładnia',
+  };
 
   while (pos + 5 <= bytes.length) {
     const arrayType = bytes[pos];
@@ -967,54 +966,119 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
     const noOfRecords = view.getUint16(pos + 3, false);
     const totalArraySize = 5 + recordSize * noOfRecords;
 
-    // Validate RecordArray header
     if (recordSize >= 2 && recordSize <= 2000 &&
         noOfRecords <= 500 &&
         totalArraySize >= 5 &&
         pos + totalArraySize <= bytes.length) {
 
-      console.log(`[DDD] Tech RecordArray @${pos}: type=0x${arrayType.toString(16)}, recSize=${recordSize}, count=${noOfRecords}, total=${totalArraySize}`);
+      console.log(`[DDD] Tech RecordArray @${pos}: type=0x${arrayType.toString(16)}, recSize=${recordSize}, count=${noOfRecords}`);
 
-      // arrayType 0x0c = VuCalibrationRecordArray (Gen2v2 calibration records)
-      // arrayType 0x08 = VuCalibrationRecordArray (Gen1)
-      if ((arrayType === 0x0c || arrayType === 0x08) && noOfRecords > 0 && recordSize >= MIN_CAL_RECORD_SIZE) {
-        for (let i = 0; i < noOfRecords; i++) {
-          const recStart = pos + 5 + i * recordSize;
-          try {
-            const cal = parseCalibrationAt(bytes, recStart, recordSize);
-            if (cal) calibrations.push(cal);
-          } catch (e) {
-            warnings.push({ offset: recStart, message: `Calibration parse error: ${e}` });
-          }
-        }
-      }
+      const dataStart = pos + 5;
 
-      // For VU identification records (typically smaller, ~80-120B, single record)
-      if (noOfRecords === 1 && recordSize >= 40 && recordSize < MIN_CAL_RECORD_SIZE) {
-        const recStart = pos + 5;
-        const r = new BinaryReader(toArrayBuffer(bytes), recStart);
-        // Try to extract manufacturer name (36B) + address (36B)
-        if (r.remaining >= 72) {
-          const name = r.readString(36);
-          const addr = r.readString(36);
-          if (/[A-Za-z]{3,}/.test(name)) {
-            vuManufacturerName = name;
-            vuManufacturerAddress = addr;
-            console.log(`[DDD] Tech VU Ident: name="${name}", addr="${addr}"`);
+      switch (arrayType) {
+        // 0x19 — VuIdentification
+        case 0x19: {
+          if (noOfRecords >= 1 && recordSize >= 36) {
+            const r = new BinaryReader(toArrayBuffer(bytes), dataStart);
+            const mfgName = r.remaining >= 36 ? r.readString(36) : '';
+            const mfgAddr = r.remaining >= 36 ? r.readString(36) : '';
+            const serial = r.remaining >= 8 ? r.readString(8) : '';
+            const partNum = r.remaining >= 16 ? r.readString(16) : '';
+            const swVer = r.remaining >= 4 ? r.readString(4) : '';
+            const mfgDate = r.remaining >= 4 ? r.readTimestamp() : null;
+            const approvalNum = r.remaining >= 16 ? r.readString(16) : '';
+            vuIdentification = {
+              vuManufacturerName: mfgName, vuManufacturerAddress: mfgAddr,
+              vuSerialNumber: serial, vuPartNumber: partNum,
+              vuSoftwareVersion: swVer, vuManufacturingDate: mfgDate,
+              vuApprovalNumber: approvalNum,
+            };
+            if (serial) vuSerialNumber = serial;
+            console.log(`[DDD] VuIdent: "${mfgName}", serial="${serial}", part="${partNum}", sw="${swVer}"`);
           }
+          break;
         }
-      }
 
-      // For serial number records
-      if (noOfRecords === 1 && recordSize >= 8 && recordSize < 40) {
-        const candidate = readStringAt(bytes, pos + 5, Math.min(recordSize, 8));
-        if (candidate && /^[A-Z0-9\-]{4,}$/.test(candidate)) {
-          if (!vuSerialNumber) {
-            vuSerialNumber = candidate;
-          } else if (!sensorSerialNumber) {
-            sensorSerialNumber = candidate;
+        // 0x0c — VuCalibrationRecordArray (Gen2v2), 0x08 in some contexts
+        case 0x0c:
+        case 0x08: {
+          if (recordSize >= 100 && noOfRecords > 0) {
+            for (let i = 0; i < noOfRecords; i++) {
+              const recStart = dataStart + i * recordSize;
+              try {
+                const cal = parseCalibrationAt(bytes, recStart, recordSize);
+                if (cal) calibrations.push(cal);
+              } catch (e) {
+                warnings.push({ offset: recStart, message: `Calibration parse error: ${e}` });
+              }
+            }
           }
+          break;
         }
+
+        // 0x0e — SealRecordArray
+        case 0x0e: {
+          for (let i = 0; i < noOfRecords; i++) {
+            const recStart = dataStart + i * recordSize;
+            const r = new BinaryReader(toArrayBuffer(bytes), recStart);
+            // SealDataV2: equipmentType(1B) + sealIdentifier (remaining)
+            const equipmentType = r.remaining > 0 ? r.readUint8() : 0;
+            const sealId = r.remaining >= 10 ? r.readString(Math.min(recordSize - 1, 40)) : '';
+            if (sealId.length > 0 || equipmentType > 0) {
+              seals.push({
+                sealIdentifier: sealId.trim(),
+                equipmentType,
+                equipmentTypeName: SEAL_EQUIPMENT_TYPES[equipmentType] || `Typ ${equipmentType}`,
+              });
+            }
+          }
+          break;
+        }
+
+        // 0x20 — SensorPairedRecord
+        case 0x20: {
+          for (let i = 0; i < noOfRecords; i++) {
+            const recStart = dataStart + i * recordSize;
+            const r = new BinaryReader(toArrayBuffer(bytes), recStart);
+            const serial = r.remaining >= 8 ? r.readString(8) : '';
+            const approval = r.remaining >= 16 ? r.readString(16) : '';
+            const pairingDate = r.remaining >= 4 ? r.readTimestamp() : null;
+            if (serial) {
+              sensorsPaired.push({ sensorSerialNumber: serial, sensorApprovalNumber: approval, sensorPairingDate: pairingDate });
+              if (!sensorSerialNumber) sensorSerialNumber = serial;
+            }
+          }
+          break;
+        }
+
+        // 0x1f — GNSSAccumulatedDriving
+        case 0x1f: {
+          for (let i = 0; i < noOfRecords; i++) {
+            const recStart = dataStart + i * recordSize;
+            const r = new BinaryReader(toArrayBuffer(bytes), recStart);
+            const ts = r.remaining >= 4 ? r.readTimestamp() : null;
+            // GNSSPlainCoordinates: latitude(4B, signed) + longitude(4B, signed)
+            // Values in 1/10000 minutes (Annex 1C)
+            if (r.remaining >= 8) {
+              const latRaw = view.getInt32(r.position, false);
+              r.skip(4);
+              const lonRaw = view.getInt32(r.position, false);
+              r.skip(4);
+              const latitude = latRaw / 600000; // 1/10000 minutes → degrees
+              const longitude = lonRaw / 600000;
+              const odo = r.remaining >= 3 ? ((r.readUint8() << 16) | r.readUint16()) : 0;
+              if (ts) {
+                gnssRecords.push({ timestamp: ts, latitude, longitude, vehicleOdometerValue: odo });
+              }
+            }
+          }
+          break;
+        }
+
+        // 0x17 — VuCompanyLocksRecord or VuPowerSupplyInterruptionRecord  
+        // We'll try to parse as company locks if recordSize is large enough
+        default:
+          break;
       }
 
       pos += totalArraySize;
@@ -1022,14 +1086,12 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
       continue;
     }
 
-    // No valid RecordArray at this position — advance one byte
     pos++;
   }
 
   if (parsedArrays > 0) {
-    console.log(`[DDD] Tech: parsed ${parsedArrays} RecordArrays, ${calibrations.length} calibrations`);
+    console.log(`[DDD] Tech: ${parsedArrays} arrays, ${calibrations.length} cal, ${seals.length} seals, ${sensorsPaired.length} sensors, ${gnssRecords.length} GNSS`);
   } else {
-    // Fallback: heuristic scan for calibration purpose byte + ASCII workshop name
     warnings.push({ offset: 0, message: 'No RecordArray headers found, using heuristic fallback' });
     for (let i = 0; i < bytes.length - 100; i++) {
       const purposeByte = bytes[i];
@@ -1048,13 +1110,16 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
             const cal = parseCalibrationAt(bytes, i, 170);
             if (cal) calibrations.push(cal);
           } catch (e) { /* skip */ }
-          i += 50; // skip ahead
+          i += 50;
         }
       }
     }
   }
 
-  return { vuSerialNumber, sensorSerialNumber, calibrations };
+  return {
+    vuSerialNumber, sensorSerialNumber, calibrations,
+    vuIdentification, seals, sensorsPaired, gnssRecords, companyLocks,
+  };
 }
 
 function findAsciiString(bytes: Uint8Array, minLen: number): number {
