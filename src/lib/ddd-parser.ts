@@ -174,12 +174,25 @@ function detectFileType(fileName?: string): IndividualFileType {
 // ─── Multi-file merge ────────────────────────────────────────────────────────
 
 export function mergeDddData(existing: DddFileData, incoming: DddFileData): DddFileData {
+  const overview = incoming.overview ?? existing.overview;
+  const technicalData = incoming.technicalData ?? existing.technicalData;
+
+  // Cross-populate VIN/VRN from calibration records when overview is missing them
+  if (overview && !overview.vehicleRegistrationNumber && technicalData) {
+    const calWithVrn = technicalData.calibrations.find(c => c.vehicleRegistrationNumber.length > 0);
+    if (calWithVrn) {
+      overview.vehicleRegistrationNumber = calWithVrn.vehicleRegistrationNumber;
+      overview.vehicleRegistrationNation = calWithVrn.vehicleRegistrationNation;
+      console.log(`[DDD] Cross-populated VRN from calibration: "${calWithVrn.vehicleRegistrationNumber}"`);
+    }
+  }
+
   return {
-    overview: incoming.overview ?? existing.overview,
+    overview,
     activities: deduplicateActivities([...existing.activities, ...incoming.activities]),
     events: [...existing.events, ...incoming.events],
     faults: [...existing.faults, ...incoming.faults],
-    technicalData: incoming.technicalData ?? existing.technicalData,
+    technicalData,
     speedRecords: [...existing.speedRecords, ...incoming.speedRecords].sort(
       (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
     ),
@@ -1018,10 +1031,41 @@ function parseCalibrationAt(bytes: Uint8Array, offset: number): CalibrationRecor
   const calibrationPurpose = r.readUint8();
   const workshopName = r.readString(36);
   const workshopAddress = r.remaining >= 36 ? r.readString(36) : '';
-  const workshopCardNumber = r.remaining >= 18 ? r.readCardNumber() : '';
+
+  // Gen2v2: FullCardNumberAndGeneration (20B), Gen1: FullCardNumber (18B)
+  let workshopCardNumber = '';
+  if (r.remaining >= 20) {
+    // Try Gen2v2 first (20B)
+    const cardStart = r.position;
+    workshopCardNumber = r.readFullCardNumberAndGen();
+    // If card number is empty, try 18B variant
+    if (!workshopCardNumber && r.remaining > 0) {
+      r.position = cardStart;
+      workshopCardNumber = r.readFullCardNumber();
+    }
+  } else if (r.remaining >= 18) {
+    workshopCardNumber = r.readFullCardNumber();
+  }
+
   const workshopCardExpiryDate = r.remaining >= 4 ? r.readTimestamp() : null;
+
+  // VehicleIdentificationNumber (17B) — VIN
+  const vehicleIdentificationNumber = r.remaining >= 17 ? r.readString(17) : '';
+
+  // VehicleRegistrationIdentification: nation(1B) + codepage(1B for Gen2v2) + VRN
   const vrnNation = r.remaining > 0 ? r.readUint8() : 0;
-  const vrn = r.remaining >= 14 ? r.readString(14) : '';
+  let vrn = '';
+  if (r.remaining > 0) {
+    const nextByte = bytes[r.position];
+    if (nextByte <= 0x0F && r.remaining >= 14) {
+      // Gen2v2: codepage(1B) + VRN(13B)
+      r.skip(1);
+      vrn = r.readString(13);
+    } else if (r.remaining >= 14) {
+      vrn = r.readString(14);
+    }
+  }
+
   const wFactor = r.remaining >= 2 ? r.readUint16() : 0;
   const kFactor = r.remaining >= 2 ? r.readUint16() : 0;
   const tyreSize = r.remaining >= 15 ? r.readString(15) : '';
@@ -1030,6 +1074,11 @@ function parseCalibrationAt(bytes: Uint8Array, offset: number): CalibrationRecor
   const newOdometerValue = r.remaining >= 3 ? ((r.readUint8() << 16) | r.readUint16()) : 0;
   const oldDateTime = r.remaining >= 4 ? r.readTimestamp() : null;
   const newDateTime = r.remaining >= 4 ? r.readTimestamp() : null;
+
+  // Validate: VIN should be alphanumeric
+  const vinValid = /^[A-Z0-9]{5,17}$/.test(vehicleIdentificationNumber);
+
+  console.log(`[DDD] Calibration: purpose=${calibrationPurpose}, VIN="${vehicleIdentificationNumber}"(valid=${vinValid}), VRN="${vrn}", workshop="${workshopName}"`);
 
   return {
     calibrationPurpose,
@@ -1418,18 +1467,15 @@ function parseRawOverviewFile(bytes: Uint8Array, warnings: ParserWarning[]): Ddd
     }
   }
 
-  // Strategy 2: Scan for 3 consecutive valid timestamps (currentDateTime + period begin + period end)
-  // These are preceded by VIN(17B) + nation(1B) + VRN(13-15B)
-  for (let i = 0; i < bytes.length - 12; i++) {
+  // Strategy 2: Scan for 3 consecutive valid timestamps ONLY after cert sections
+  // Don't scan inside certificate data (bytes 0..pos) as it produces false positives
+  const searchStart = skippedTlvSections > 0 ? pos : 0;
+  for (let i = searchStart; i < bytes.length - 12; i++) {
     const ts1 = view.getUint32(i, false);
     const ts2 = view.getUint32(i + 4, false);
     const ts3 = view.getUint32(i + 8, false);
     if (ts1 >= TS_RECENT && ts1 <= TS_MAX && ts2 >= TS_MIN && ts2 <= TS_MAX && ts3 >= TS_MIN && ts3 <= TS_MAX) {
-      // ts2 (period begin) should be before ts3 (period end)
       if (ts2 <= ts3) {
-        // Work backwards: timestamps are preceded by VIN(17) + VRI(1 nation + 13-15 VRN)
-        // Try Gen2v2 layout: 17 VIN + 1 nation + 1 codepage + 13 VRN = 32 bytes before timestamps
-        // Try Gen1 layout: 17 VIN + 1 nation + 14 VRN = 32 bytes before timestamps
         for (const vrnLen of [15, 14, 13]) {
           const vinStart = i - (17 + 1 + vrnLen);
           if (vinStart >= 0) {
@@ -1440,17 +1486,19 @@ function parseRawOverviewFile(bytes: Uint8Array, warnings: ParserWarning[]): Ddd
             }
           }
         }
-        // Even without VIN, extract timestamps
-        overview.currentDateTime = new Date(ts1 * 1000);
-        overview.vuDownloadablePeriodBegin = new Date(ts2 * 1000);
-        overview.vuDownloadablePeriodEnd = new Date(ts3 * 1000);
-        console.log(`[DDD] Overview (timestamps only): date=${overview.currentDateTime}`);
-        return overview;
+        // Only accept timestamps without VIN if they're after cert sections
+        if (i >= searchStart && searchStart > 0) {
+          overview.currentDateTime = new Date(ts1 * 1000);
+          overview.vuDownloadablePeriodBegin = new Date(ts2 * 1000);
+          overview.vuDownloadablePeriodEnd = new Date(ts3 * 1000);
+          console.log(`[DDD] Overview (timestamps only, post-cert): date=${overview.currentDateTime}`);
+          return overview;
+        }
       }
     }
   }
 
-  warnings.push({ offset: 0, message: 'Could not parse overview data from file' });
+  warnings.push({ offset: 0, message: 'Could not parse overview data — file may be truncated (only certificates present)' });
   return null;
 }
 
