@@ -526,6 +526,24 @@ function isValidTimestamp(value: number): boolean {
   return value >= TS_MIN && value <= TS_MAX;
 }
 
+function selectDenseTimestampAnchor(values: number[], windowSeconds = 90 * 86400): number {
+  if (values.length === 0) return 0;
+
+  let best = values[0];
+  let bestCount = -1;
+  for (const candidate of values) {
+    let count = 0;
+    for (const v of values) {
+      if (Math.abs(v - candidate) <= windowSeconds) count++;
+    }
+    if (count > bestCount || (count === bestCount && candidate > best)) {
+      best = candidate;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
 // ─── Main parser ─────────────────────────────────────────────────────────────
 
 export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileData {
@@ -648,13 +666,44 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
       }
       case 'activities': {
         // Try TLV-section-based parsing first (Gen2/Gen2v2)
-        const actSections = sections.filter(s => s.tag === 0x32 || s.tag === 0x22 || s.tag === 0x02);
+        // Activities tags seen in the wild: TRTP file-type tags (0x02/0x22/0x32)
+        // and legacy section tags (0x06/0x26/0x36). Accept both for compatibility.
+        const actSections = sections
+          .filter(s => [0x32, 0x22, 0x02, 0x36, 0x26, 0x06].includes(s.tag))
+          .sort((a, b) => a.offset - b.offset);
+
         console.log(`[DDD] Activities: ${sections.length} total sections, ${actSections.length} activity sections, tags: [${sections.map(s => '0x' + s.tag.toString(16)).join(', ')}]`);
+
         if (actSections.length > 0) {
-          result.activities = parseActivitiesFromSections(actSections, result.warnings, result.activityRejections);
-          console.log(`[DDD] Activities from ${actSections.length} TLV sections: ${result.activities.length} days`);
+          // Some devices split one activities payload into multiple same-tag TLV chunks.
+          // Per Annex 1C file semantics we should parse the concatenated payload first.
+          const totalLen = actSections.reduce((sum, s) => sum + s.data.length, 0);
+          const mergedData = new Uint8Array(totalLen);
+          let writePos = 0;
+          for (const s of actSections) {
+            mergedData.set(s.data, writePos);
+            writePos += s.data.length;
+          }
+
+          const mergedSection: DddSection = {
+            tag: actSections[0].tag,
+            tagHigh: actSections[0].tagHigh,
+            offset: actSections[0].offset,
+            length: mergedData.length,
+            data: mergedData,
+          };
+
+          result.activities = parseActivitiesFromSections([mergedSection], result.warnings, result.activityRejections);
+          console.log(`[DDD] Activities from concatenated TLV payload (${mergedData.length} B): ${result.activities.length} days`);
+
+          // Fallback: if concatenated parse fails, try chunk-by-chunk parsing
+          if (result.activities.length === 0) {
+            result.activities = parseActivitiesFromSections(actSections, result.warnings, result.activityRejections);
+            console.log(`[DDD] Activities from per-section parsing: ${result.activities.length} days`);
+          }
         }
-        // Fall back to raw scanner if TLV parsing yielded nothing
+
+        // Final fallback to raw scanner on whole file
         if (result.activities.length === 0) {
           result.activities = parseRawActivitiesFile(bytes, result.warnings);
         }
@@ -1624,13 +1673,14 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
       continue;
     }
 
-    // 1) Try structured parser (handles RecordArray headers well)
-    let allParsed = parseActivities(data);
-    let source = 'structured';
+    // Parse both strategies and keep the richer result (avoids single false-positive day)
+    const structuredParsed = parseActivities(data);
+    const rawParsed = parseRawActivitiesFile(data, []);
 
-    // 2) Fallback to scanner parser for sections with non-standard prefixes
-    if (allParsed.length === 0) {
-      allParsed = parseRawActivitiesFile(data, []);
+    let allParsed = structuredParsed;
+    let source = 'structured';
+    if (rawParsed.length > structuredParsed.length) {
+      allParsed = rawParsed;
       source = 'raw-scanner';
     }
 
@@ -1674,19 +1724,21 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
 
   let records = Array.from(byDay.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
 
-  // Keep only recent window relative to newest record (circular buffer protection)
+  // Keep only recent window relative to the densest date cluster
+  // (more robust than anchoring to a single outlier max timestamp).
   if (records.length > 0) {
-    const maxTs = Math.max(...records.map(r => Math.floor(r.date.getTime() / 1000)));
+    const timestamps = records.map(r => Math.floor(r.date.getTime() / 1000));
+    const anchorTs = selectDenseTimestampAnchor(timestamps, 90 * 86400);
     const oneYearSecs = 366 * 86400;
-    const before = records.length;
+
     records = records.filter(r => {
       const ts = Math.floor(r.date.getTime() / 1000);
-      const keep = (maxTs - ts) <= oneYearSecs;
+      const keep = Math.abs(anchorTs - ts) <= oneYearSecs;
       if (!keep) {
         rejections?.push({
           offset: 0,
           date: r.date.toISOString().slice(0, 10),
-          reason: `Odrzucony przez filtr świeżości (> 1 rok od najnowszego rekordu ${new Date(maxTs * 1000).toISOString().slice(0, 10)})`,
+          reason: `Odrzucony przez filtr świeżości (> 1 rok od kotwicy ${new Date(anchorTs * 1000).toISOString().slice(0, 10)})`,
           dayDistance: r.dayDistance,
           changeCount: r.entries.length,
         });
@@ -1712,9 +1764,10 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
   const r = new BinaryReader(toArrayBuffer(bytes));
 
   // Scan for all valid daily record positions by looking for valid timestamps
-  // followed by plausible dailyPresenceCounter, dayDistance, and changeCount
+  // followed by plausible dailyPresenceCounter, dayDistance, and changeCount.
+  // Do NOT jump over candidate lengths here: noisy buffers may contain false positives
+  // and jumping can skip real records.
   const dayPositions: number[] = [];
-  const dayTimestamps: number[] = [];
   for (let i = 0; i < bytes.length - 10; i++) {
     const ts = view.getUint32(i, false);
     if (!isValidTimestamp(ts)) continue;
@@ -1722,24 +1775,11 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
     const changes = view.getUint16(i + 8, false);
     if (dist <= 9999 && changes <= 1440 && i + 10 + changes * 2 <= bytes.length) {
       dayPositions.push(i);
-      dayTimestamps.push(ts);
-      i += 10 + changes * 2 - 1;
     }
   }
 
-  // Filter out stale records from circular buffer: keep only records within 1 year of the newest
-  if (dayTimestamps.length > 0) {
-    const maxTs = Math.max(...dayTimestamps);
-    const oneYearSecs = 366 * 86400;
-    const filtered: number[] = [];
-    for (let i = 0; i < dayPositions.length; i++) {
-      if (maxTs - dayTimestamps[i] <= oneYearSecs) {
-        filtered.push(dayPositions[i]);
-      }
-    }
-    dayPositions.length = 0;
-    dayPositions.push(...filtered);
-  }
+  // Freshness filtering is handled at higher level (section parser) where we can
+  // compare all candidate records together and reject outliers more reliably.
 
   for (const pos of dayPositions) {
     r.position = pos;
@@ -1812,14 +1852,23 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
     }
   }
 
-  // Sort by date
-  records.sort((a, b) => a.date.getTime() - b.date.getTime());
+  // Deduplicate by day+presence and keep richer record, then sort
+  const unique = new Map<string, ActivityRecord>();
+  for (const rec of records) {
+    const key = `${rec.date.getTime()}-${rec.dailyPresenceCounter}`;
+    const existing = unique.get(key);
+    if (!existing || rec.entries.length > existing.entries.length) {
+      unique.set(key, rec);
+    }
+  }
 
-  if (records.length === 0) {
+  const deduped = Array.from(unique.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  if (deduped.length === 0) {
     warnings.push({ offset: 0, message: 'Could not extract activity records from raw file' });
   }
 
-  return records;
+  return deduped;
 }
 
 // ─── Raw overview file parser ────────────────────────────────────────────────
