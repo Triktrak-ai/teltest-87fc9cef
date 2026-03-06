@@ -1235,6 +1235,7 @@ function parseCalibrationAt(bytes: Uint8Array, offset: number, maxLen?: number):
     workshopAddress,
     workshopCardNumber,
     workshopCardExpiryDate,
+    vehicleIdentificationNumber: vinValid ? vehicleIdentificationNumber : '',
     vehicleRegistrationNumber: vrn.replace(/[^A-Za-z0-9 ]/g, '').trim(),
     vehicleRegistrationNation: NATION_CODES[vrnNation] || `0x${vrnNation.toString(16)}`,
     wFactor, kFactor, tyreSize, authorisedSpeed,
