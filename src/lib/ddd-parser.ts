@@ -1585,86 +1585,51 @@ function parseEventsStructured(bytes: Uint8Array, warnings: ParserWarning[]): { 
 
 function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): ActivityRecord[] {
   const records: ActivityRecord[] = [];
-
-  // Log first 64 bytes for debugging
-  const hexDump = Array.from(bytes.slice(0, 64)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-  console.log(`[Activities-Raw] file size: ${bytes.length}, first 64B: ${hexDump}`);
-
-  // Find all certificate positions
-  const certPositions: number[] = [];
-  for (let i = 0; i < bytes.length - 4; i++) {
-    if (bytes[i] === 0x76 && (bytes[i + 1] === 0x32 || bytes[i + 1] === 0x31 || bytes[i + 1] === 0x33)) {
-      const len = (bytes[i + 2] << 8) | bytes[i + 3];
-      if (len > 0 && len < 10000) {
-        certPositions.push(i);
-        console.log(`[Activities-Raw] cert at offset ${i}: 0x76 0x${bytes[i+1].toString(16)}, len=${len}`);
-      }
-    }
-  }
-
-  const dataEnd = certPositions.length > 0 ? certPositions[0] : bytes.length;
-  console.log(`[Activities-Raw] data region: 0 to ${dataEnd} (${dataEnd} bytes)`);
-
-  if (dataEnd < 8) {
-    warnings.push({ offset: 0, message: `Activities data too short: ${dataEnd} bytes before first certificate` });
-    return records;
-  }
+  if (bytes.length < 12) return records;
 
   const view = new DataView(toArrayBuffer(bytes));
 
-  // Find first valid timestamp
+  // Find first valid timestamp with plausible activity data after it
   let startPos = -1;
-  for (let i = 0; i < Math.min(dataEnd, 40); i++) {
-    if (i + 4 <= dataEnd) {
-      const ts = view.getUint32(i, false);
-      if (isValidTimestamp(ts)) {
+  for (let i = 0; i < Math.min(bytes.length - 10, 40); i++) {
+    const ts = view.getUint32(i, false);
+    if (isValidTimestamp(ts)) {
+      const dist = view.getUint16(i + 6, false);
+      const changes = view.getUint16(i + 8, false);
+      if (dist <= 9999 && changes <= 1440) {
         startPos = i;
-        console.log(`[Activities-Raw] first valid timestamp at offset ${i}: ${new Date(ts * 1000).toISOString()}`);
         break;
       }
     }
   }
 
   if (startPos < 0) {
-    warnings.push({ offset: 0, message: 'Could not find valid timestamp in activities data' });
+    warnings.push({ offset: 0, message: 'Could not find valid activity data start' });
     return records;
   }
 
   const r = new BinaryReader(toArrayBuffer(bytes));
   r.position = startPos;
 
-  let dayIdx = 0;
-  while (r.position < dataEnd && r.remaining >= 10) {
-    const posBeforeDay = r.position;
+  while (r.remaining >= 10) {
     try {
       const tsValue = r.readUint32();
-      if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) {
-        console.log(`[Activities-Raw] day ${dayIdx}: invalid ts 0x${tsValue.toString(16)} at pos ${posBeforeDay}`);
-        break;
-      }
+      if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) break;
       const ts = new Date(tsValue * 1000);
 
       const dailyPresenceCounter = r.readUint16();
       const dayDistance = r.readUint16();
-      
-      if (dayDistance > 9999) {
-        console.log(`[Activities-Raw] day ${dayIdx}: dayDistance ${dayDistance} at pos ${posBeforeDay}`);
-        break;
-      }
+      if (dayDistance > 9999) break;
 
-      if (r.remaining < 2 || r.position >= dataEnd) break;
+      if (r.remaining < 2) break;
       const activityChangeCount = r.readUint16();
+      if (activityChangeCount > 1440) break;
 
-      if (activityChangeCount > 1440) {
-        console.log(`[Activities-Raw] day ${dayIdx}: changeCount ${activityChangeCount} at pos ${posBeforeDay}`);
-        break;
-      }
-
-      console.log(`[Activities-Raw] day ${dayIdx}: date=${ts.toISOString().slice(0,10)}, dist=${dayDistance}km, changes=${activityChangeCount}, pos=${posBeforeDay}`);
+      const neededBytes = activityChangeCount * 2;
+      const availableChanges = r.remaining >= neededBytes ? activityChangeCount : Math.floor(r.remaining / 2);
 
       const entries: ActivityChangeEntry[] = [];
-
-      for (let i = 0; i < activityChangeCount && r.remaining >= 2 && r.position < dataEnd; i++) {
+      for (let i = 0; i < availableChanges && r.remaining >= 2; i++) {
         const word = r.readUint16();
         const slot = (word >> 15) & 0x01;
         const cardInserted = ((word >> 13) & 0x01) === 0;
@@ -1677,9 +1642,10 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
         };
 
         let nextMinutes = 1440;
-        if (i + 1 < activityChangeCount && r.remaining >= 2 && r.position < dataEnd) {
-          const nextWord = (bytes[r.position] << 8) | bytes[r.position + 1];
-          nextMinutes = nextWord & 0x07FF;
+        if (i + 1 < availableChanges && r.remaining >= 2) {
+          const hi = bytes[r.position];
+          const lo = bytes[r.position + 1];
+          nextMinutes = ((hi << 8) | lo) & 0x07FF;
         }
 
         const hFrom = Math.floor(minutes / 60);
@@ -1697,19 +1663,11 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
       }
 
       records.push({ date: ts, dailyPresenceCounter, dayDistance, entries });
-      dayIdx++;
-
-      // Log the bytes at next position to help debug
-      if (r.position < dataEnd && r.remaining >= 8) {
-        const nextBytes = Array.from(bytes.slice(r.position, r.position + 8)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-        console.log(`[Activities-Raw] next 8B at pos ${r.position}: ${nextBytes}`);
-      }
+      if (availableChanges < activityChangeCount) break; // partial data, stop
     } catch {
       break;
     }
   }
-
-  console.log(`[Activities-Raw] total: ${records.length} days parsed`);
 
   if (records.length === 0) {
     warnings.push({ offset: 0, message: 'Could not extract activity records from raw file' });
