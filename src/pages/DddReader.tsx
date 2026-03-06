@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { parseDddFile, mergeDddData, emptyDddData, type DddFileData, type DddSection, type DriverCardData, type RawFileBuffer } from "@/lib/ddd-parser";
+import { parseDddFile, mergeDddData, emptyDddData, type DddFileData, type DddSection, type DriverCardData, type RawFileBuffer, type ActivityRejection } from "@/lib/ddd-parser";
 import ActivityTimeline from "@/components/ActivityTimeline";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -946,6 +946,43 @@ const DddReader = () => {
                           <span className="text-amber-600">offset {w.offset}:</span> {w.message}
                         </p>
                       ))}
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Activity rejections log */}
+                {data.activityRejections.length > 0 && (
+                  <Card className="border-orange-500/30">
+                    <CardHeader className="py-3"><CardTitle className="text-sm text-orange-600">Odrzucone rekordy czynności ({data.activityRejections.length})</CardTitle></CardHeader>
+                    <CardContent className="p-0">
+                      <ScrollArea className="max-h-[400px]">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="w-20">Offset</TableHead>
+                              <TableHead className="w-24">Data</TableHead>
+                              <TableHead>Powód odrzucenia</TableHead>
+                              <TableHead className="w-16">Dystans</TableHead>
+                              <TableHead className="w-16">Wpisy</TableHead>
+                              <TableHead className="w-28">K1/K2 min</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {data.activityRejections.map((r, i) => (
+                              <TableRow key={i}>
+                                <TableCell className="text-xs font-mono">{r.offset}</TableCell>
+                                <TableCell className="text-xs font-mono">{r.date}</TableCell>
+                                <TableCell className="text-xs">{r.reason}</TableCell>
+                                <TableCell className="text-xs font-mono">{r.dayDistance != null ? `${r.dayDistance} km` : '—'}</TableCell>
+                                <TableCell className="text-xs font-mono">{r.changeCount ?? '—'}</TableCell>
+                                <TableCell className="text-xs font-mono">
+                                  {r.slotTotals ? `${r.slotTotals.driver}/${r.slotTotals.codriver}` : '—'}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </ScrollArea>
                     </CardContent>
                   </Card>
                 )}

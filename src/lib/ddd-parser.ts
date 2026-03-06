@@ -157,6 +157,15 @@ export interface ParserWarning {
   message: string;
 }
 
+export interface ActivityRejection {
+  offset: number;
+  date: string;
+  reason: string;
+  dayDistance?: number;
+  changeCount?: number;
+  slotTotals?: { driver: number; codriver: number };
+}
+
 // ─── Driver Card types ───────────────────────────────────────────────────────
 
 export interface DriverCardIdentification {
@@ -208,6 +217,7 @@ export interface DddFileData {
   speedRecords: SpeedRecord[];
   rawSections: DddSection[];
   warnings: ParserWarning[];
+  activityRejections: ActivityRejection[];
   fileSize: number;
   bytesParsed: number;
   generation: 'gen1' | 'gen2' | 'unknown';
@@ -258,6 +268,7 @@ export function mergeDddData(existing: DddFileData, incoming: DddFileData): DddF
     ),
     rawSections: [...existing.rawSections, ...incoming.rawSections],
     warnings: [...existing.warnings, ...incoming.warnings],
+    activityRejections: [...existing.activityRejections, ...incoming.activityRejections],
     fileSize: existing.fileSize + incoming.fileSize,
     bytesParsed: existing.bytesParsed + incoming.bytesParsed,
     generation: incoming.generation !== 'unknown' ? incoming.generation : existing.generation,
@@ -279,7 +290,7 @@ export function emptyDddData(): DddFileData {
   return {
     overview: null, activities: [], events: [], faults: [],
     technicalData: null, speedRecords: [], rawSections: [],
-    warnings: [], fileSize: 0, bytesParsed: 0, generation: 'unknown',
+    warnings: [], activityRejections: [], fileSize: 0, bytesParsed: 0, generation: 'unknown',
     driverCard: null, rawFileBuffers: [],
   };
 }
@@ -529,6 +540,7 @@ export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileDat
     speedRecords: [],
     rawSections: [],
     warnings,
+    activityRejections: [],
     fileSize: buffer.byteLength,
     bytesParsed: 0,
     generation: 'unknown',
@@ -639,7 +651,7 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         const actSections = sections.filter(s => s.tag === 0x32 || s.tag === 0x22 || s.tag === 0x02);
         console.log(`[DDD] Activities: ${sections.length} total sections, ${actSections.length} activity sections, tags: [${sections.map(s => '0x' + s.tag.toString(16)).join(', ')}]`);
         if (actSections.length > 0) {
-          result.activities = parseActivitiesFromSections(actSections, result.warnings);
+          result.activities = parseActivitiesFromSections(actSections, result.warnings, result.activityRejections);
           console.log(`[DDD] Activities from ${actSections.length} TLV sections: ${result.activities.length} days`);
         }
         // Fall back to raw scanner if TLV parsing yielded nothing
@@ -1581,14 +1593,14 @@ function parseEventsStructured(bytes: Uint8Array, warnings: ParserWarning[]): { 
 
 // ─── TLV-section-based activities parser (Gen2/Gen2v2) ──────────────────────
 
-function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWarning[]): ActivityRecord[] {
+function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWarning[], rejections?: ActivityRejection[]): ActivityRecord[] {
   const byDay = new Map<string, ActivityRecord>();
 
   const dayKey = (d: Date) => `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
 
-  const isPlausible = (rec: ActivityRecord): boolean => {
-    if (!rec.date || Number.isNaN(rec.date.getTime())) return false;
-    if (rec.entries.length === 0) return false;
+  const checkPlausibility = (rec: ActivityRecord, offset: number): string | null => {
+    if (!rec.date || Number.isNaN(rec.date.getTime())) return 'Nieprawidłowa data';
+    if (rec.entries.length === 0) return 'Brak wpisów czynności (entries.length === 0)';
 
     const slotTotals = { driver: 0, codriver: 0 };
     for (const e of rec.entries) {
@@ -1597,30 +1609,61 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
       const from = hF * 60 + mF;
       const to = hT * 60 + mT;
       const dur = to - from;
-      if (dur <= 0 || dur > 1440) return false;
+      if (dur <= 0 || dur > 1440) return `Nieprawidłowy czas trwania wpisu: ${e.timeFrom}–${e.timeTo} (${dur} min)`;
       slotTotals[e.slot] += dur;
     }
-    return slotTotals.driver <= 1440 && slotTotals.codriver <= 1440;
+    if (slotTotals.driver > 1440) return `Suma minut K1 > 24h: ${slotTotals.driver} min`;
+    if (slotTotals.codriver > 1440) return `Suma minut K2 > 24h: ${slotTotals.codriver} min`;
+    return null;
   };
 
   for (const section of sections) {
     const data = section.data;
-    if (data.length < 12) continue;
-
-    // 1) Try structured parser (handles RecordArray headers well)
-    let parsed = parseActivities(data).filter(isPlausible);
-
-    // 2) Fallback to scanner parser for sections with non-standard prefixes
-    if (parsed.length === 0) {
-      parsed = parseRawActivitiesFile(data, []).filter(isPlausible);
+    if (data.length < 12) {
+      rejections?.push({ offset: section.offset, date: '—', reason: `Sekcja za krótka: ${data.length} B < 12 B` });
+      continue;
     }
 
-    if (parsed.length === 0) {
+    // 1) Try structured parser (handles RecordArray headers well)
+    let allParsed = parseActivities(data);
+    let source = 'structured';
+
+    // 2) Fallback to scanner parser for sections with non-standard prefixes
+    if (allParsed.length === 0) {
+      allParsed = parseRawActivitiesFile(data, []);
+      source = 'raw-scanner';
+    }
+
+    if (allParsed.length === 0) {
+      rejections?.push({ offset: section.offset, date: '—', reason: `Żaden parser nie znalazł rekordów (${source}), sekcja ${data.length} B` });
       console.log(`[DDD] Activities section @${section.offset}: no parseable daily records`);
       continue;
     }
 
-    for (const rec of parsed) {
+    const accepted: ActivityRecord[] = [];
+    for (const rec of allParsed) {
+      const reason = checkPlausibility(rec, section.offset);
+      if (reason) {
+        const slotTotals = { driver: 0, codriver: 0 };
+        for (const e of rec.entries) {
+          const [hF, mF] = e.timeFrom.split(':').map(Number);
+          const [hT, mT] = e.timeTo.split(':').map(Number);
+          slotTotals[e.slot] += (hT * 60 + mT) - (hF * 60 + mF);
+        }
+        rejections?.push({
+          offset: section.offset,
+          date: rec.date ? rec.date.toISOString().slice(0, 10) : '—',
+          reason,
+          dayDistance: rec.dayDistance,
+          changeCount: rec.entries.length,
+          slotTotals,
+        });
+      } else {
+        accepted.push(rec);
+      }
+    }
+
+    for (const rec of accepted) {
       const key = dayKey(rec.date);
       const existing = byDay.get(key);
       if (!existing || rec.entries.length > existing.entries.length) {
@@ -1635,7 +1678,21 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
   if (records.length > 0) {
     const maxTs = Math.max(...records.map(r => Math.floor(r.date.getTime() / 1000)));
     const oneYearSecs = 366 * 86400;
-    records = records.filter(r => (maxTs - Math.floor(r.date.getTime() / 1000)) <= oneYearSecs);
+    const before = records.length;
+    records = records.filter(r => {
+      const ts = Math.floor(r.date.getTime() / 1000);
+      const keep = (maxTs - ts) <= oneYearSecs;
+      if (!keep) {
+        rejections?.push({
+          offset: 0,
+          date: r.date.toISOString().slice(0, 10),
+          reason: `Odrzucony przez filtr świeżości (> 1 rok od najnowszego rekordu ${new Date(maxTs * 1000).toISOString().slice(0, 10)})`,
+          dayDistance: r.dayDistance,
+          changeCount: r.entries.length,
+        });
+      }
+      return keep;
+    });
   }
 
   if (records.length === 0) {
