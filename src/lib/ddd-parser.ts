@@ -266,6 +266,11 @@ const EVENT_TYPE_NAMES: Record<number, string> = {
   0x34: 'Karta nieuwierzytelniona',
   0x35: 'Karta wykryta',
   0x36: 'Sesja karty otwarta z ważną kartą',
+  0x37: 'Sesja karty zamknięta',
+  0x38: 'Karta wyjęta podczas sesji',
+  0x39: 'Nieudana próba uwierzytelnienia karty',
+  0x3A: 'Zdarzenie karty GNSS',
+  0x3B: 'Zdarzenie karty ITS',
 };
 
 const FAULT_TYPE_NAMES: Record<number, string> = {
@@ -1379,64 +1384,113 @@ function parseRawOverviewFile(bytes: Uint8Array, warnings: ParserWarning[]): Ddd
     cardSlotsStatus: 0, vuDownloadActivityDataLength: 0,
   };
 
-  // Gen2v2 overview file structure:
-  // RecordArray(MemberStateCert) + RecordArray(VuCert) + actual data
-  // RecordArray header: recordType(2B) + recordSize(2B) + noOfRecords(2B)
-  // Then recordSize × noOfRecords bytes of data
   const view = new DataView(toArrayBuffer(bytes));
-  let pos = 0;
-
-  // Try to skip RecordArray structures (certificates)
-  let skippedArrays = 0;
-  while (pos + 6 < bytes.length && skippedArrays < 4) {
-    const recordType = view.getUint16(pos, false);
-    const recordSize = view.getUint16(pos + 2, false);
-    const noOfRecords = view.getUint16(pos + 4, false);
-    const totalSize = 6 + recordSize * noOfRecords;
-
-    // Validate: record size should be reasonable for certificates (100-2000B)
-    if (recordSize >= 50 && recordSize <= 2000 && noOfRecords >= 1 && noOfRecords <= 10 && pos + totalSize <= bytes.length) {
-      pos += totalSize;
-      skippedArrays++;
-    } else {
-      break;
-    }
-  }
-
-  if (skippedArrays > 0 && pos + 17 < bytes.length) {
-    const r = new BinaryReader(toArrayBuffer(bytes), pos);
-    // VehicleIdentificationNumber (VIN) — 17 bytes
-    const _vin = r.remaining >= 17 ? r.readString(17) : '';
-    // VehicleRegistrationIdentification: nation(1B) + VRN(15B for Gen2v2)
-    const vehicleNationByte = r.remaining > 0 ? r.readUint8() : 0;
-    overview.vehicleRegistrationNation = NATION_CODES[vehicleNationByte] || `0x${vehicleNationByte.toString(16)}`;
-    overview.vehicleRegistrationNumber = r.remaining >= 15 ? r.readString(15) : '';
-    overview.currentDateTime = r.remaining >= 4 ? r.readTimestamp() : null;
-    overview.vuDownloadablePeriodBegin = r.remaining >= 4 ? r.readTimestamp() : null;
-    overview.vuDownloadablePeriodEnd = r.remaining >= 4 ? r.readTimestamp() : null;
-    overview.cardSlotsStatus = r.remaining > 0 ? r.readUint8() : 0;
-    overview.vuDownloadActivityDataLength = r.remaining >= 4 ? r.readUint32() : 0;
-
-    console.log(`[DDD] Overview: VRN="${overview.vehicleRegistrationNumber}", date=${overview.currentDateTime}, skipped ${skippedArrays} RecordArrays`);
-    return overview;
-  }
-
-  // Fallback: scan for recent timestamps only (after 2020)
   const TS_RECENT = new Date('2020-01-01').getTime() / 1000;
-  for (let i = 0; i < bytes.length - 4; i++) {
-    const ts = view.getUint32(i, false);
-    if (ts >= TS_RECENT && ts <= TS_MAX) {
-      overview.currentDateTime = new Date(ts * 1000);
-      break;
+
+  // Strategy 1: Skip TLV certificate sections (76 3x / 76 2x / 76 0x) then read overview data
+  let pos = 0;
+  let skippedTlvSections = 0;
+  while (pos + 4 < bytes.length && skippedTlvSections < 10) {
+    if (bytes[pos] === 0x76) {
+      const tagLow = bytes[pos + 1];
+      const isCertTag = (tagLow === 0x01 || tagLow === 0x02 || tagLow === 0x21 || tagLow === 0x22 || tagLow === 0x31 || tagLow === 0x32);
+      if (isCertTag) {
+        const length = view.getUint16(pos + 2, false);
+        if (length > 0 && length <= 2000 && pos + 4 + length <= bytes.length) {
+          pos += 4 + length;
+          skippedTlvSections++;
+          continue;
+        }
+      }
+    }
+    break;
+  }
+
+  if (skippedTlvSections > 0 && pos + 17 < bytes.length) {
+    // Check if remaining data starts with a TLV overview tag (76 05/25/35)
+    if (bytes[pos] === 0x76 && (bytes[pos + 1] === 0x05 || bytes[pos + 1] === 0x25 || bytes[pos + 1] === 0x35)) {
+      pos += 4; // skip TLV header of overview section
+    }
+    const result = tryParseOverviewData(bytes, pos, overview);
+    if (result) {
+      console.log(`[DDD] Overview: VIN="${result.vin}", VRN="${overview.vehicleRegistrationNumber}", date=${overview.currentDateTime}, skipped ${skippedTlvSections} TLV cert sections`);
+      return overview;
     }
   }
 
-  if (!overview.currentDateTime) {
-    warnings.push({ offset: 0, message: 'Overview file contains only certificate data' });
-    return null;
+  // Strategy 2: Scan for 3 consecutive valid timestamps (currentDateTime + period begin + period end)
+  // These are preceded by VIN(17B) + nation(1B) + VRN(13-15B)
+  for (let i = 0; i < bytes.length - 12; i++) {
+    const ts1 = view.getUint32(i, false);
+    const ts2 = view.getUint32(i + 4, false);
+    const ts3 = view.getUint32(i + 8, false);
+    if (ts1 >= TS_RECENT && ts1 <= TS_MAX && ts2 >= TS_MIN && ts2 <= TS_MAX && ts3 >= TS_MIN && ts3 <= TS_MAX) {
+      // ts2 (period begin) should be before ts3 (period end)
+      if (ts2 <= ts3) {
+        // Work backwards: timestamps are preceded by VIN(17) + VRI(1 nation + 13-15 VRN)
+        // Try Gen2v2 layout: 17 VIN + 1 nation + 1 codepage + 13 VRN = 32 bytes before timestamps
+        // Try Gen1 layout: 17 VIN + 1 nation + 14 VRN = 32 bytes before timestamps
+        for (const vrnLen of [15, 14, 13]) {
+          const vinStart = i - (17 + 1 + vrnLen);
+          if (vinStart >= 0) {
+            const result = tryParseOverviewData(bytes, vinStart, overview);
+            if (result && result.vin.length > 0) {
+              console.log(`[DDD] Overview (timestamp scan): VIN="${result.vin}", VRN="${overview.vehicleRegistrationNumber}", date=${overview.currentDateTime}`);
+              return overview;
+            }
+          }
+        }
+        // Even without VIN, extract timestamps
+        overview.currentDateTime = new Date(ts1 * 1000);
+        overview.vuDownloadablePeriodBegin = new Date(ts2 * 1000);
+        overview.vuDownloadablePeriodEnd = new Date(ts3 * 1000);
+        console.log(`[DDD] Overview (timestamps only): date=${overview.currentDateTime}`);
+        return overview;
+      }
+    }
   }
 
-  return overview;
+  warnings.push({ offset: 0, message: 'Could not parse overview data from file' });
+  return null;
+}
+
+function tryParseOverviewData(bytes: Uint8Array, pos: number, overview: DddOverview): { vin: string } | null {
+  if (pos + 17 + 1 + 13 + 12 > bytes.length) return null;
+  const r = new BinaryReader(toArrayBuffer(bytes), pos);
+  const vin = r.readString(17);
+  // Validate VIN: should be mostly alphanumeric
+  const vinValid = /^[A-Z0-9]{5,17}$/.test(vin);
+  if (!vinValid && vin.length > 0) return null;
+
+  const vehicleNationByte = r.readUint8();
+  overview.vehicleRegistrationNation = NATION_CODES[vehicleNationByte] || `0x${vehicleNationByte.toString(16)}`;
+
+  // Try to determine VRN length: check if next byte is a codepage indicator
+  // Gen2v2 has codePage(1B) + VRN(13B), Gen1 has VRN(14B)
+  const nextByte = bytes[r.position];
+  let vrn: string;
+  if (nextByte <= 0x0F) {
+    // Likely codepage byte — skip it and read 13B VRN
+    r.skip(1);
+    vrn = r.readString(13);
+  } else {
+    // Gen1/Gen2 — 14 or 15 byte VRN
+    vrn = r.readString(15);
+  }
+  overview.vehicleRegistrationNumber = vrn;
+
+  overview.currentDateTime = r.remaining >= 4 ? r.readTimestamp() : null;
+  overview.vuDownloadablePeriodBegin = r.remaining >= 4 ? r.readTimestamp() : null;
+  overview.vuDownloadablePeriodEnd = r.remaining >= 4 ? r.readTimestamp() : null;
+  overview.cardSlotsStatus = r.remaining > 0 ? r.readUint8() : 0;
+  overview.vuDownloadActivityDataLength = r.remaining >= 4 ? r.readUint32() : 0;
+
+  // Validate: currentDateTime should be reasonable
+  if (!overview.currentDateTime) return null;
+  const ts = overview.currentDateTime.getTime() / 1000;
+  if (ts < TS_MIN || ts > TS_MAX) return null;
+
+  return { vin };
 }
 
 // ─── Direct overview parser (Gen2v2/Gen2 — no certs inside TLV section) ──────
@@ -1488,19 +1542,23 @@ function extractSections(buffer: ArrayBuffer, warnings: ParserWarning[]): DddSec
                          (tagLow >= 0x31 && tagLow <= 0x39);
       if (isValidTag) {
         const length = view.getUint16(pos + 2, false);
-        if (length > 0 && length <= MAX_SECTION_SIZE && pos + 4 + length <= bytes.length) {
-          const data = bytes.slice(pos + 4, pos + 4 + length);
-          sections.push({
-            tag: tagLow,
-            tagHigh: 0x76,
-            offset: pos,
-            length,
-            data,
-          });
-          console.log(`[DDD] Section 0x76 0x${tagLow.toString(16).padStart(2, '0')} at offset ${pos}, length ${length}`);
-          pos += 4 + length;
-          continue;
-        } else {
+        if (length > 0 && length <= MAX_SECTION_SIZE) {
+          // Allow truncated last section (file may be cut short from TRTP download)
+          const availableLength = Math.min(length, bytes.length - pos - 4);
+          if (availableLength > 0) {
+            const data = bytes.slice(pos + 4, pos + 4 + availableLength);
+            sections.push({
+              tag: tagLow,
+              tagHigh: 0x76,
+              offset: pos,
+              length: availableLength,
+              data,
+            });
+            console.log(`[DDD] Section 0x76 0x${tagLow.toString(16).padStart(2, '0')} at offset ${pos}, length ${availableLength}${availableLength < length ? ` (truncated from ${length})` : ''}`);
+            pos += 4 + availableLength;
+            continue;
+          }
+        } else if (length > MAX_SECTION_SIZE) {
           warnings.push({ offset: pos, message: `Invalid length ${length} for tag 0x76${tagLow.toString(16).padStart(2, '0')}` });
         }
       }
