@@ -8,27 +8,14 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { parseDddFile, mergeDddData, emptyDddData, type DddFileData, type DddSection, type DriverCardData, type RawFileBuffer } from "@/lib/ddd-parser";
+import ActivityTimeline from "@/components/ActivityTimeline";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { listDddFiles, downloadDddFile } from "@/lib/ddd-storage";
 import { toast } from "sonner";
 
-const ACTIVITY_COLORS: Record<string, string> = {
-  driving: "bg-red-500",
-  work: "bg-amber-500",
-  availability: "bg-sky-500",
-  break: "bg-emerald-500",
-  unknown: "bg-muted",
-};
 
-const ACTIVITY_LABELS: Record<string, string> = {
-  driving: "Jazda",
-  work: "Praca",
-  availability: "Dyspozycyjność",
-  break: "Odpoczynek",
-  unknown: "Nieznany",
-};
 
 const formatDate = (d: Date | null) => d ? d.toLocaleDateString("pl-PL") : "—";
 const formatDateTime = (d: Date | null) => d ? d.toLocaleString("pl-PL") : "—";
@@ -422,37 +409,7 @@ const DddReader = () => {
               {data.activities.length === 0 ? (
                 <Card><CardContent className="py-8 text-center text-muted-foreground">Brak danych o czynnościach</CardContent></Card>
               ) : (
-                <div className="space-y-4">
-                  {data.activities.slice(0, 60).map((day, idx) => (
-                    <Card key={idx}>
-                      <CardHeader className="py-3">
-                        <CardTitle className="flex items-center justify-between text-sm">
-                          <span>{formatDate(day.date)}</span>
-                          <span className="text-xs font-normal text-muted-foreground">{day.dayDistance} km</span>
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent className="py-2">
-                        {day.entries.length === 0 ? (
-                          <p className="text-xs text-muted-foreground">Brak wpisów</p>
-                        ) : (
-                          <div className="space-y-1">
-                            {day.entries.map((e, j) => (
-                              <div key={j} className="flex items-center gap-2 text-xs">
-                                <div className={`h-2.5 w-2.5 rounded-full ${ACTIVITY_COLORS[e.status]}`} />
-                                <span className="w-20 font-medium">{ACTIVITY_LABELS[e.status]}</span>
-                                <span className="text-muted-foreground">{e.timeFrom}–{e.timeTo}</span>
-                                <Badge variant="outline" className="ml-auto text-[10px]">{e.slot === 'driver' ? 'K1' : 'K2'}</Badge>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </CardContent>
-                    </Card>
-                  ))}
-                  {data.activities.length > 60 && (
-                    <p className="text-center text-xs text-muted-foreground">Pokazano 60 z {data.activities.length} dni</p>
-                  )}
-                </div>
+                <ActivityTimeline activities={data.activities} />
               )}
             </TabsContent>
 
