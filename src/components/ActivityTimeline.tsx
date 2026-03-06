@@ -33,6 +33,8 @@ function formatMinutes(mins: number): string {
 function computeDaySummary(day: ActivityRecord) {
   const totals: Record<string, number> = { driving: 0, work: 0, availability: 0, break: 0, unknown: 0 };
   for (const e of day.entries) {
+    // Only count driver slot to avoid double-counting with codriver
+    if (e.slot !== 'driver') continue;
     const [hFrom, mFrom] = e.timeFrom.split(":").map(Number);
     const [hTo, mTo] = e.timeTo.split(":").map(Number);
     const from = hFrom * 60 + mFrom;
