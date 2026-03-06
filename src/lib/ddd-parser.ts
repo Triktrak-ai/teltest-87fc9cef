@@ -2005,7 +2005,8 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
       const activityChangeCount = r.remaining >= 2 ? r.readUint16() : 0;
       if (activityChangeCount > 1440) break;
 
-      const entries: ActivityChangeEntry[] = [];
+      // First pass: read all raw change entries
+      const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
 
       for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
         const word = r.readUint16();
@@ -2014,27 +2015,36 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
         const activity = (word >> 11) & 0x03;
         const minutes = word & 0x07FF;
         if (minutes >= 1440) continue;
+        rawEntries.push({ slot, cardInserted, activity, minutes });
+      }
 
-        const statusMap: Record<number, ActivityChangeEntry['status']> = {
-          0: 'break', 1: 'availability', 2: 'work', 3: 'driving',
-        };
+      const statusMap: Record<number, ActivityChangeEntry['status']> = {
+        0: 'break', 1: 'availability', 2: 'work', 3: 'driving',
+      };
 
+      // Second pass: compute timeTo per entry using next entry with SAME slot
+      const entries: ActivityChangeEntry[] = [];
+      for (let i = 0; i < rawEntries.length; i++) {
+        const e = rawEntries[i];
         let nextMinutes = 1440;
-        if (i + 1 < activityChangeCount && r.remaining >= 2) {
-          const peek = r.readUint16();
-          nextMinutes = peek & 0x07FF;
-          r.position -= 2;
+        for (let j = i + 1; j < rawEntries.length; j++) {
+          if (rawEntries[j].slot === e.slot) {
+            nextMinutes = rawEntries[j].minutes;
+            break;
+          }
         }
+        if (e.minutes >= nextMinutes) continue;
 
-        const hFrom = Math.floor(minutes / 60);
-        const mFrom = minutes % 60;
+        const hFrom = Math.floor(e.minutes / 60);
+        const mFrom = e.minutes % 60;
         const hTo = Math.floor(Math.min(nextMinutes, 1440) / 60);
         const mTo = Math.min(nextMinutes, 1440) % 60;
 
         entries.push({
-          slot: slot === 0 ? 'driver' : 'codriver',
-          status: statusMap[activity] || 'unknown',
-          cardInserted, minutes,
+          slot: e.slot === 0 ? 'driver' : 'codriver',
+          status: statusMap[e.activity] || 'unknown',
+          cardInserted: e.cardInserted,
+          minutes: e.minutes,
           timeFrom: `${hFrom.toString().padStart(2, '0')}:${mFrom.toString().padStart(2, '0')}`,
           timeTo: `${hTo.toString().padStart(2, '0')}:${mTo.toString().padStart(2, '0')}`,
         });
