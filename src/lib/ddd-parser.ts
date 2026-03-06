@@ -73,10 +73,52 @@ export interface CalibrationRecord {
   newDateTime: Date | null;
 }
 
+export interface VuIdentification {
+  vuManufacturerName: string;
+  vuManufacturerAddress: string;
+  vuSerialNumber: string;
+  vuPartNumber: string;
+  vuSoftwareVersion: string;
+  vuManufacturingDate: Date | null;
+  vuApprovalNumber: string;
+}
+
+export interface SealRecord {
+  sealIdentifier: string;
+  equipmentType: number;
+  equipmentTypeName: string;
+}
+
+export interface SensorPairedRecord {
+  sensorSerialNumber: string;
+  sensorApprovalNumber: string;
+  sensorPairingDate: Date | null;
+}
+
+export interface GnssAccumulatedRecord {
+  timestamp: Date | null;
+  latitude: number;
+  longitude: number;
+  vehicleOdometerValue: number;
+}
+
+export interface CompanyLockRecord {
+  lockInTime: Date | null;
+  lockOutTime: Date | null;
+  companyName: string;
+  companyAddress: string;
+  companyCardNumber: string;
+}
+
 export interface TechnicalData {
   vuSerialNumber: string;
   sensorSerialNumber: string;
   calibrations: CalibrationRecord[];
+  vuIdentification: VuIdentification | null;
+  seals: SealRecord[];
+  sensorsPaired: SensorPairedRecord[];
+  gnssRecords: GnssAccumulatedRecord[];
+  companyLocks: CompanyLockRecord[];
 }
 
 export interface SpeedRecord {
