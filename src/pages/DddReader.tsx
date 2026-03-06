@@ -649,6 +649,37 @@ const DddReader = () => {
                     </Card>
                   )}
 
+                  {/* Company Locks */}
+                  {data.technicalData.companyLocks.length > 0 && (
+                    <Card>
+                      <CardHeader className="py-3"><CardTitle className="text-sm">Blokady firmowe ({data.technicalData.companyLocks.length})</CardTitle></CardHeader>
+                      <CardContent className="p-0">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Firma</TableHead>
+                              <TableHead>Adres</TableHead>
+                              <TableHead>Nr karty</TableHead>
+                              <TableHead>Zablokowano</TableHead>
+                              <TableHead>Odblokowano</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {data.technicalData.companyLocks.map((l, i) => (
+                              <TableRow key={i}>
+                                <TableCell className="text-xs">{l.companyName || '—'}</TableCell>
+                                <TableCell className="text-xs">{l.companyAddress || '—'}</TableCell>
+                                <TableCell className="font-mono text-xs">{l.companyCardNumber || '—'}</TableCell>
+                                <TableCell className="text-xs">{formatDateTime(l.lockInTime)}</TableCell>
+                                <TableCell className="text-xs">{formatDateTime(l.lockOutTime)}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </CardContent>
+                    </Card>
+                  )}
+
                   {/* GNSS Records */}
                   {data.technicalData.gnssRecords.length > 0 && (
                     <Card>
