@@ -1068,16 +1068,20 @@ function parseCalibrationAt(bytes: Uint8Array, offset: number, maxLen?: number):
   // VehicleIdentificationNumber (17B) — VIN
   const vehicleIdentificationNumber = r.remaining >= 17 ? r.readString(17) : '';
 
-  // VehicleRegistrationIdentification: nation(1B) + codepage(1B for Gen2v2) + VRN
+  // VehicleRegistrationIdentification:
+  // Gen2v2: nation(1B) + codepage(1B) + VRN(15B) = 17B total
+  // Gen1:   nation(1B) + VRN(14B) = 15B total
   const vrnNation = r.remaining > 0 ? r.readUint8() : 0;
   let vrn = '';
   if (r.remaining > 0) {
+    // Gen2v2 codepage byte: typically 0x00-0x0F
     const nextByte = bytes[r.position];
-    if (nextByte <= 0x0F && r.remaining >= 14) {
-      // Gen2v2: codepage(1B) + VRN(13B)
+    if (nextByte <= 0x0F && r.remaining >= 16) {
+      // Gen2v2: codepage(1B) + VRN(15B)
       r.skip(1);
-      vrn = r.readString(13);
+      vrn = r.readString(15);
     } else if (r.remaining >= 14) {
+      // Gen1: VRN(14B)
       vrn = r.readString(14);
     }
   }
