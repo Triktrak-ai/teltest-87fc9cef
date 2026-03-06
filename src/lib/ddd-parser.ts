@@ -650,13 +650,42 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         // Try TLV-section-based parsing first (Gen2/Gen2v2)
         // Activities tags seen in the wild: TRTP file-type tags (0x02/0x22/0x32)
         // and legacy section tags (0x06/0x26/0x36). Accept both for compatibility.
-        const actSections = sections.filter(s => [0x32, 0x22, 0x02, 0x36, 0x26, 0x06].includes(s.tag));
+        const actSections = sections
+          .filter(s => [0x32, 0x22, 0x02, 0x36, 0x26, 0x06].includes(s.tag))
+          .sort((a, b) => a.offset - b.offset);
+
         console.log(`[DDD] Activities: ${sections.length} total sections, ${actSections.length} activity sections, tags: [${sections.map(s => '0x' + s.tag.toString(16)).join(', ')}]`);
+
         if (actSections.length > 0) {
-          result.activities = parseActivitiesFromSections(actSections, result.warnings, result.activityRejections);
-          console.log(`[DDD] Activities from ${actSections.length} TLV sections: ${result.activities.length} days`);
+          // Some devices split one activities payload into multiple same-tag TLV chunks.
+          // Per Annex 1C file semantics we should parse the concatenated payload first.
+          const totalLen = actSections.reduce((sum, s) => sum + s.data.length, 0);
+          const mergedData = new Uint8Array(totalLen);
+          let writePos = 0;
+          for (const s of actSections) {
+            mergedData.set(s.data, writePos);
+            writePos += s.data.length;
+          }
+
+          const mergedSection: DddSection = {
+            tag: actSections[0].tag,
+            tagHigh: actSections[0].tagHigh,
+            offset: actSections[0].offset,
+            length: mergedData.length,
+            data: mergedData,
+          };
+
+          result.activities = parseActivitiesFromSections([mergedSection], result.warnings, result.activityRejections);
+          console.log(`[DDD] Activities from concatenated TLV payload (${mergedData.length} B): ${result.activities.length} days`);
+
+          // Fallback: if concatenated parse fails, try chunk-by-chunk parsing
+          if (result.activities.length === 0) {
+            result.activities = parseActivitiesFromSections(actSections, result.warnings, result.activityRejections);
+            console.log(`[DDD] Activities from per-section parsing: ${result.activities.length} days`);
+          }
         }
-        // Fall back to raw scanner if TLV parsing yielded nothing
+
+        // Final fallback to raw scanner on whole file
         if (result.activities.length === 0) {
           result.activities = parseRawActivitiesFile(bytes, result.warnings);
         }
