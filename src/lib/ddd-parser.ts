@@ -595,14 +595,13 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
   const sections = extractSections(buffer, result.warnings);
   result.rawSections = sections;
 
-  // For overview and events, try using TLV sections first
+  // For overview, events, and activities, try using TLV sections first
   if (fileType === 'overview' && sections.length > 0) {
     const overviewSection = sections.find(s => s.tag === 0x35 || s.tag === 0x25 || s.tag === 0x05);
     if (overviewSection) {
       try {
         const isGen2v2 = overviewSection.tag === 0x35;
         const isGen2 = overviewSection.tag === 0x25;
-        // Gen2v2/Gen2 overview sections contain data directly (no certs inside)
         if (isGen2v2 || isGen2) {
           result.overview = parseOverviewDirect(overviewSection.data);
         } else {
@@ -613,6 +612,20 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         return result;
       } catch (e) {
         console.warn('[DDD] TLV overview parse failed, falling back to raw:', e);
+      }
+    }
+  }
+
+  if (fileType === 'activities' && sections.length > 0) {
+    const actSection = sections.find(s => s.tag === 0x36 || s.tag === 0x26 || s.tag === 0x06);
+    if (actSection) {
+      try {
+        result.activities = parseActivities(actSection.data);
+        result.bytesParsed = buffer.byteLength;
+        console.log(`[DDD] Activities from TLV section 0x${actSection.tag.toString(16)}: ${result.activities.length} days`);
+        if (result.activities.length > 0) return result;
+      } catch (e) {
+        console.warn('[DDD] TLV activities parse failed, falling back to raw:', e);
       }
     }
   }
@@ -1572,121 +1585,76 @@ function parseEventsStructured(bytes: Uint8Array, warnings: ParserWarning[]): { 
 
 function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): ActivityRecord[] {
   const records: ActivityRecord[] = [];
+  if (bytes.length < 12) return records;
 
-  // Activities file: contains activity data interspersed with certificates
-  // Certificates start with 0x76 0x32, so parse data before and between certificates
-
-  // Find all certificate positions
-  const certPositions: number[] = [];
-  for (let i = 0; i < bytes.length - 4; i++) {
-    if (bytes[i] === 0x76 && (bytes[i + 1] === 0x32 || bytes[i + 1] === 0x31)) {
-      certPositions.push(i);
-    }
-  }
-
-  // Parse activity data from the beginning until first certificate
-  const dataEnd = certPositions.length > 0 ? certPositions[0] : bytes.length;
-
-  if (dataEnd < 8) {
-    warnings.push({ offset: 0, message: `Activities data too short: ${dataEnd} bytes before first certificate` });
-    return records;
-  }
-
-  // Try to parse activity records from the raw data
+  const view = new DataView(toArrayBuffer(bytes));
   const r = new BinaryReader(toArrayBuffer(bytes));
 
-  // Skip initial header (variable length, try to find first valid timestamp)
-  let startPos = -1;
-  const view = new DataView(toArrayBuffer(bytes));
-  for (let i = 0; i < Math.min(dataEnd, 20); i++) {
-    if (i + 4 <= bytes.length) {
-      const ts = view.getUint32(i, false);
-      if (isValidTimestamp(ts)) {
-        startPos = i;
-        break;
-      }
+  // Scan for all valid daily record positions by looking for valid timestamps
+  // followed by plausible dailyPresenceCounter, dayDistance, and changeCount
+  const dayPositions: number[] = [];
+  for (let i = 0; i < bytes.length - 10; i++) {
+    const ts = view.getUint32(i, false);
+    if (!isValidTimestamp(ts)) continue;
+    const dist = view.getUint16(i + 6, false);
+    const changes = view.getUint16(i + 8, false);
+    // Plausibility: distance < 10000km, changes <= 1440, and enough bytes for the changes
+    if (dist <= 9999 && changes <= 1440 && i + 10 + changes * 2 <= bytes.length) {
+      dayPositions.push(i);
+      // Skip past this record to avoid finding timestamps within activity data
+      i += 10 + changes * 2 - 1;
     }
   }
 
-  if (startPos < 0) {
-    // Try a different approach: look for activity change records pattern
-    // Header might be: tag(1) + subtag(1) + length(2) + data
-    // Skip first few bytes that look like a header
-    if (bytes.length > 10) {
-      const potentialLength = (bytes[2] << 8) | bytes[3];
-      if (potentialLength > 0 && potentialLength < bytes.length) {
-        startPos = 4;
-      }
-    }
-  }
+  for (const pos of dayPositions) {
+    r.position = pos;
+    try {
+      const tsValue = r.readUint32();
+      const ts = new Date(tsValue * 1000);
+      const dailyPresenceCounter = r.readUint16();
+      const dayDistance = r.readUint16();
+      const activityChangeCount = r.readUint16();
 
-  if (startPos >= 0 && startPos < dataEnd) {
-    r.position = startPos;
-    // Try to parse activity days
-    while (r.position < dataEnd && r.remaining >= 8) {
-      try {
-        const tsValue = r.readUint32();
-        if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) {
-          break;
-        }
-        const ts = new Date(tsValue * 1000);
+      const entries: ActivityChangeEntry[] = [];
+      for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
+        const word = r.readUint16();
+        const slot = (word >> 15) & 0x01;
+        const cardInserted = ((word >> 13) & 0x01) === 0;
+        const activity = (word >> 11) & 0x03;
+        const minutes = word & 0x07FF;
+        if (minutes >= 1440) continue;
 
-        if (r.remaining < 4) break;
-        const dailyPresenceCounter = r.readUint16();
-        const dayDistance = r.readUint16();
-        if (dayDistance > 9999) break;
+        const statusMap: Record<number, ActivityChangeEntry['status']> = {
+          0: 'break', 1: 'availability', 2: 'work', 3: 'driving',
+        };
 
-        const entries: ActivityChangeEntry[] = [];
-
-        if (r.remaining >= 2 && r.position < dataEnd) {
-          const activityChangeCount = r.readUint16();
-
-          if (activityChangeCount > 0 && activityChangeCount <= 1440) {
-            for (let i = 0; i < activityChangeCount && r.remaining >= 2 && r.position < dataEnd; i++) {
-              const word = r.readUint16();
-              // Annex 1C Appendix 1 §2.1: scpaattttttttttt
-              // s=bit15 (slot), c=bit14 (crew), p=bit13 (card present),
-              // aa=bits12-11 (activity), ttttttttttt=bits10-0 (minutes)
-              const slot = (word >> 15) & 0x01;
-              const cardInserted = ((word >> 13) & 0x01) === 0; // p=0 means card inserted
-              const activity = (word >> 11) & 0x03;
-              const minutes = word & 0x07FF; // 11 bits, max 1439
-              if (minutes >= 1440) continue;
-
-              const statusMap: Record<number, ActivityChangeEntry['status']> = {
-                0: 'break', 1: 'availability', 2: 'work', 3: 'driving',
-              };
-
-              // Peek next entry for timeTo
-              let nextMinutes = 1440;
-              if (i + 1 < activityChangeCount && r.remaining >= 2 && r.position < dataEnd) {
-                const nextWord = (bytes[r.position] << 8) | bytes[r.position + 1];
-                nextMinutes = nextWord & 0x07FF;
-              }
-
-              const hFrom = Math.floor(minutes / 60);
-              const mFrom = minutes % 60;
-              const hTo = Math.floor(Math.min(nextMinutes, 1440) / 60);
-              const mTo = Math.min(nextMinutes, 1440) % 60;
-
-              entries.push({
-                slot: slot === 0 ? 'driver' : 'codriver',
-                status: statusMap[activity] || 'unknown',
-                cardInserted,
-                minutes,
-                timeFrom: `${hFrom.toString().padStart(2, '0')}:${mFrom.toString().padStart(2, '0')}`,
-                timeTo: `${hTo.toString().padStart(2, '0')}:${mTo.toString().padStart(2, '0')}`,
-              });
-            }
-          }
+        let nextMinutes = 1440;
+        if (i + 1 < activityChangeCount && r.remaining >= 2) {
+          nextMinutes = ((bytes[r.position] << 8) | bytes[r.position + 1]) & 0x07FF;
         }
 
-        records.push({ date: ts, dailyPresenceCounter, dayDistance, entries });
-      } catch {
-        break;
+        const hFrom = Math.floor(minutes / 60);
+        const mFrom = minutes % 60;
+        const hTo = Math.floor(Math.min(nextMinutes, 1440) / 60);
+        const mTo = Math.min(nextMinutes, 1440) % 60;
+
+        entries.push({
+          slot: slot === 0 ? 'driver' : 'codriver',
+          status: statusMap[activity] || 'unknown',
+          cardInserted, minutes,
+          timeFrom: `${hFrom.toString().padStart(2, '0')}:${mFrom.toString().padStart(2, '0')}`,
+          timeTo: `${hTo.toString().padStart(2, '0')}:${mTo.toString().padStart(2, '0')}`,
+        });
       }
+
+      records.push({ date: ts, dailyPresenceCounter, dayDistance, entries });
+    } catch {
+      continue;
     }
   }
+
+  // Sort by date
+  records.sort((a, b) => a.date.getTime() - b.date.getTime());
 
   if (records.length === 0) {
     warnings.push({ offset: 0, message: 'Could not extract activity records from raw file' });
@@ -1971,20 +1939,14 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
 
   while (r.remaining >= 12) {
     try {
-      // Zmiana 1: walidacja timestamp — break przy śmieciach z cyklicznego bufora
       const tsValue = r.readUint32();
-      if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) {
-        break;
-      }
+      if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) break;
       const date = new Date(tsValue * 1000);
 
       const dailyPresenceCounter = r.readUint16();
-
-      // Zmiana 4: walidacja dayDistance
       const dayDistance = r.readUint16();
       if (dayDistance > 9999) break;
 
-      // Zmiana 2: walidacja activityChangeCount
       const activityChangeCount = r.remaining >= 2 ? r.readUint16() : 0;
       if (activityChangeCount > 1440) break;
 
@@ -1992,13 +1954,10 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
 
       for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
         const word = r.readUint16();
-        // Annex 1C Appendix 1 §2.1: scpaattttttttttt
         const slot = (word >> 15) & 0x01;
-        const cardInserted = ((word >> 13) & 0x01) === 0; // p=0 means card inserted
+        const cardInserted = ((word >> 13) & 0x01) === 0;
         const activity = (word >> 11) & 0x03;
-        const minutes = word & 0x07FF; // 11 bits
-
-        // Zmiana 3: walidacja minutes — pomijaj śmieci
+        const minutes = word & 0x07FF;
         if (minutes >= 1440) continue;
 
         const statusMap: Record<number, ActivityChangeEntry['status']> = {
@@ -2007,7 +1966,7 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
 
         let nextMinutes = 1440;
         if (i + 1 < activityChangeCount && r.remaining >= 2) {
-          const peek = (r.readUint16());
+          const peek = r.readUint16();
           nextMinutes = peek & 0x07FF;
           r.position -= 2;
         }
