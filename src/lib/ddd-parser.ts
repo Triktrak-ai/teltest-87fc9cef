@@ -1582,104 +1582,66 @@ function parseEventsStructured(bytes: Uint8Array, warnings: ParserWarning[]): { 
 // ─── TLV-section-based activities parser (Gen2/Gen2v2) ──────────────────────
 
 function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWarning[]): ActivityRecord[] {
-  const records: ActivityRecord[] = [];
-  const statusMap: Record<number, ActivityChangeEntry['status']> = {
-    0: 'break', 1: 'availability', 2: 'work', 3: 'driving',
+  const byDay = new Map<string, ActivityRecord>();
+
+  const dayKey = (d: Date) => `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+
+  const isPlausible = (rec: ActivityRecord): boolean => {
+    if (!rec.date || Number.isNaN(rec.date.getTime())) return false;
+    if (rec.entries.length === 0) return false;
+
+    const slotTotals = { driver: 0, codriver: 0 };
+    for (const e of rec.entries) {
+      const [hF, mF] = e.timeFrom.split(':').map(Number);
+      const [hT, mT] = e.timeTo.split(':').map(Number);
+      const from = hF * 60 + mF;
+      const to = hT * 60 + mT;
+      const dur = to - from;
+      if (dur <= 0 || dur > 1440) return false;
+      slotTotals[e.slot] += dur;
+    }
+    return slotTotals.driver <= 1440 && slotTotals.codriver <= 1440;
   };
 
   for (const section of sections) {
     const data = section.data;
-    if (data.length < 14) continue;
+    if (data.length < 12) continue;
 
-    const view = new DataView(toArrayBuffer(data));
+    // 1) Try structured parser (handles RecordArray headers well)
+    let parsed = parseActivities(data).filter(isPlausible);
 
-    // Find the timestamp within the first 20 bytes of section data
-    // Gen2v2 sections have a variable prefix (typically 3 bytes: recordType + counter)
-    let tsOffset = -1;
-    for (let probe = 0; probe <= Math.min(20, data.length - 10); probe++) {
-      const candidateTs = view.getUint32(probe, false);
-      if (isValidTimestamp(candidateTs)) {
-        // Verify plausibility of following fields
-        const probeDist = view.getUint16(probe + 6, false);
-        const probeChanges = view.getUint16(probe + 8, false);
-        if (probeDist <= 9999 && probeChanges <= 1440 && probe + 10 + probeChanges * 2 <= data.length) {
-          tsOffset = probe;
-          break;
-        }
-      }
+    // 2) Fallback to scanner parser for sections with non-standard prefixes
+    if (parsed.length === 0) {
+      parsed = parseRawActivitiesFile(data, []).filter(isPlausible);
     }
 
-    if (tsOffset < 0) {
-      console.log(`[DDD] Activities section @${section.offset}: no valid timestamp found in first 20 bytes`);
+    if (parsed.length === 0) {
+      console.log(`[DDD] Activities section @${section.offset}: no parseable daily records`);
       continue;
     }
 
-    try {
-      const r = new BinaryReader(toArrayBuffer(data));
-      r.position = tsOffset;
-
-      const tsValue = r.readUint32();
-      const ts = new Date(tsValue * 1000);
-      const dailyPresenceCounter = r.readUint16();
-      const dayDistance = r.readUint16();
-      const activityChangeCount = r.readUint16();
-
-      // Read activity change entries
-      const rawEntries: Array<{ slot: number; activity: number; minutes: number; cardInserted: boolean }> = [];
-      for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
-        const word = r.readUint16();
-        const slot = (word >> 15) & 0x01;
-        const cardInserted = ((word >> 13) & 0x01) === 0;
-        const activity = (word >> 11) & 0x03;
-        const minutes = word & 0x07FF;
-        if (minutes >= 1440) continue;
-        rawEntries.push({ slot, cardInserted, activity, minutes });
+    for (const rec of parsed) {
+      const key = dayKey(rec.date);
+      const existing = byDay.get(key);
+      if (!existing || rec.entries.length > existing.entries.length) {
+        byDay.set(key, rec);
       }
-
-      // Compute timeTo per entry using next entry with SAME slot
-      const entries: ActivityChangeEntry[] = [];
-      for (let i = 0; i < rawEntries.length; i++) {
-        const e = rawEntries[i];
-        let nextMinutes = 1440;
-        for (let j = i + 1; j < rawEntries.length; j++) {
-          if (rawEntries[j].slot === e.slot) {
-            nextMinutes = rawEntries[j].minutes;
-            break;
-          }
-        }
-        if (e.minutes >= nextMinutes) continue;
-
-        const hFrom = Math.floor(e.minutes / 60);
-        const mFrom = e.minutes % 60;
-        const hTo = Math.floor(Math.min(nextMinutes, 1440) / 60);
-        const mTo = Math.min(nextMinutes, 1440) % 60;
-
-        entries.push({
-          slot: e.slot === 0 ? 'driver' : 'codriver',
-          status: statusMap[e.activity] || 'unknown',
-          cardInserted: e.cardInserted,
-          minutes: e.minutes,
-          timeFrom: `${hFrom.toString().padStart(2, '0')}:${mFrom.toString().padStart(2, '0')}`,
-          timeTo: `${hTo.toString().padStart(2, '0')}:${mTo.toString().padStart(2, '0')}`,
-        });
-      }
-
-      // Validate slot totals
-      const slotTotals = { 0: 0, 1: 0 };
-      for (const e of entries) {
-        const [hF, mF] = e.timeFrom.split(':').map(Number);
-        const [hT, mT] = e.timeTo.split(':').map(Number);
-        slotTotals[e.slot === 'driver' ? 0 : 1] += (hT * 60 + mT) - (hF * 60 + mF);
-      }
-      if (slotTotals[0] > 1440 || slotTotals[1] > 1440) continue;
-
-      records.push({ date: ts, dailyPresenceCounter, dayDistance, entries });
-    } catch {
-      continue;
     }
   }
 
-  records.sort((a, b) => a.date.getTime() - b.date.getTime());
+  let records = Array.from(byDay.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  // Keep only recent window relative to newest record (circular buffer protection)
+  if (records.length > 0) {
+    const maxTs = Math.max(...records.map(r => Math.floor(r.date.getTime() / 1000)));
+    const oneYearSecs = 366 * 86400;
+    records = records.filter(r => (maxTs - Math.floor(r.date.getTime() / 1000)) <= oneYearSecs);
+  }
+
+  if (records.length === 0) {
+    warnings.push({ offset: 0, message: 'Could not extract activity records from TLV sections' });
+  }
+
   return records;
 }
 

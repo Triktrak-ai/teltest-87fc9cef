@@ -57,6 +57,9 @@ describe('Multi-file DDD merge with filename detection', () => {
     console.log(`  Technical: ${merged.technicalData ? 'YES' : 'no'}`);
     console.log(`  Warnings: ${merged.warnings.length}`);
 
+    // Activities should be parsed from activities file (Gen2v2 TLV sections)
+    expect(merged.activities.length).toBeGreaterThan(0);
+
     // Speed should now have many more records from individual file parsing
     expect(merged.speedRecords.length).toBeGreaterThan(1000);
   });
