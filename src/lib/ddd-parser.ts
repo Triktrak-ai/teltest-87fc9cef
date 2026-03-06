@@ -616,25 +616,9 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
     }
   }
 
-  if (fileType === 'activities' && sections.length > 0) {
-    // Activities tags: Gen1=0x02, Gen2=0x22, Gen2v2=0x32
-    const actSections = sections.filter(s => s.tag === 0x32 || s.tag === 0x22 || s.tag === 0x02);
-    if (actSections.length > 0) {
-      // Concatenate all activity section data — these are pages from the VU circular buffer
-      const totalLen = actSections.reduce((sum, s) => sum + s.data.length, 0);
-      const combined = new Uint8Array(totalLen);
-      let offset = 0;
-      for (const sect of actSections) {
-        combined.set(sect.data, offset);
-        offset += sect.data.length;
-      }
-      console.log(`[DDD] Concatenated ${actSections.length} activity TLV sections → ${totalLen} bytes`);
-      result.activities = parseRawActivitiesFile(combined, result.warnings);
-      result.bytesParsed = buffer.byteLength;
-      console.log(`[DDD] Activities from TLV sections: ${result.activities.length} days`);
-      if (result.activities.length > 0) return result;
-    }
-  }
+  // For activities, skip TLV-based parsing — the VuActivityDailyData_2_2 sections contain 
+  // complex nested structures (card insertion/withdrawal records) that require the raw scanner.
+  // The raw scanner works on the entire file and finds daily records by timestamp + plausibility.
 
   try {
     switch (fileType) {
