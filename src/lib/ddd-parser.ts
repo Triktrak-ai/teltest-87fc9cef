@@ -1018,10 +1018,41 @@ function parseCalibrationAt(bytes: Uint8Array, offset: number): CalibrationRecor
   const calibrationPurpose = r.readUint8();
   const workshopName = r.readString(36);
   const workshopAddress = r.remaining >= 36 ? r.readString(36) : '';
-  const workshopCardNumber = r.remaining >= 18 ? r.readCardNumber() : '';
+
+  // Gen2v2: FullCardNumberAndGeneration (20B), Gen1: FullCardNumber (18B)
+  let workshopCardNumber = '';
+  if (r.remaining >= 20) {
+    // Try Gen2v2 first (20B)
+    const cardStart = r.position;
+    workshopCardNumber = r.readFullCardNumberAndGen();
+    // If card number is empty, try 18B variant
+    if (!workshopCardNumber && r.remaining > 0) {
+      r.position = cardStart;
+      workshopCardNumber = r.readFullCardNumber();
+    }
+  } else if (r.remaining >= 18) {
+    workshopCardNumber = r.readFullCardNumber();
+  }
+
   const workshopCardExpiryDate = r.remaining >= 4 ? r.readTimestamp() : null;
+
+  // VehicleIdentificationNumber (17B) — VIN
+  const vehicleIdentificationNumber = r.remaining >= 17 ? r.readString(17) : '';
+
+  // VehicleRegistrationIdentification: nation(1B) + codepage(1B for Gen2v2) + VRN
   const vrnNation = r.remaining > 0 ? r.readUint8() : 0;
-  const vrn = r.remaining >= 14 ? r.readString(14) : '';
+  let vrn = '';
+  if (r.remaining > 0) {
+    const nextByte = bytes[r.position];
+    if (nextByte <= 0x0F && r.remaining >= 14) {
+      // Gen2v2: codepage(1B) + VRN(13B)
+      r.skip(1);
+      vrn = r.readString(13);
+    } else if (r.remaining >= 14) {
+      vrn = r.readString(14);
+    }
+  }
+
   const wFactor = r.remaining >= 2 ? r.readUint16() : 0;
   const kFactor = r.remaining >= 2 ? r.readUint16() : 0;
   const tyreSize = r.remaining >= 15 ? r.readString(15) : '';
@@ -1030,6 +1061,11 @@ function parseCalibrationAt(bytes: Uint8Array, offset: number): CalibrationRecor
   const newOdometerValue = r.remaining >= 3 ? ((r.readUint8() << 16) | r.readUint16()) : 0;
   const oldDateTime = r.remaining >= 4 ? r.readTimestamp() : null;
   const newDateTime = r.remaining >= 4 ? r.readTimestamp() : null;
+
+  // Validate: VIN should be alphanumeric
+  const vinValid = /^[A-Z0-9]{5,17}$/.test(vehicleIdentificationNumber);
+
+  console.log(`[DDD] Calibration: purpose=${calibrationPurpose}, VIN="${vehicleIdentificationNumber}"(valid=${vinValid}), VRN="${vrn}", workshop="${workshopName}"`);
 
   return {
     calibrationPurpose,
