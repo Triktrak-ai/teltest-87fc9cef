@@ -985,6 +985,7 @@ const DddReader = () => {
                       </ScrollArea>
                     </CardContent>
                   </Card>
+                )}
 
                 {/* Raw file hex dumps */}
                 {data.rawFileBuffers.length > 0 && (
