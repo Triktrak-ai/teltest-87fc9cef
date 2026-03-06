@@ -1052,18 +1052,14 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
             const recStart = dataStart + i * recordSize;
             const r = new BinaryReader(toArrayBuffer(bytes), recStart);
             const equipmentType = r.remaining > 0 ? r.readUint8() : 0;
-            // Seal identifier is typically a mix of printable/binary data
-            // Read raw bytes and present as hex + printable
             const sealBytes = recordSize > 1 ? bytes.slice(recStart + 1, recStart + recordSize) : new Uint8Array(0);
-            let sealId = '';
-            // Try printable first
-            const printable = Array.from(sealBytes).map(b => (b >= 0x20 && b <= 0x7E) ? String.fromCharCode(b) : '').join('').trim();
-            if (printable.length >= 4) {
-              sealId = printable;
-            } else {
-              // Show as hex
-              sealId = Array.from(sealBytes).filter(b => b !== 0).map(b => b.toString(16).padStart(2, '0')).join(' ').toUpperCase();
-            }
+            
+            // SealDataV2 is binary — always format as hex pairs for readability
+            const nonZeroBytes = Array.from(sealBytes).filter(b => b !== 0);
+            const sealId = nonZeroBytes.length > 0
+              ? nonZeroBytes.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
+              : '';
+            
             if (sealId || equipmentType > 0) {
               seals.push({
                 sealIdentifier: sealId,
