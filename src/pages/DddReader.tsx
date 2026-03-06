@@ -1,13 +1,15 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Radio, Upload, FileText, ArrowLeft, Activity, AlertTriangle, Wrench, Gauge, Search, X, Plus, CreditCard, MapPin, Car, Loader2 } from "lucide-react";
+import { Radio, Upload, FileText, ArrowLeft, Activity, AlertTriangle, Wrench, Gauge, Search, X, Plus, CreditCard, MapPin, Car, Loader2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { parseDddFile, mergeDddData, emptyDddData, type DddFileData, type DddSection, type DriverCardData, type RawFileBuffer } from "@/lib/ddd-parser";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { listDddFiles, downloadDddFile } from "@/lib/ddd-storage";
 import { toast } from "sonner";
@@ -36,12 +38,14 @@ const hexDump = (data: Uint8Array, maxBytes = 32): string => {
   return Array.from(slice).map(b => b.toString(16).padStart(2, '0')).join(' ');
 };
 
-const formatHexDumpBlock = (data: Uint8Array, maxBytes = 200): string => {
-  const slice = data.slice(0, maxBytes);
+const formatHexDumpBlock = (data: Uint8Array, startOffset = 0, endOffset?: number): string => {
+  const end = Math.min(endOffset ?? (startOffset + 200), data.length);
+  const start = Math.max(0, Math.min(startOffset, data.length));
+  const slice = data.slice(start, end);
   const lines: string[] = [];
   for (let i = 0; i < slice.length; i += 16) {
     const row = slice.slice(i, i + 16);
-    const offset = i.toString(16).padStart(6, '0');
+    const offset = (start + i).toString(16).padStart(6, '0');
     const hex = Array.from(row).map(b => b.toString(16).padStart(2, '0')).join(' ');
     const ascii = Array.from(row).map(b => (b >= 0x20 && b <= 0x7e) ? String.fromCharCode(b) : '.').join('');
     lines.push(`${offset}  ${hex.padEnd(48)}  |${ascii}|`);
@@ -59,6 +63,116 @@ const TAG_NAMES: Record<number, string> = {
   0x31: 'Cert CA (G2v2)', 0x32: 'Cert VU (G2v2)', 0x33: 'Cert Link (G2v2)',
   0x35: 'Overview (G2v2)', 0x36: 'Activities (G2v2)', 0x37: 'Events & Faults (G2v2)',
   0x38: 'Detailed Speed (G2v2)', 0x39: 'Technical Data (G2v2)',
+};
+
+const CHUNK_SIZES = [128, 256, 512, 1024, 2048] as const;
+
+const HexDumpExplorer = ({ buffers }: { buffers: RawFileBuffer[] }) => {
+  const [selectedFile, setSelectedFile] = useState(0);
+  const [startOffset, setStartOffset] = useState(0);
+  const [chunkSize, setChunkSize] = useState<number>(256);
+  const [goToInput, setGoToInput] = useState("");
+
+  const fb = buffers[selectedFile];
+  const fileSize = fb?.data.length ?? 0;
+  const endOffset = Math.min(startOffset + chunkSize, fileSize);
+
+  const hexOutput = useMemo(() => {
+    if (!fb) return "";
+    return formatHexDumpBlock(fb.data, startOffset, endOffset);
+  }, [fb, startOffset, endOffset]);
+
+  const handleGoTo = () => {
+    const parsed = parseInt(goToInput, goToInput.startsWith("0x") ? 16 : 10);
+    if (!isNaN(parsed)) {
+      setStartOffset(Math.max(0, Math.min(parsed, fileSize - 1)));
+    }
+  };
+
+  const navigate = (dir: "first" | "prev" | "next" | "last") => {
+    switch (dir) {
+      case "first": setStartOffset(0); break;
+      case "prev": setStartOffset(Math.max(0, startOffset - chunkSize)); break;
+      case "next": setStartOffset(Math.min(fileSize - 1, startOffset + chunkSize)); break;
+      case "last": setStartOffset(Math.max(0, fileSize - chunkSize)); break;
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="py-3">
+        <CardTitle className="text-sm">Hex dump — eksplorator plików</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {/* File selector */}
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={String(selectedFile)} onValueChange={(v) => { setSelectedFile(Number(v)); setStartOffset(0); }}>
+            <SelectTrigger className="w-auto min-w-[200px] h-8 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {buffers.map((b, i) => (
+                <SelectItem key={i} value={String(i)} className="text-xs">
+                  <span className="font-mono">{b.fileType}</span> — {b.fileName} ({b.data.length.toLocaleString()} B)
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={String(chunkSize)} onValueChange={(v) => setChunkSize(Number(v))}>
+            <SelectTrigger className="w-auto h-8 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {CHUNK_SIZES.map(s => (
+                <SelectItem key={s} value={String(s)} className="text-xs">{s} B / strona</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {/* Navigation */}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="icon" className="h-7 w-7" onClick={() => navigate("first")} disabled={startOffset === 0}>
+            <ChevronsLeft className="h-3 w-3" />
+          </Button>
+          <Button variant="outline" size="icon" className="h-7 w-7" onClick={() => navigate("prev")} disabled={startOffset === 0}>
+            <ChevronLeft className="h-3 w-3" />
+          </Button>
+          <span className="text-xs font-mono text-muted-foreground">
+            0x{startOffset.toString(16).padStart(6, '0')} — 0x{(endOffset - 1).toString(16).padStart(6, '0')}
+            <span className="ml-2">({startOffset}–{endOffset - 1} / {fileSize})</span>
+          </span>
+          <Button variant="outline" size="icon" className="h-7 w-7" onClick={() => navigate("next")} disabled={endOffset >= fileSize}>
+            <ChevronRight className="h-3 w-3" />
+          </Button>
+          <Button variant="outline" size="icon" className="h-7 w-7" onClick={() => navigate("last")} disabled={endOffset >= fileSize}>
+            <ChevronsRight className="h-3 w-3" />
+          </Button>
+
+          <div className="flex items-center gap-1 ml-auto">
+            <Input
+              className="h-7 w-28 text-xs font-mono"
+              placeholder="Offset (0x...)"
+              value={goToInput}
+              onChange={(e) => setGoToInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleGoTo()}
+            />
+            <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleGoTo}>
+              Idź
+            </Button>
+          </div>
+        </div>
+
+        {/* Hex output */}
+        <ScrollArea className="max-h-[500px]">
+          <pre className="text-[10px] leading-4 font-mono bg-muted/50 rounded-md p-3 overflow-x-auto whitespace-pre">
+            {hexOutput}
+          </pre>
+        </ScrollArea>
+      </CardContent>
+    </Card>
+  );
 };
 
 const DddReader = () => {
@@ -680,25 +794,7 @@ const DddReader = () => {
 
                 {/* Raw file hex dumps */}
                 {data.rawFileBuffers.length > 0 && (
-                  <Card>
-                    <CardHeader className="py-3">
-                      <CardTitle className="text-sm">Hex dump surowych plików (pierwsze 200 bajtów)</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      {data.rawFileBuffers.map((fb, i) => (
-                        <div key={i}>
-                          <div className="flex items-center gap-2 mb-2">
-                            <Badge variant="outline" className="text-xs font-mono">{fb.fileType}</Badge>
-                            <span className="text-xs text-muted-foreground truncate">{fb.fileName}</span>
-                            <span className="text-xs text-muted-foreground ml-auto">{fb.data.length.toLocaleString()} B</span>
-                          </div>
-                          <pre className="text-[10px] leading-4 font-mono bg-muted/50 rounded-md p-3 overflow-x-auto whitespace-pre">
-                            {formatHexDumpBlock(fb.data, 200)}
-                          </pre>
-                        </div>
-                      ))}
-                    </CardContent>
-                  </Card>
+                  <HexDumpExplorer buffers={data.rawFileBuffers} />
                 )}
               </div>
             </TabsContent>
