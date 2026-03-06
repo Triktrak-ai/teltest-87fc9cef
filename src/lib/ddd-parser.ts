@@ -1062,6 +1062,7 @@ function parseCalibrationAt(bytes: Uint8Array, offset: number, maxLen?: number):
   const workshopCardExpiryDate = r.remaining >= 4 ? r.readTimestamp() : null;
 
   // VehicleIdentificationNumber (17B) — VIN
+  console.log(`[DDD] CalibrationAt: offset=${offset}, VIN starts at pos=${r.position} (relative=${r.position - offset}), next17bytes=${Array.from(bytes.slice(r.position, r.position + 17)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
   const vehicleIdentificationNumber = r.remaining >= 17 ? r.readString(17) : '';
 
   // VehicleRegistrationIdentification:
