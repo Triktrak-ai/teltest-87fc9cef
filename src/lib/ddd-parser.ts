@@ -1980,41 +1980,20 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
   const records: ActivityRecord[] = [];
   const r = new BinaryReader(toArrayBuffer(data));
   if (r.remaining < 8) return records;
-  
-  // Debug: log first 32 bytes to understand structure
-  const debugBytes: string[] = [];
-  for (let i = 0; i < Math.min(32, data.length); i++) {
-    debugBytes.push(data[i].toString(16).padStart(2, '0'));
-  }
-  console.log('[Activities] data length:', data.length, 'first 32B:', debugBytes.join(' '));
-  
   r.skip(8);
 
-  let dayIdx = 0;
   while (r.remaining >= 12) {
-    const posBeforeDay = r.position;
     try {
       const tsValue = r.readUint32();
-      if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) {
-        console.log(`[Activities] day ${dayIdx}: invalid timestamp 0x${tsValue.toString(16)} at offset ${posBeforeDay}, stopping`);
-        break;
-      }
+      if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) break;
       const date = new Date(tsValue * 1000);
 
       const dailyPresenceCounter = r.readUint16();
       const dayDistance = r.readUint16();
-      if (dayDistance > 9999) {
-        console.log(`[Activities] day ${dayIdx}: dayDistance ${dayDistance} > 9999 at offset ${posBeforeDay}, stopping`);
-        break;
-      }
+      if (dayDistance > 9999) break;
 
       const activityChangeCount = r.remaining >= 2 ? r.readUint16() : 0;
-      if (activityChangeCount > 1440) {
-        console.log(`[Activities] day ${dayIdx}: activityChangeCount ${activityChangeCount} > 1440 at offset ${posBeforeDay}, stopping`);
-        break;
-      }
-
-      console.log(`[Activities] day ${dayIdx}: date=${date.toISOString().slice(0,10)}, dist=${dayDistance}km, changes=${activityChangeCount}, pos=${posBeforeDay}`);
+      if (activityChangeCount > 1440) break;
 
       const entries: ActivityChangeEntry[] = [];
 
@@ -2024,7 +2003,6 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
         const cardInserted = ((word >> 13) & 0x01) === 0;
         const activity = (word >> 11) & 0x03;
         const minutes = word & 0x07FF;
-
         if (minutes >= 1440) continue;
 
         const statusMap: Record<number, ActivityChangeEntry['status']> = {
@@ -2033,7 +2011,7 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
 
         let nextMinutes = 1440;
         if (i + 1 < activityChangeCount && r.remaining >= 2) {
-          const peek = (r.readUint16());
+          const peek = r.readUint16();
           nextMinutes = peek & 0x07FF;
           r.position -= 2;
         }
@@ -2053,13 +2031,10 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
       }
 
       records.push({ date, dailyPresenceCounter, dayDistance, entries });
-      dayIdx++;
     } catch {
-      console.log(`[Activities] day ${dayIdx}: exception at offset ${posBeforeDay}`);
       break;
     }
   }
-  console.log(`[Activities] parsed ${records.length} days total`);
   return records;
 }
 
