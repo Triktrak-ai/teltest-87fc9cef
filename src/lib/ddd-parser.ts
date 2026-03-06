@@ -1744,7 +1744,9 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
   const r = new BinaryReader(toArrayBuffer(bytes));
 
   // Scan for all valid daily record positions by looking for valid timestamps
-  // followed by plausible dailyPresenceCounter, dayDistance, and changeCount
+  // followed by plausible dailyPresenceCounter, dayDistance, and changeCount.
+  // Do NOT jump over candidate lengths here: noisy buffers may contain false positives
+  // and jumping can skip real records.
   const dayPositions: number[] = [];
   const dayTimestamps: number[] = [];
   for (let i = 0; i < bytes.length - 10; i++) {
@@ -1755,7 +1757,6 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
     if (dist <= 9999 && changes <= 1440 && i + 10 + changes * 2 <= bytes.length) {
       dayPositions.push(i);
       dayTimestamps.push(ts);
-      i += 10 + changes * 2 - 1;
     }
   }
 
