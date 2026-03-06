@@ -419,6 +419,32 @@ class BinaryReader {
     return s.trim();
   }
 
+  /**
+   * ExtendedSerialNumber (8 bytes):
+   *   serialNumber: 4B uint32
+   *   monthYear: 2B (month in high byte BCD, year = 2000 + low byte, or raw uint16)
+   *   type: 1B
+   *   manufacturerCode: 1B
+   * Returns formatted string like "1381755 (05/2023)"
+   */
+  readExtendedSerialNumber(): string {
+    const serialNumber = this.readUint32();
+    const monthYear = this.readUint16();
+    const type = this.readUint8();
+    const manufacturerCode = this.readUint8();
+
+    if (serialNumber === 0 && monthYear === 0) return '';
+
+    const month = (monthYear >> 8) & 0xFF;
+    const year = 2000 + (monthYear & 0xFF);
+
+    let result = serialNumber.toString();
+    if (month >= 1 && month <= 12 && year >= 2000 && year <= 2099) {
+      result += ` (${month.toString().padStart(2, '0')}/${year})`;
+    }
+    return result;
+  }
+
   readTimestamp(): Date | null {
     const v = this.readUint32();
     if (v === 0 || v === 0xFFFFFFFF) return null;
@@ -986,7 +1012,7 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
             const r = new BinaryReader(toArrayBuffer(bytes), dataStart);
             const mfgName = r.remaining >= 36 ? r.readString(36) : '';
             const mfgAddr = r.remaining >= 36 ? r.readString(36) : '';
-            const serial = r.remaining >= 8 ? r.readString(8) : '';
+            const serial = r.remaining >= 8 ? r.readExtendedSerialNumber() : '';
             const partNum = r.remaining >= 16 ? r.readString(16) : '';
             const swVer = r.remaining >= 4 ? r.readString(4) : '';
             const mfgDate = r.remaining >= 4 ? r.readTimestamp() : null;
@@ -1054,7 +1080,7 @@ function parseRawTechnicalFile(bytes: Uint8Array, warnings: ParserWarning[]): Te
           for (let i = 0; i < noOfRecords; i++) {
             const recStart = dataStart + i * recordSize;
             const r = new BinaryReader(toArrayBuffer(bytes), recStart);
-            const serial = r.remaining >= 8 ? r.readString(8) : '';
+            const serial = r.remaining >= 8 ? r.readExtendedSerialNumber() : '';
             const approval = r.remaining >= 16 ? r.readString(16) : '';
             const pairingDate = r.remaining >= 4 ? r.readTimestamp() : null;
             if (serial) {
