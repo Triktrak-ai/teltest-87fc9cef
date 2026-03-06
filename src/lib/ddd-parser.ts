@@ -1626,33 +1626,46 @@ function parseRawOverviewFile(bytes: Uint8Array, warnings: ParserWarning[]): Ddd
   const view = new DataView(toArrayBuffer(bytes));
   const TS_RECENT = new Date('2020-01-01').getTime() / 1000;
 
-  // Strategy 1: Skip TLV certificate sections (76 3x / 76 2x / 76 0x) then read overview data
+  // Strategy 1: Skip all TLV sections (76 XX) until we find the overview tag (76 05/25/35)
   let pos = 0;
   let skippedTlvSections = 0;
-  while (pos + 4 < bytes.length && skippedTlvSections < 10) {
+  let foundOverviewTag = false;
+  while (pos + 4 < bytes.length && skippedTlvSections < 20) {
     if (bytes[pos] === 0x76) {
       const tagLow = bytes[pos + 1];
-      const isCertTag = (tagLow === 0x01 || tagLow === 0x02 || tagLow === 0x21 || tagLow === 0x22 || tagLow === 0x31 || tagLow === 0x32);
-      if (isCertTag) {
-        const length = view.getUint16(pos + 2, false);
-        if (length > 0 && length <= 2000 && pos + 4 + length <= bytes.length) {
-          pos += 4 + length;
-          skippedTlvSections++;
-          continue;
-        }
+      const length = view.getUint16(pos + 2, false);
+      
+      // Check if this is the overview data tag
+      const isOverviewTag = (tagLow === 0x05 || tagLow === 0x25 || tagLow === 0x35);
+      
+      if (isOverviewTag && length > 0 && length <= 10000 && pos + 4 + length <= bytes.length) {
+        // Found overview section — parse its contents
+        pos += 4; // skip TLV header
+        foundOverviewTag = true;
+        break;
+      }
+      
+      // Skip any other 0x76 XX TLV section (certs, VuIdentification, VuSoftwareId, etc.)
+      if (length > 0 && length <= 10000 && pos + 4 + length <= bytes.length) {
+        pos += 4 + length;
+        skippedTlvSections++;
+        continue;
       }
     }
     break;
   }
 
-  if (skippedTlvSections > 0 && pos + 17 < bytes.length) {
-    // Check if remaining data starts with a TLV overview tag (76 05/25/35)
-    if (bytes[pos] === 0x76 && (bytes[pos + 1] === 0x05 || bytes[pos + 1] === 0x25 || bytes[pos + 1] === 0x35)) {
-      pos += 4; // skip TLV header of overview section
-    }
+  if (foundOverviewTag && pos + 17 < bytes.length) {
     const result = tryParseOverviewData(bytes, pos, overview);
     if (result) {
-      console.log(`[DDD] Overview: VIN="${result.vin}", VRN="${overview.vehicleRegistrationNumber}", date=${overview.currentDateTime}, skipped ${skippedTlvSections} TLV cert sections`);
+      console.log(`[DDD] Overview: VIN="${result.vin}", VRN="${overview.vehicleRegistrationNumber}", date=${overview.currentDateTime}, skipped ${skippedTlvSections} TLV sections`);
+      return overview;
+    }
+  } else if (skippedTlvSections > 0 && pos + 17 < bytes.length) {
+    // Didn't find overview tag explicitly, but skipped some sections — try parsing remaining data
+    const result = tryParseOverviewData(bytes, pos, overview);
+    if (result) {
+      console.log(`[DDD] Overview (post-skip): VIN="${result.vin}", VRN="${overview.vehicleRegistrationNumber}", date=${overview.currentDateTime}, skipped ${skippedTlvSections} TLV sections`);
       return overview;
     }
   }
