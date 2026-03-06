@@ -648,7 +648,8 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
       }
       case 'activities': {
         // Try TLV-section-based parsing first (Gen2/Gen2v2)
-        const actSections = sections.filter(s => s.tag === 0x32 || s.tag === 0x22 || s.tag === 0x02);
+        // Activities data tags per Annex 1C: Gen1=0x06, Gen2=0x26, Gen2v2=0x36
+        const actSections = sections.filter(s => s.tag === 0x36 || s.tag === 0x26 || s.tag === 0x06);
         console.log(`[DDD] Activities: ${sections.length} total sections, ${actSections.length} activity sections, tags: [${sections.map(s => '0x' + s.tag.toString(16)).join(', ')}]`);
         if (actSections.length > 0) {
           result.activities = parseActivitiesFromSections(actSections, result.warnings, result.activityRejections);
