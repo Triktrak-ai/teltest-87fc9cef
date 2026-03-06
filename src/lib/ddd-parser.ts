@@ -595,14 +595,13 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
   const sections = extractSections(buffer, result.warnings);
   result.rawSections = sections;
 
-  // For overview and events, try using TLV sections first
+  // For overview, events, and activities, try using TLV sections first
   if (fileType === 'overview' && sections.length > 0) {
     const overviewSection = sections.find(s => s.tag === 0x35 || s.tag === 0x25 || s.tag === 0x05);
     if (overviewSection) {
       try {
         const isGen2v2 = overviewSection.tag === 0x35;
         const isGen2 = overviewSection.tag === 0x25;
-        // Gen2v2/Gen2 overview sections contain data directly (no certs inside)
         if (isGen2v2 || isGen2) {
           result.overview = parseOverviewDirect(overviewSection.data);
         } else {
@@ -613,6 +612,20 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         return result;
       } catch (e) {
         console.warn('[DDD] TLV overview parse failed, falling back to raw:', e);
+      }
+    }
+  }
+
+  if (fileType === 'activities' && sections.length > 0) {
+    const actSection = sections.find(s => s.tag === 0x36 || s.tag === 0x26 || s.tag === 0x06);
+    if (actSection) {
+      try {
+        result.activities = parseActivities(actSection.data);
+        result.bytesParsed = buffer.byteLength;
+        console.log(`[DDD] Activities from TLV section 0x${actSection.tag.toString(16)}: ${result.activities.length} days`);
+        if (result.activities.length > 0) return result;
+      } catch (e) {
+        console.warn('[DDD] TLV activities parse failed, falling back to raw:', e);
       }
     }
   }
