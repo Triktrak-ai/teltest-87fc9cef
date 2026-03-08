@@ -318,7 +318,8 @@ function deduplicateActivities(records: ActivityRecord[]): ActivityRecord[] {
 export function emptyDddData(): DddFileData {
   return {
     overview: null, activities: [], events: [], faults: [],
-    technicalData: null, speedRecords: [], rawSections: [],
+    technicalData: null, speedRecords: [], borderCrossings: [], loadUnloadOperations: [],
+    rawSections: [],
     warnings: [], activityRejections: [], fileSize: 0, bytesParsed: 0, generation: 'unknown',
     driverCard: null, rawFileBuffers: [],
   };
