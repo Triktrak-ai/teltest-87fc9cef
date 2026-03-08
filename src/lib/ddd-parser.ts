@@ -1016,22 +1016,29 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
   return { card: result, detectedGeneration };
 }
 
+function readName(r: BinaryReader): string {
+  // Name structure per Annex 1C: codePage(1B) + name(35B) = 36B
+  if (r.remaining < 36) return '';
+  r.skip(1); // codePage — skip
+  return r.readString(35);
+}
+
 function parseCardIdentification(data: Uint8Array): DriverCardIdentification {
   const r = new BinaryReader(toArrayBuffer(data));
 
   // Per Annex 1C Appendix 7 §2.1:
-  // cardIssuingMemberState (1B) + cardNumber (16B) + cardIssuingAuthorityName (36B)
+  // cardIssuingMemberState (1B) + cardNumber (16B) + cardIssuingAuthorityName (Name 36B)
   // + cardStartOfValidityDate (4B) + cardExpiryDate (4B)
-  // + holderSurname (36B) + holderFirstNames (36B)
+  // + holderSurname (Name 36B) + holderFirstNames (Name 36B)
   // + holderBirthDate (4B) + preferredLanguage (2B)
   const nationByte = r.remaining >= 1 ? r.readUint8() : 0;
   const cardIssuingMemberState = NATION_CODES[nationByte] || `0x${nationByte.toString(16)}`;
   const cardNumber = r.remaining >= 16 ? r.readString(16) : '';
-  const _cardIssuingAuthorityName = r.remaining >= 36 ? r.readString(36) : '';
+  const _cardIssuingAuthorityName = readName(r);
   const cardIssueDate = r.remaining >= 4 ? r.readTimestamp() : null;
   const cardExpiryDate = r.remaining >= 4 ? r.readTimestamp() : null;
-  const surname = r.remaining >= 36 ? r.readString(36) : '';
-  const firstName = r.remaining >= 36 ? r.readString(36) : '';
+  const surname = readName(r);
+  const firstName = readName(r);
   const _birthDate = r.remaining >= 4 ? r.readTimestamp() : null;
 
   return {
