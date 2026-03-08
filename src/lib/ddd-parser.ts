@@ -746,13 +746,17 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
           // Parse each chunk through RecordArray parser independently
           let allRecordArrayDays: ActivityRecord[] = [];
           let raChunksWithData = 0;
+          const allBorderCrossings: BorderCrossingRecord[] = [];
+          const allLoadUnloads: LoadUnloadRecord[] = [];
           for (const chunk of chunksToParse) {
             const chunkWarnings: ParserWarning[] = [];
             const parsed = parseVuActivitiesRecordArrays(chunk, chunkWarnings);
-            if (parsed.length > 0) {
-              allRecordArrayDays.push(...parsed);
+            if (parsed.activities.length > 0) {
+              allRecordArrayDays.push(...parsed.activities);
               raChunksWithData++;
             }
+            allBorderCrossings.push(...parsed.borderCrossings);
+            allLoadUnloads.push(...parsed.loadUnloadOperations);
           }
 
           if (allRecordArrayDays.length > 0) {
