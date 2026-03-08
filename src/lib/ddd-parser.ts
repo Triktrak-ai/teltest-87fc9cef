@@ -2104,11 +2104,11 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
   // Keep only records within a plausible date range
   if (records.length > 0) {
     // If we have a download date from the filename, use it as hard upper bound.
-    // VU stores max 56 days (Gen2v2) or 28 days (Gen1/Gen2).
-    // Use 90 days as generous lower bound.
+    // VU stores up to 365 days of activity data.
+    // Use 400 days as generous lower bound to cover full VU capacity with margin.
     if (downloadDate) {
       const upperTs = Math.floor(downloadDate.getTime() / 1000);
-      const lowerTs = upperTs - 90 * 86400; // 90 days before download
+      const lowerTs = upperTs - 400 * 86400; // 400 days before download
       console.log(`[DDD] Download date filter: ${downloadDate.toISOString().slice(0, 10)}, window ${new Date(lowerTs * 1000).toISOString().slice(0, 10)} – ${downloadDate.toISOString().slice(0, 10)}`);
       records = records.filter(r => {
         const ts = Math.floor(r.date.getTime() / 1000);
