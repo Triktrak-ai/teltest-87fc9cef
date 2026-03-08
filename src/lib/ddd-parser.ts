@@ -1951,36 +1951,32 @@ function stripTrtpPrefix(data: Uint8Array, _isFirstChunk: boolean): Uint8Array {
  * 1) Runs of 3+ consecutive records with identical dayDistance
  * 2) Known artifact values (768 = 0x0300) that appear when TRTP header bytes
  *    are misread as distance fields — only removed if the value appears
- *    suspiciously often (≥3 total occurrences across the dataset).
+ * Remove artifact records from cyclic buffer boundary corruption:
+ * Only removes known TRTP artifact value 768 (0x0300) when it appears ≥5 times
+ * AND the record has minimal activity entries (≤2), indicating corrupted data
+ * rather than real driving days with that distance.
+ * 
+ * Note: Consecutive identical distances are NOT filtered — they are normal
+ * in professional transport (fixed routes, daily shuttles).
  */
 function filterDistanceArtifacts(records: ActivityRecord[]): ActivityRecord[] {
-  if (records.length < 3) return records;
+  if (records.length < 5) return records;
   
-  const dominated = new Set<number>();
-  
-  // Pass 1: Remove runs of 3+ consecutive identical dayDistance
-  let runStart = 0;
-  for (let i = 1; i <= records.length; i++) {
-    if (i < records.length && records[i].dayDistance === records[runStart].dayDistance) continue;
-    const runLen = i - runStart;
-    if (runLen >= 3) {
-      for (let j = runStart; j < i; j++) dominated.add(j);
-    }
-    runStart = i;
-  }
-  
-  // Pass 2: The value 768 (0x0300) is a specific known artifact from TRTP headers
-  // (05 00 03 00 01 pattern). If it appears ≥3 times, remove all occurrences.
-  const count768 = records.filter(r => r.dayDistance === 768).length;
-  if (count768 >= 3) {
+  // Only filter the specific TRTP artifact value 768 (0x0300 from header bytes)
+  // Require ≥5 occurrences AND low entry count to avoid false positives
+  const artifact768 = records.filter(r => r.dayDistance === 768 && r.entries.length <= 2);
+  if (artifact768.length >= 5) {
+    const dominated = new Set<number>();
     for (let i = 0; i < records.length; i++) {
-      if (records[i].dayDistance === 768) dominated.add(i);
+      if (records[i].dayDistance === 768 && records[i].entries.length <= 2) {
+        dominated.add(i);
+      }
     }
+    console.log(`[DDD] Filtered ${dominated.size} artifact records with TRTP distance 768`);
+    return records.filter((_, idx) => !dominated.has(idx));
   }
   
-  if (dominated.size === 0) return records;
-  console.log(`[DDD] Filtered ${dominated.size} artifact records with corrupted dayDistance`);
-  return records.filter((_, idx) => !dominated.has(idx));
+  return records;
 }
 
 // ─── TLV-section-based activities parser (Gen2/Gen2v2) ──────────────────────
@@ -2001,7 +1997,8 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
       const from = hF * 60 + mF;
       const to = hT * 60 + mT;
       const dur = to - from;
-      if (dur <= 0 || dur > 1440) return `Nieprawidłowy czas trwania wpisu: ${e.timeFrom}–${e.timeTo} (${dur} min)`;
+      if (dur < 0 || dur > 1440) return `Nieprawidłowy czas trwania wpisu: ${e.timeFrom}–${e.timeTo} (${dur} min)`;
+      if (dur === 0) continue; // Zero-duration entries are legal (multiple status changes in same minute)
       slotTotals[e.slot] += dur;
     }
     if (slotTotals.driver > 1440) return `Suma minut K1 > 24h: ${slotTotals.driver} min`;
@@ -2104,11 +2101,11 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
   // Keep only records within a plausible date range
   if (records.length > 0) {
     // If we have a download date from the filename, use it as hard upper bound.
-    // VU stores max 56 days (Gen2v2) or 28 days (Gen1/Gen2).
-    // Use 90 days as generous lower bound.
+    // VU stores up to 365 days of activity data.
+    // Use 400 days as generous lower bound to cover full VU capacity with margin.
     if (downloadDate) {
       const upperTs = Math.floor(downloadDate.getTime() / 1000);
-      const lowerTs = upperTs - 90 * 86400; // 90 days before download
+      const lowerTs = upperTs - 400 * 86400; // 400 days before download
       console.log(`[DDD] Download date filter: ${downloadDate.toISOString().slice(0, 10)}, window ${new Date(lowerTs * 1000).toISOString().slice(0, 10)} – ${downloadDate.toISOString().slice(0, 10)}`);
       records = records.filter(r => {
         const ts = Math.floor(r.date.getTime() / 1000);
@@ -2226,7 +2223,7 @@ function parseVuActivitiesGen1Style(
 
   // VuActivityDailyData: NoOfActivityChanges (2B)
   const noOfChanges = view.getUint16(cardIWDataEnd, false);
-  if (noOfChanges === 0 || noOfChanges > 50000) {
+  if (noOfChanges === 0 || noOfChanges > 100000) {
     console.log(`[DDD] Gen1 VU: NoOfActivityChanges=${noOfChanges} invalid`);
     return [];
   }
@@ -2244,7 +2241,7 @@ function parseVuActivitiesGen1Style(
   const rawWords: RawActivityWord[] = [];
   for (let i = 0; i < noOfChanges; i++) {
     const word = view.getUint16(changesStart + i * 2, false);
-    if (word === 0x0000 || word === 0xFFFF) continue;
+    if (word === 0xFFFF) continue; // 0xFFFF = padding/sentinel; 0x0000 is valid start-of-day
     const slot = (word >> 15) & 0x01;          // bit 15: 0=driver, 1=codriver
     const drivingStatus = (word >> 14) & 0x01; // bit 14: 0=SINGLE, 1=CREW
     const cardInserted = ((word >> 13) & 0x01) === 0; // bit 13: 0=inserted, 1=not inserted
@@ -2256,15 +2253,18 @@ function parseVuActivitiesGen1Style(
 
   if (rawWords.length === 0) return [];
 
-  // Split into per-day groups by minute resets
+  // Split into per-day groups by slot 0 minute resets (per Annex 1C: slots are interleaved)
   const dayGroups: RawActivityWord[][] = [[]];
-  let prevMinutes = -1;
+  const prevMinutesPerSlot = [-1, -1];
   for (const word of rawWords) {
-    if (prevMinutes >= 0 && word.minutes < prevMinutes && dayGroups[dayGroups.length - 1].length > 0) {
+    const slotPrev = prevMinutesPerSlot[word.slot];
+    if (slotPrev >= 0 && word.minutes < slotPrev && word.slot === 0 && dayGroups[dayGroups.length - 1].length > 0) {
       dayGroups.push([]);
+      prevMinutesPerSlot[0] = -1;
+      prevMinutesPerSlot[1] = -1;
     }
     dayGroups[dayGroups.length - 1].push(word);
-    prevMinutes = word.minutes;
+    prevMinutesPerSlot[word.slot] = word.minutes;
   }
 
   // Remove empty groups
@@ -2305,7 +2305,8 @@ function parseVuActivitiesGen1Style(
       const [hF, mF] = e.timeFrom.split(':').map(Number);
       const [hT, mT] = e.timeTo.split(':').map(Number);
       const dur = (hT * 60 + mT) - (hF * 60 + mF);
-      if (dur <= 0 || dur > 1440) { valid = false; break; }
+      if (dur < 0 || dur > 1440) { valid = false; break; }
+      if (dur === 0) continue; // Zero-duration = multiple changes in same minute, legal
       slotTotals[e.slot] += dur;
     }
     if (!valid || slotTotals.driver > 1440 || slotTotals.codriver > 1440) continue;
@@ -2377,7 +2378,7 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
     const noOfRecords = view.getUint16(pos + 3, false);
 
     // Validate RecordArray header
-    if (recordSize === 0 || noOfRecords > 50000) break;
+    if (recordSize === 0 || noOfRecords > 100000) break;
     const totalDataSize = noOfRecords * recordSize;
     if (pos + 5 + totalDataSize > data.length) {
       // Allow partial last array
@@ -2417,7 +2418,7 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
         if (recordSize === 2) {
           for (let i = 0; i < noOfRecords; i++) {
             const word = view.getUint16(arrayStart + i * 2, false);
-            if (word === 0x0000 || word === 0xFFFF) continue;
+            if (word === 0xFFFF) continue; // 0xFFFF = padding; 0x0000 is valid (slot0, single, break, min0)
             const slot = (word >> 15) & 0x01;
             const drivingStatus = (word >> 14) & 0x01;
             const cardInserted = ((word >> 13) & 0x01) === 0;
@@ -2482,16 +2483,23 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
   }
 
   // Split flat activity words into per-day groups.
-  // Day boundaries are detected when the minutes value DECREASES
-  // (e.g., from 1200 back to 0 = new day).
+  // Per Annex 1C: slot 0 and slot 1 entries are interleaved chronologically
+  // within a day. We track minutes per-slot to avoid false day boundaries
+  // when slot 1 has minute 5 after slot 0 has minute 800 (same day).
+  // A new day is detected when slot 0's minutes decrease (slot 0 always has
+  // the mandatory start-of-day entry at minute 0).
   const dayGroups: RawActivityWord[][] = [[]];
-  let prevMinutes = -1;
+  const prevMinutesPerSlot = [-1, -1]; // slot 0, slot 1
   for (const word of activityWords) {
-    if (prevMinutes >= 0 && word.minutes < prevMinutes && dayGroups[dayGroups.length - 1].length > 0) {
+    const slotPrev = prevMinutesPerSlot[word.slot];
+    if (slotPrev >= 0 && word.minutes < slotPrev && word.slot === 0 && dayGroups[dayGroups.length - 1].length > 0) {
+      // Slot 0 minutes decreased → new day boundary
       dayGroups.push([]);
+      prevMinutesPerSlot[0] = -1;
+      prevMinutesPerSlot[1] = -1;
     }
     dayGroups[dayGroups.length - 1].push(word);
-    prevMinutes = word.minutes;
+    prevMinutesPerSlot[word.slot] = word.minutes;
   }
 
   // If the number of day groups doesn't match dates, try to align.
@@ -2516,7 +2524,8 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
       const [hF, mF] = e.timeFrom.split(':').map(Number);
       const [hT, mT] = e.timeTo.split(':').map(Number);
       const dur = (hT * 60 + mT) - (hF * 60 + mF);
-      if (dur <= 0 || dur > 1440) { valid = false; break; }
+      if (dur < 0 || dur > 1440) { valid = false; break; }
+      if (dur === 0) continue; // Zero-duration = multiple changes in same minute, legal
       slotTotals[e.slot] += dur;
     }
     if (!valid || slotTotals.driver > 1440 || slotTotals.codriver > 1440) continue;
@@ -2672,7 +2681,7 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
       const rawEntries: RawActivityWord[] = [];
       for (let i = 0; i < count && r.remaining >= 2; i++) {
         const word = r.readUint16();
-        if (word === 0x0000 || word === 0xFFFF) continue; // skip padding/invalid
+        if (word === 0xFFFF) continue; // 0xFFFF = padding; 0x0000 is valid start-of-day
         const slot = (word >> 15) & 0x01;
         const drivingStatus = (word >> 14) & 0x01;
         const cardInserted = ((word >> 13) & 0x01) === 0;
@@ -3090,7 +3099,7 @@ function parseCyclicActivities(
       if (off + 1 >= body.length) break;
       const word = (body[off] << 8) | body[off + 1];
       // Skip padding/invalid entries per tachograph-go reference
-      if (word === 0x0000 || word === 0xFFFF) continue;
+      if (word === 0xFFFF) continue; // 0xFFFF = padding; 0x0000 is valid start-of-day
       const slot = (word >> 15) & 0x01;
       const drivingStatus = (word >> 14) & 0x01;
       const cardInserted = ((word >> 13) & 0x01) === 0;
@@ -3212,7 +3221,7 @@ function parseActivitiesForward(data: Uint8Array): ActivityRecord[] {
       const rawEntries: RawActivityWord[] = [];
       for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
         const word = r.readUint16();
-        if (word === 0x0000 || word === 0xFFFF) continue; // skip padding
+        if (word === 0xFFFF) continue; // 0xFFFF = padding; 0x0000 is valid start-of-day
         const slot = (word >> 15) & 0x01;
         const drivingStatus = (word >> 14) & 0x01;
         const cardInserted = ((word >> 13) & 0x01) === 0;
@@ -3336,8 +3345,8 @@ function parseDetailedSpeed(data: Uint8Array): SpeedRecord[] {
     }
   }
 
-  if (records.length > 50000) {
-    return records.slice(0, 50000);
+  if (records.length > 100000) {
+    return records.slice(0, 100000);
   }
   return records;
 }
