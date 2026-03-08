@@ -292,7 +292,7 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
             )}
             {!isLoading && filtered && filtered.length === 0 && (
               <tr>
-                <td colSpan={isAdmin ? 8 : 7} className="px-5 py-12 text-center text-muted-foreground">
+                <td colSpan={isAdmin ? 9 : 8} className="px-5 py-12 text-center text-muted-foreground">
                   Brak wpisów w harmonogramie
                 </td>
               </tr>
