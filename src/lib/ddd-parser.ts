@@ -2480,16 +2480,23 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
   }
 
   // Split flat activity words into per-day groups.
-  // Day boundaries are detected when the minutes value DECREASES
-  // (e.g., from 1200 back to 0 = new day).
+  // Per Annex 1C: slot 0 and slot 1 entries are interleaved chronologically
+  // within a day. We track minutes per-slot to avoid false day boundaries
+  // when slot 1 has minute 5 after slot 0 has minute 800 (same day).
+  // A new day is detected when slot 0's minutes decrease (slot 0 always has
+  // the mandatory start-of-day entry at minute 0).
   const dayGroups: RawActivityWord[][] = [[]];
-  let prevMinutes = -1;
+  const prevMinutesPerSlot = [-1, -1]; // slot 0, slot 1
   for (const word of activityWords) {
-    if (prevMinutes >= 0 && word.minutes < prevMinutes && dayGroups[dayGroups.length - 1].length > 0) {
+    const slotPrev = prevMinutesPerSlot[word.slot];
+    if (slotPrev >= 0 && word.minutes < slotPrev && word.slot === 0 && dayGroups[dayGroups.length - 1].length > 0) {
+      // Slot 0 minutes decreased → new day boundary
       dayGroups.push([]);
+      prevMinutesPerSlot[0] = -1;
+      prevMinutesPerSlot[1] = -1;
     }
     dayGroups[dayGroups.length - 1].push(word);
-    prevMinutes = word.minutes;
+    prevMinutesPerSlot[word.slot] = word.minutes;
   }
 
   // If the number of day groups doesn't match dates, try to align.
