@@ -746,7 +746,7 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
             // Only used if concatenated strategy yields 0 results
             const perSectionWarnings: ParserWarning[] = [];
             const perSectionRejections: ActivityRejection[] = [];
-            const perSectionActivities = parseActivitiesFromSections(actSections, perSectionWarnings, perSectionRejections);
+            const perSectionActivities = parseActivitiesFromSections(actSections, perSectionWarnings, perSectionRejections, downloadDate);
             if (perSectionActivities.length > 0) {
               result.activities = perSectionActivities;
               result.warnings.push(...perSectionWarnings);
