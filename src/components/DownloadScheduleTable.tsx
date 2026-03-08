@@ -311,6 +311,16 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
                   <td className="px-5 py-3">
                     <Badge variant="outline" className={sc.className}>{sc.label}</Badge>
                   </td>
+                  <td className="px-5 py-3 font-mono text-xs">
+                    {(() => {
+                      const fc = fileCounts?.get(s.imei);
+                      if (!fc) return "—";
+                      const downloaded = fc.files_downloaded;
+                      const total = fc.total_files;
+                      const color = downloaded >= total ? "text-success" : downloaded >= 5 ? "text-warning" : "text-destructive";
+                      return <span className={color}>{downloaded}/{total}</span>;
+                    })()}
+                  </td>
                   <td className="px-5 py-3 text-xs text-muted-foreground">
                     {s.last_success_at ? new Date(s.last_success_at).toLocaleString("pl-PL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"}
                   </td>
