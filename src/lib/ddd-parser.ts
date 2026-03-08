@@ -681,13 +681,23 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
           const perSectionRejections: ActivityRejection[] = [];
           const perSectionActivities = parseActivitiesFromSections(actSections, perSectionWarnings, perSectionRejections);
 
-          // Strategy B: concatenate chunks and parse as one payload.
-          const totalLen = actSections.reduce((sum, s) => sum + s.data.length, 0);
+          // Strategy B: concatenate chunks, stripping TRTP prefix (04 00 01 XX XX) from each section.
+          // Each TLV section may carry a 5-byte TRTP sub-header before the actual card data.
+          const strippedChunks: Uint8Array[] = [];
+          for (const s of actSections) {
+            // Detect TRTP prefix: 04 00 01 followed by 2 bytes
+            if (s.data.length > 5 && s.data[0] === 0x04 && s.data[1] === 0x00 && s.data[2] === 0x01) {
+              strippedChunks.push(s.data.slice(5));
+            } else {
+              strippedChunks.push(s.data);
+            }
+          }
+          const totalLen = strippedChunks.reduce((sum, c) => sum + c.length, 0);
           const mergedData = new Uint8Array(totalLen);
           let writePos = 0;
-          for (const s of actSections) {
-            mergedData.set(s.data, writePos);
-            writePos += s.data.length;
+          for (const chunk of strippedChunks) {
+            mergedData.set(chunk, writePos);
+            writePos += chunk.length;
           }
 
           const mergedSection: DddSection = {
