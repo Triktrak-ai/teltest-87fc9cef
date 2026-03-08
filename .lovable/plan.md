@@ -1,33 +1,49 @@
 
+# Kategoryzacja sesji "Unknown" na dashboardzie
 
-## Analiza: 9 sekcji w diagnostyce vs 7 dni w zakładce Czynności
+## Problem
+Kolumna "Tachograf" wyswietla "Unknown" dla wielu sesji, ktore tak naprawde maja rozne, rozpoznawalne przyczyny. Uzytkownik widzi monotonna liste "Unknown" bez zadnej informacji o tym co sie stalo.
 
-### Przyczyna rozbieżności
+## Analiza danych
+Z bazy wynika 5 jasnych kategorii sesji z "Unknown":
 
-To nie jest błąd — to dwie różne metryki:
+| Kategoria | Ilosc | Wzorzec | Znaczenie |
+|---|---|---|---|
+| Lockout (cert rejected) | 37 | APDU 0-3, error | Tachograf odrzucil certyfikat (blokada bezpieczenstwa) |
+| Brak odpowiedzi VU | 13 | APDU 0, error, oba Unknown | VU nie odpowiedzialo (stacyjka wylaczona / offline) |
+| Auth zaawansowany blad | 8 | APDU 20+, error | Autentykacja przeszla daleko ale ostatecznie odrzucona |
+| Wykrywanie | 10 | connecting, APDU 0 | Sesja w trakcie - generacja jeszcze nieznana |
+| Pominieto | 6 | skipped | Sesja pominieta przez harmonogram |
 
-1. **Diagnostyka (9 sekcji)** — `rawSections.length` liczy **wszystkie sekcje TLV ze wszystkich załadowanych plików** (activities + overview + inne). Sekcje z pliku overview/technical dodają się do wspólnej puli przez `mergeDddData`.
+## Rozwiazanie
 
-2. **Zakładka Czynności (7 dni)** — wynik parsowania po filtrach:
-   - Plik activities ma **7 sekcji TLV** + **1 pre-TLV header** = 8 chunków
-   - Z 8 chunków wyekstrahowano **8 dni**
-   - **1 dzień odfiltrowany** przez filtr okna czasowego (90 dni od daty pobrania) lub walidację (suma minut > 24h)
+### 1. Nowa funkcja `classifyUnknownGeneration()` w `SessionsTable.tsx`
 
-### Proponowane rozwiązanie
+Zamiast wyswietlac surowe "Unknown", dodac funkcje ktora na podstawie `status`, `apdu_exchanges`, `error_message` i kontekstu z `session_events` zwraca:
 
-Poprawić diagnostykę, żeby była bardziej przejrzysta:
+```text
+- "Lockout"       → ikona Lock, kolor destructive, tooltip "Tachograf odrzucil certyfikat"
+- "VU offline"    → ikona WifiOff, kolor muted, tooltip "Brak odpowiedzi VU (stacyjka wylaczona?)"  
+- "Auth blad"     → ikona ShieldX, kolor warning, tooltip "Autentykacja przerwana po N wymianach APDU"
+- "Wykrywanie..." → ikona Loader, kolor info, animacja pulse
+- "Unknown"       → fallback dla niepasujacych przypadkow
+```
 
-1. **Rozdzielić licznik sekcji per plik** — w diagnostyce pokazywać ile sekcji TLV pochodzi z którego pliku (activities: 7, overview: 2, itp.)
-2. **Dodać metrykę "dni sparsowanych vs odfiltrowanych"** w zakładce diagnostyki — np. "8 dni znalezionych, 1 odfiltrowany (poza oknem 90d), 7 wyświetlonych"
-3. **Logować powód odrzucenia dnia** w `activityRejections` — aktualnie rejections dotyczą tylko starego forward-scannera, nie RecordArray parsera
+### 2. Zmiana wyswietlania w kolumnie "Tachograf"
 
-### Zmiany w kodzie
+Zamiast Badge "Unknown" wyswietlic nowy Badge z odpowiednia ikona, kolorem i tooltipem. Zastosowac to tylko gdy `generation === "Unknown"` — znane generacje (Gen1, Gen2, Gen2v2) pozostaja bez zmian.
 
-**`src/lib/ddd-parser.ts`**:
-- W `parseVuActivitiesRecordArrays`: dodać rejection entry gdy dzień nie przechodzi walidacji (slot totals > 1440, brak entries)
-- W sekcji filtra downloadDate (linia ~742): dodać rejection entry dla dni poza oknem
+### 3. Zmiana wyswietlania w kolumnie "Status" dla bledow
 
-**`src/pages/DddReader.tsx`**:
-- W diagnostyce: pogrupować `rawSections` po źródle pliku (tag) i wyświetlić breakdown
-- Dodać kartę "Dni czynności: X znalezionych / Y wyświetlonych" z listą odrzuconych
+Dla sesji z `status === "error"` i rozpoznanym wzorcem, wzbogacic tooltip Badge "Blad" o szczegoly:
+- "Blokada bezpieczenstwa tachografu (lockout)" 
+- "VU nie odpowiada — mozliwe wylaczenie stacyjki"
+- "Certyfikat odrzucony po pelnej autentykacji"
 
+### Zmiany w plikach
+
+**`src/components/SessionsTable.tsx`** — jedyny plik:
+- Dodac funkcje `classifyUnknownGeneration(session)` zwracajaca `{ label, icon, color, tooltip }`
+- Zmodyfikowac renderowanie kolumny "Tachograf" (linia 169-188) aby uzywac klasyfikacji zamiast surowego "Unknown"
+- Dodac tooltips do kolumny "Status" dla rozpoznanych wzorcow bledow
+- Import dodatkowych ikon: `Lock`, `WifiOff`, `ShieldX`, `Loader`
