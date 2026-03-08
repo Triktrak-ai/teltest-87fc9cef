@@ -2392,27 +2392,27 @@ function parseActivitiesForward(data: Uint8Array): ActivityRecord[] {
   for (let skip = 0; skip <= Math.min(40, data.length - 12); skip++) {
     const prevLen = view.getUint16(skip, false);
     const recLen = view.getUint16(skip + 2, false);
-    if (recLen < 8 || recLen > 3000) continue;
+    if (recLen < 12 || recLen > 3000) continue;
     if (prevLen > 3000) continue;
 
     const ts = view.getUint32(skip + 4, false);
     if (!isValidTimestamp(ts)) continue;
 
-    // Extra validation: check that recordLength makes sense
-    // (recordLength - 8) must be even (each ActivityChangeInfo is 2 bytes)
-    if ((recLen - 8) % 2 !== 0) continue;
+    // recordLength includes the 4-byte header; (recLen - 12) must be even
+    if ((recLen - 12) % 2 !== 0) continue;
 
     const dist = view.getUint16(skip + 10, false);
     if (dist > 9999) continue;
 
     // Verify the NEXT record also looks valid (to avoid false positives)
-    const nextRecordStart = skip + 4 + recLen;
+    // Next record starts at skip + recLen (recLen includes header)
+    const nextRecordStart = skip + recLen;
     if (nextRecordStart + 12 <= data.length) {
       const nextPrevLen = view.getUint16(nextRecordStart, false);
       const nextRecLen = view.getUint16(nextRecordStart + 2, false);
       const nextTs = view.getUint32(nextRecordStart + 4, false);
-      if (nextRecLen >= 8 && nextRecLen <= 3000 && nextPrevLen <= 3000 &&
-          isValidTimestamp(nextTs) && (nextRecLen - 8) % 2 === 0) {
+      if (nextRecLen >= 12 && nextRecLen <= 3000 && nextPrevLen <= 3000 &&
+          isValidTimestamp(nextTs) && (nextRecLen - 12) % 2 === 0) {
         startPos = skip;
         break;
       }
