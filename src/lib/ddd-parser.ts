@@ -2430,9 +2430,9 @@ function parseActivitiesForward(data: Uint8Array): ActivityRecord[] {
       const recordStart = r.position;
       const previousRecordLength = r.readUint16();
       const recordLength = r.readUint16();
-      if (recordLength < 8 || recordLength > 3000) break;
+      if (recordLength < 12 || recordLength > 3000) break;
       if (previousRecordLength > 3000) break;
-      if ((recordLength - 8) % 2 !== 0) break;
+      if ((recordLength - 12) % 2 !== 0) break;
 
       const tsValue = r.readUint32();
       if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) break;
