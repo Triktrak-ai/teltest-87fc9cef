@@ -47,18 +47,75 @@ describe('Multi-file DDD merge with filename detection', () => {
   });
 
   it('merges all 5 files into one dataset', () => {
-    // First, let's examine the raw chunks of the activities file to understand TRTP prefix structure
+    // Analyze TRTP structure: dump each 0x76 0x32 section after stripping 13-byte header
     const actBuf = loadFile('358480081630115_activities_20260227_030429.ddd');
     const actBytes = new Uint8Array(actBuf);
-    // Find all 0x76 0x32 TLV sections manually
+    const chunks: Uint8Array[] = [];
     for (let i = 0; i < actBytes.length - 4; i++) {
       if (actBytes[i] === 0x76 && actBytes[i+1] === 0x32) {
         const secLen = (actBytes[i+2] << 8) | actBytes[i+3];
         const dataStart = i + 4;
-        const first20 = Array.from(actBytes.slice(dataStart, dataStart + Math.min(20, secLen)))
+        const raw = actBytes.slice(dataStart, dataStart + Math.min(secLen, actBytes.length - dataStart));
+        // Strip 13-byte TRTP header
+        const stripped = (raw.length >= 13 && raw[0] === 0x04 && raw[7] === 0x05) ? raw.slice(13) : raw;
+        chunks.push(stripped);
+        const hex80 = Array.from(stripped.slice(0, 80))
           .map(b => b.toString(16).padStart(2, '0')).join(' ');
-        console.log(`  TLV @${i}: tag=76 32, len=${secLen}, first20=[${first20}]`);
-        i += 3 + secLen; // skip past this section
+        console.log(`  Chunk ${chunks.length} (${stripped.length}B): ${hex80}`);
+        
+        // Try to interpret first record: date(4B) + counter(2B) + distance(2B) + count(2B)
+        if (stripped.length >= 10) {
+          const dv = new DataView(stripped.buffer, stripped.byteOffset, stripped.byteLength);
+          const ts = dv.getUint32(0, false);
+          const date = new Date(ts * 1000);
+          const counter = dv.getUint16(4, false);
+          const distance = dv.getUint16(6, false);
+          const nChanges = dv.getUint16(8, false);
+          console.log(`    Interp A (VU no-prefix): date=${date.toISOString().slice(0,10)} ts=0x${ts.toString(16)} counter=${counter} dist=${distance} nChanges=${nChanges}`);
+          
+          // Try with 2-byte global prefix
+          if (stripped.length >= 12) {
+            const globalCount = dv.getUint16(0, false);
+            const ts2 = dv.getUint32(2, false);
+            const date2 = new Date(ts2 * 1000);
+            const counter2 = dv.getUint16(6, false);
+            const distance2 = dv.getUint16(8, false);
+            const nChanges2 = dv.getUint16(10, false);
+            console.log(`    Interp B (2B prefix): globalCount=${globalCount} date=${date2.toISOString().slice(0,10)} ts2=0x${ts2.toString(16)} counter2=${counter2} dist2=${distance2} nChanges2=${nChanges2}`);
+          }
+          
+          // Try with card format: prevLen(2B) + recLen(2B) + date(4B)
+          if (stripped.length >= 12) {
+            const prevLen = dv.getUint16(0, false);
+            const recLen = dv.getUint16(2, false);
+            const ts3 = dv.getUint32(4, false);
+            const date3 = new Date(ts3 * 1000);
+            console.log(`    Interp C (card cyclic): prevLen=${prevLen} recLen=${recLen} date=${date3.toISOString().slice(0,10)} ts3=0x${ts3.toString(16)}`);
+          }
+        }
+        
+        i += 3 + secLen;
+      }
+    }
+    
+    // Also dump the concatenated buffer structure
+    const totalLen = chunks.reduce((s, c) => s + c.length, 0);
+    const merged_raw = new Uint8Array(totalLen);
+    let wp = 0;
+    for (const c of chunks) { merged_raw.set(c, wp); wp += c.length; }
+    console.log(`\n  Concatenated buffer: ${totalLen} bytes`);
+    console.log(`  First 40B: ${Array.from(merged_raw.slice(0, 40)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+    
+    // Try to scan for valid timestamps in the concatenated buffer
+    const mdv = new DataView(merged_raw.buffer, merged_raw.byteOffset, merged_raw.byteLength);
+    console.log(`\n  Scanning for valid timestamps (2024-2026 range):`);
+    for (let off = 0; off < Math.min(merged_raw.length - 4, 400); off++) {
+      const ts = mdv.getUint32(off, false);
+      const year = new Date(ts * 1000).getUTCFullYear();
+      if (year >= 2024 && year <= 2026) {
+        const ctx = Array.from(merged_raw.slice(Math.max(0, off-4), off+12))
+          .map(b => b.toString(16).padStart(2, '0')).join(' ');
+        console.log(`    @${off}: ts=0x${ts.toString(16)} = ${new Date(ts * 1000).toISOString().slice(0,10)} ctx=[${ctx}]`);
       }
     }
 
