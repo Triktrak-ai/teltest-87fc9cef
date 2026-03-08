@@ -667,7 +667,18 @@ export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileDat
 
 function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, result: DddFileData): DddFileData {
   const bytes = new Uint8Array(buffer);
-  result.generation = 'gen2'; // Individual files from TRTP are typically Gen2/Gen2v2
+  // Determine generation from TLV tags if available
+  if (sections.length > 0) {
+    if (sections.some(s => s.tag >= 0x31 && s.tag <= 0x39)) {
+      result.generation = 'gen2v2';
+    } else if (sections.some(s => s.tag >= 0x21 && s.tag <= 0x29)) {
+      result.generation = 'gen2v1';
+    } else {
+      result.generation = 'gen2'; // fallback for individual TRTP files
+    }
+  } else {
+    result.generation = 'gen2'; // Individual files from TRTP are typically Gen2/Gen2v2
+  }
   const fileName = result.rawFileBuffers?.[0]?.fileName;
   const downloadDate = extractDownloadDate(fileName);
 
