@@ -3076,8 +3076,8 @@ function parseCyclicActivities(
     if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) break;
     const date = new Date(tsValue * 1000);
 
-    // DailyPresenceCounter — BCD encoded (2 bytes)
-    const dailyPresenceCounter = decodeBcd(body[8]) * 100 + decodeBcd(body[9]);
+    // DailyPresenceCounter — uint16 (2 bytes), NOT BCD per spec type 2.56
+    const dailyPresenceCounter = (body[8] << 8) | body[9];
     const dayDistance = (body[10] << 8) | body[11];
     if (dayDistance > 9999) break;
 
