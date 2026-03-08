@@ -2369,18 +2369,41 @@ function parseActivitiesForward(data: Uint8Array): ActivityRecord[] {
   const r = new BinaryReader(toArrayBuffer(data));
   const view = new DataView(toArrayBuffer(data));
 
-  // Find first valid record header
+  // Scan ALL possible offsets for a valid record header (prevLen + recLen + valid timestamp).
+  // The data may contain TRTP prefixes, partial records, or variable-length headers,
+  // so fixed skip offsets are not reliable.
   let startPos = -1;
-  for (const skip of [0, 4, 5, 8, 3, 12]) {
-    if (skip + 8 > data.length) continue;
+  for (let skip = 0; skip <= Math.min(40, data.length - 12); skip++) {
     const prevLen = view.getUint16(skip, false);
     const recLen = view.getUint16(skip + 2, false);
-    if (recLen >= 8 && recLen <= 3000 && prevLen <= 3000) {
-      const ts = view.getUint32(skip + 4, false);
-      if (isValidTimestamp(ts)) {
+    if (recLen < 8 || recLen > 3000) continue;
+    if (prevLen > 3000) continue;
+
+    const ts = view.getUint32(skip + 4, false);
+    if (!isValidTimestamp(ts)) continue;
+
+    // Extra validation: check that recordLength makes sense
+    // (recordLength - 8) must be even (each ActivityChangeInfo is 2 bytes)
+    if ((recLen - 8) % 2 !== 0) continue;
+
+    const dist = view.getUint16(skip + 10, false);
+    if (dist > 9999) continue;
+
+    // Verify the NEXT record also looks valid (to avoid false positives)
+    const nextRecordStart = skip + 4 + recLen;
+    if (nextRecordStart + 12 <= data.length) {
+      const nextPrevLen = view.getUint16(nextRecordStart, false);
+      const nextRecLen = view.getUint16(nextRecordStart + 2, false);
+      const nextTs = view.getUint32(nextRecordStart + 4, false);
+      if (nextRecLen >= 8 && nextRecLen <= 3000 && nextPrevLen <= 3000 &&
+          isValidTimestamp(nextTs) && (nextRecLen - 8) % 2 === 0) {
         startPos = skip;
         break;
       }
+    } else {
+      // Last record in buffer — accept without next-record validation
+      startPos = skip;
+      break;
     }
   }
   if (startPos < 0) return records;
@@ -2393,6 +2416,7 @@ function parseActivitiesForward(data: Uint8Array): ActivityRecord[] {
       const recordLength = r.readUint16();
       if (recordLength < 8 || recordLength > 3000) break;
       if (previousRecordLength > 3000) break;
+      if ((recordLength - 8) % 2 !== 0) break;
 
       const tsValue = r.readUint32();
       if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) break;
