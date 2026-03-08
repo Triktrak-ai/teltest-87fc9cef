@@ -2223,42 +2223,157 @@ function parseOverview(data: Uint8Array): DddOverview {
 
 function parseActivities(data: Uint8Array): ActivityRecord[] {
   const records: ActivityRecord[] = [];
-  const r = new BinaryReader(toArrayBuffer(data));
-  if (r.remaining < 12) return records;
+  if (data.length < 12) return records;
 
-  // CardActivityDailyRecord format (Annex 1C, Appendix 1 §2.9):
-  //   previousRecordLength  2 bytes
-  //   recordLength           2 bytes  (covers timestamp..activityChangeInfo[])
-  //   activityRecordDate     4 bytes  (TimeReal)
-  //   dailyPresenceCounter   2 bytes
-  //   activityDayDistance     2 bytes
-  //   activityChangeInfo[N]  N×2 bytes  where N = (recordLength - 8) / 2
-  //
-  // The cyclic buffer may start with an 8-byte header:
-  //   oldestProcessedDate    4 bytes
-  //   mostRecentDownloadDate 4 bytes
-  // Or a RecordArray-style header, or a TLV prefix. We scan for the first
-  // valid record start by looking for the length-prefix + timestamp pattern.
-
-  // Strategy: scan for the first valid record header
   const view = new DataView(toArrayBuffer(data));
-  let startPos = -1;
 
-  // Try common header sizes: 0 (no header), 4 (short), 5 (RecordArray), 8 (cyclic buffer header)
+  // ─── Strategy 1: Cyclic buffer with pointer-based backward traversal ───
+  // CardDriverActivity layout (Annex 1C):
+  //   oldestDayRecordPointer  2B  (offset into cyclic buffer body)
+  //   newestDayRecordPointer  2B  (offset into cyclic buffer body)
+  //   activityDailyRecords[]  ...  (cyclic body)
+  //
+  // Each CardActivityDailyRecord:
+  //   previousRecordLength  2B
+  //   recordLength          2B   (covers date..activityChangeInfo[])
+  //   activityRecordDate    4B
+  //   dailyPresenceCounter  2B   (BCD)
+  //   activityDayDistance    2B
+  //   activityChangeInfo[N] N×2B  where N = (recordLength - 8) / 2
+
+  // Detect cyclic header: try common header offsets
+  for (const headerOffset of [0, 5, 3, 8, 12]) {
+    if (headerOffset + 4 > data.length) continue;
+
+    const oldestPtr = view.getUint16(headerOffset, false);
+    const newestPtr = view.getUint16(headerOffset + 2, false);
+    const bodyStart = headerOffset + 4;
+    const bodyLen = data.length - bodyStart;
+
+    if (bodyLen < 12) continue;
+    if (oldestPtr >= bodyLen || newestPtr >= bodyLen) continue;
+
+    // Validate: there should be a valid record at newestPtr
+    const newestAbsPos = bodyStart + newestPtr;
+    if (newestAbsPos + 12 > data.length) continue;
+    const recLen = view.getUint16(newestAbsPos + 2, false);
+    if (recLen < 8 || recLen > 3000) continue;
+    const ts = view.getUint32(newestAbsPos + 4, false);
+    if (!isValidTimestamp(ts)) continue;
+
+    // Valid cyclic buffer found — traverse backward from newest
+    const cyclicRecords = parseCyclicActivities(data, bodyStart, bodyLen, newestPtr);
+    if (cyclicRecords.length > 0) return cyclicRecords;
+  }
+
+  // ─── Strategy 2: Forward scan (fallback for non-cyclic or TLV data) ───
+  return parseActivitiesForward(data);
+}
+
+/** Traverse cyclic buffer backward from newestPtr, extracting daily records. */
+function parseCyclicActivities(
+  data: Uint8Array, bodyStart: number, bodyLen: number, newestPtr: number
+): ActivityRecord[] {
+  const records: ActivityRecord[] = [];
+  let pos = newestPtr;
+  const maxIter = 400; // guard against infinite loops
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    // Extract record bytes with wrap-around
+    const recBytes = readCyclicBytes(data, bodyStart, bodyLen, pos, 4);
+    if (!recBytes) break;
+
+    const prevRecLen = (recBytes[0] << 8) | recBytes[1];
+    const recLen = (recBytes[2] << 8) | recBytes[3];
+
+    if (recLen < 8 || recLen > 3000) break;
+    if (prevRecLen > 3000) break;
+
+    // Read full record body (recordLength bytes after the 4-byte prefix)
+    const body = readCyclicBytes(data, bodyStart, bodyLen, (pos + 4) % bodyLen, recLen);
+    if (!body) break;
+
+    const tsValue = (body[0] << 24) | (body[1] << 16) | (body[2] << 8) | body[3];
+    if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) break;
+    const date = new Date(tsValue * 1000);
+
+    // DailyPresenceCounter — BCD encoded (2 bytes)
+    const dailyPresenceCounter = decodeBcd(body[4]) * 100 + decodeBcd(body[5]);
+    const dayDistance = (body[6] << 8) | body[7];
+    if (dayDistance > 9999) break;
+
+    const activityChangeCount = Math.floor((recLen - 8) / 2);
+    const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
+
+    for (let i = 0; i < activityChangeCount; i++) {
+      const off = 8 + i * 2;
+      if (off + 1 >= body.length) break;
+      const word = (body[off] << 8) | body[off + 1];
+      // Skip padding/invalid entries per tachograph-go reference
+      if (word === 0x0000 || word === 0xFFFF) continue;
+      const slot = (word >> 15) & 0x01;
+      const cardInserted = ((word >> 13) & 0x01) === 0;
+      const activity = (word >> 11) & 0x03;
+      const minutes = word & 0x07FF;
+      if (minutes >= 1440) continue;
+      rawEntries.push({ slot, cardInserted, activity, minutes });
+    }
+
+    const entries = decodeActivityEntries(rawEntries);
+    records.push({ date, dailyPresenceCounter, dayDistance, entries });
+
+    // Move backward: previousRecordLength bytes before current position
+    if (prevRecLen === 0) break; // oldest record reached
+    pos = ((pos - prevRecLen) % bodyLen + bodyLen) % bodyLen;
+
+    // Safety: if we've looped back to newest, stop
+    if (pos === newestPtr && iter > 0) break;
+  }
+
+  // Records were collected newest-first; reverse for chronological order
+  records.reverse();
+
+  // Deduplicate by date+counter
+  const unique = new Map<string, ActivityRecord>();
+  for (const rec of records) {
+    const key = `${rec.date.getTime()}-${rec.dailyPresenceCounter}`;
+    const existing = unique.get(key);
+    if (!existing || rec.entries.length > existing.entries.length) {
+      unique.set(key, rec);
+    }
+  }
+  return Array.from(unique.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
+}
+
+/** Read `len` bytes from a cyclic buffer with wrap-around. Returns null if len is too large. */
+function readCyclicBytes(
+  data: Uint8Array, bodyStart: number, bodyLen: number, offset: number, len: number
+): Uint8Array | null {
+  if (len > bodyLen || len <= 0) return null;
+  const result = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    result[i] = data[bodyStart + ((offset + i) % bodyLen)];
+  }
+  return result;
+}
+
+/** Decode a BCD-encoded byte (e.g. 0x39 → 39). */
+function decodeBcd(byte: number): number {
+  return ((byte >> 4) & 0x0F) * 10 + (byte & 0x0F);
+}
+
+/** Forward scan fallback for parseActivities (non-cyclic data). */
+function parseActivitiesForward(data: Uint8Array): ActivityRecord[] {
+  const records: ActivityRecord[] = [];
+  const r = new BinaryReader(toArrayBuffer(data));
+  const view = new DataView(toArrayBuffer(data));
+
+  // Find first valid record header
+  let startPos = -1;
   for (const skip of [0, 4, 5, 8, 3, 12]) {
     if (skip + 8 > data.length) continue;
     const prevLen = view.getUint16(skip, false);
     const recLen = view.getUint16(skip + 2, false);
-    // First record: previousRecordLength should be 0
-    // recordLength should be >= 8 (timestamp + counter + distance) and reasonable
-    if (prevLen === 0 && recLen >= 8 && recLen <= 3000) {
-      const ts = view.getUint32(skip + 4, false);
-      if (isValidTimestamp(ts)) {
-        startPos = skip;
-        break;
-      }
-    }
-    // Also try if previousRecordLength is non-zero (not first record in buffer)
     if (recLen >= 8 && recLen <= 3000 && prevLen <= 3000) {
       const ts = view.getUint32(skip + 4, false);
       if (isValidTimestamp(ts)) {
@@ -2267,7 +2382,6 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
       }
     }
   }
-
   if (startPos < 0) return records;
   r.position = startPos;
 
@@ -2276,7 +2390,6 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
       const recordStart = r.position;
       const previousRecordLength = r.readUint16();
       const recordLength = r.readUint16();
-
       if (recordLength < 8 || recordLength > 3000) break;
       if (previousRecordLength > 3000) break;
 
@@ -2288,14 +2401,13 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
       const dayDistance = r.readUint16();
       if (dayDistance > 9999) break;
 
-      // Activity change count derived from recordLength, NOT read from stream
       const activityChangeCount = Math.floor((recordLength - 8) / 2);
       if (activityChangeCount > 1440 || activityChangeCount < 0) break;
 
       const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
-
       for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
         const word = r.readUint16();
+        if (word === 0x0000 || word === 0xFFFF) continue; // skip padding
         const slot = (word >> 15) & 0x01;
         const cardInserted = ((word >> 13) & 0x01) === 0;
         const activity = (word >> 11) & 0x03;
@@ -2304,9 +2416,7 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
         rawEntries.push({ slot, cardInserted, activity, minutes });
       }
 
-      // Ensure we advance to exact end of record (recordLength bytes after the length prefix pair)
       r.position = recordStart + 4 + recordLength;
-
       const entries = decodeActivityEntries(rawEntries);
       records.push({ date, dailyPresenceCounter, dayDistance, entries });
     } catch {
