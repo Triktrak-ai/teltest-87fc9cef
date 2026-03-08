@@ -122,15 +122,34 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
     }
   };
 
-  // Time window: from last_success_at minus 10 min to last_success_at plus 5 min
-  const getTimeWindow = (s: DownloadSchedule) => {
+  // Time window: look up latest session for IMEI to get exact started_at/completed_at
+  // Falls back to last_success_at ± 30/5 min if no session found
+  const getTimeWindow = useCallback(async (s: DownloadSchedule) => {
     const successAt = s.last_success_at;
     if (!successAt) return null;
+
+    // Try to find the matching session for accurate time window
+    const { data: session } = await supabase
+      .from("sessions")
+      .select("started_at, completed_at")
+      .eq("imei", s.imei)
+      .in("status", ["completed", "partial"])
+      .order("completed_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (session?.started_at && session?.completed_at) {
+      const after = new Date(new Date(session.started_at).getTime() - 2 * 60000).toISOString();
+      const before = new Date(new Date(session.completed_at).getTime() + 2 * 60000).toISOString();
+      return { after, before };
+    }
+
+    // Fallback: wider window around last_success_at
     const dt = new Date(successAt);
-    const after = new Date(dt.getTime() - 10 * 60000).toISOString();
+    const after = new Date(dt.getTime() - 30 * 60000).toISOString();
     const before = new Date(dt.getTime() + 5 * 60000).toISOString();
     return { after, before };
-  };
+  }, []);
 
   const handleDownloadDdd = useCallback(async (s: DownloadSchedule) => {
     const tw = getTimeWindow(s);
