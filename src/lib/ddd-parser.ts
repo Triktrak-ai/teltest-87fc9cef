@@ -3003,7 +3003,7 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
   //   previousRecordLength  2B
   //   recordLength          2B   (covers date..activityChangeInfo[])
   //   activityRecordDate    4B
-  //   dailyPresenceCounter  2B   (BCD)
+  //   dailyPresenceCounter  2B   (uint16)
   //   activityDayDistance    2B
    //   activityChangeInfo[N] N×2B  where N = (recordLength - 12) / 2
    //   NOTE: recordLength INCLUDES the 4-byte header (prevLen + recLen)
