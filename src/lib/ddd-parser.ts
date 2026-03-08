@@ -3212,7 +3212,7 @@ function parseActivitiesForward(data: Uint8Array): ActivityRecord[] {
       const rawEntries: RawActivityWord[] = [];
       for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
         const word = r.readUint16();
-        if (word === 0x0000 || word === 0xFFFF) continue; // skip padding
+        if (word === 0xFFFF) continue; // 0xFFFF = padding; 0x0000 is valid start-of-day
         const slot = (word >> 15) & 0x01;
         const drivingStatus = (word >> 14) & 0x01;
         const cardInserted = ((word >> 13) & 0x01) === 0;
