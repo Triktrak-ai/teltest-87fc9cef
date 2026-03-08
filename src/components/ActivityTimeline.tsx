@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ChevronDown, ChevronUp, Clock } from "lucide-react";
+import { ChevronDown, ChevronUp, Clock, Users } from "lucide-react";
 import type { ActivityRecord } from "@/lib/ddd-parser";
 
 const ACTIVITY_BAR_COLORS: Record<string, string> = {
@@ -191,6 +191,9 @@ function DayCard({ day, defaultExpanded = false }: DayCardProps) {
                 <div className="h-2 w-2 rounded-sm shrink-0" style={{ backgroundColor: ACTIVITY_BAR_COLORS[e.status] }} />
                 <span className="text-muted-foreground">{e.timeFrom}–{e.timeTo}</span>
                 <span className="font-medium">{ACTIVITY_LABELS[e.status]}</span>
+                {e.drivingStatus === 'crew' && (
+                  <Users className="h-2.5 w-2.5 text-primary shrink-0" />
+                )}
                 <span className="text-muted-foreground ml-auto">{e.slot === "driver" ? "K1" : "K2"}</span>
               </div>
             ))}

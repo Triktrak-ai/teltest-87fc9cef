@@ -29,6 +29,7 @@ export interface ActivityRecord {
 
 export interface ActivityChangeEntry {
   slot: 'driver' | 'codriver';
+  drivingStatus: 'single' | 'crew';
   status: 'break' | 'availability' | 'work' | 'driving' | 'unknown';
   cardInserted: boolean;
   minutes: number;
@@ -1552,6 +1553,16 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
   // Gen2v2 events file uses RecordArray format:
   // arrayType(1B) + recordSize(2B) + noOfRecords(2B) = 5B header, then records
   // Multiple RecordArrays concatenated for different event/fault types.
+  //
+  // Known RecordArray types from TREP 33h (Appendix 7, type 2.120):
+  //   0x15 (21) — VuEventRecordArray (general events)
+  //   0x18 (24) — VuFaultRecordArray (faults)
+  //   0x1A (26) — VuOverSpeedingControlDataRecordArray
+  //   0x1B (27) — VuOverSpeedingEventRecordArray
+  //   0x1E (30) — VuTimeAdjustmentRecordArray
+  const FAULT_ARRAY_TYPES = new Set([0x18]);
+  const EVENT_ARRAY_TYPES = new Set([0x15, 0x1A, 0x1B, 0x1E]);
+
   const view = new DataView(toArrayBuffer(bytes));
   let pos = 0;
   let parsedRecordArrays = 0;
@@ -1565,6 +1576,7 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
     if (recordSize >= 10 && recordSize <= 200 && noOfRecords >= 0 && noOfRecords <= 100 &&
         pos + 5 + recordSize * noOfRecords <= bytes.length) {
       const arrayEnd = pos + 5 + recordSize * noOfRecords;
+      const isFaultArray = FAULT_ARRAY_TYPES.has(arrayType);
 
       for (let i = 0; i < noOfRecords; i++) {
         const recStart = pos + 5 + i * recordSize;
@@ -1599,16 +1611,23 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
           cardNumberCodriverSlot = '';
         }
 
-        // Determine if this is an event or fault based on type ranges
-        const isFault = (eventType >= 0x00 && eventType <= 0x07 && arrayType >= 0x18) ? false : false;
-
-        events.push({
-          eventType,
-          eventTypeName: EVENT_TYPE_NAMES[eventType] || `Zdarzenie 0x${eventType.toString(16)}`,
-          eventBeginTime, eventEndTime,
-          cardNumberDriverSlot,
-          cardNumberCodriverSlot,
-        });
+        if (isFaultArray) {
+          faults.push({
+            faultType: eventType,
+            faultTypeName: FAULT_TYPE_NAMES[eventType] || `Usterka 0x${eventType.toString(16)}`,
+            faultBeginTime: eventBeginTime, faultEndTime: eventEndTime,
+            cardNumberDriverSlot,
+            cardNumberCodriverSlot,
+          });
+        } else {
+          events.push({
+            eventType,
+            eventTypeName: EVENT_TYPE_NAMES[eventType] || `Zdarzenie 0x${eventType.toString(16)}`,
+            eventBeginTime, eventEndTime,
+            cardNumberDriverSlot,
+            cardNumberCodriverSlot,
+          });
+        }
       }
 
       pos = arrayEnd;
@@ -1783,11 +1802,11 @@ function classifyVuActivityChunk(data: Uint8Array): 'activity' | 'cardIW' {
 function stripTrtpPrefix(data: Uint8Array, _isFirstChunk: boolean): Uint8Array {
   if (data.length < 3) return data;
 
-  // TRTP transport prefix is 3 bytes: 04 00 01 (or 04 00 02)
-  // It replaces the DateOfDayDownloaded RecordArray header (06 00 04 00 01).
-  // After stripping 3B, the data starts with raw 4B timestamp followed by
-  // remaining RecordArrays (type=0x05 odo, type=0x0d cardIW, type=0x01 activity).
-  // We reconstruct the full RA stream by prepending the date RA header.
+  // TRTP transport header per specialist: 3 bytes = [TREP][sub-msg-counter-hi][sub-msg-counter-lo]
+  // E.g. 32 00 01 = TREP 0x32 (activities Gen2v2), sub-message #1.
+  // After TLV tag stripping (76 32 → payload), the remaining prefix is
+  // often 04 00 01 which appears to be an internal framing artifact.
+  // We strip it and reconstruct the DateOfDayDownloaded RecordArray header.
   if (data[0] === 0x04 && data[1] === 0x00 &&
       (data[2] === 0x01 || data[2] === 0x02)) {
     const stripped = data.slice(3); // starts with 4B timestamp
@@ -2017,7 +2036,9 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
 //     OdometerValueMidnight (3B)  — reference odometer
 //     VuCardIWData:
 //       NoOfIWRecords (2B)
-//       VuCardIWRecordFirstGen[N] — each 129B
+//       VuCardIWRecordFirstGen[N] — each 129B (Gen1)
+//       Note: Gen2 uses 131B records (fullCardNumberAndGeneration + vuGeneration)
+//       but this function is Gen1-specific fallback
 //     VuActivityDailyData:
 //       NoOfActivityChanges (2B)
 //       ActivityChangeInfo[N]     — each 2B, FLAT across all days
@@ -2029,6 +2050,7 @@ const VU_CARD_IW_RECORD_SIZE_GEN1 = 129;
 // HolderName(72) + FullCardNumber(18) + ExpiryDate(4) + InsertionTime(4)
 // + OdoInsertion(3) + SlotNumber(1) + WithdrawalTime(4) + OdoWithdrawal(3)
 // + PreviousVehicleInfoFirstGen(19) + ManualInputFlag(1) = 129
+// Gen2: +2B (fullCardNumberAndGeneration + vuGeneration) = 131B
 
 function parseVuActivitiesGen1Style(
   data: Uint8Array,
@@ -2097,12 +2119,13 @@ function parseVuActivitiesGen1Style(
   for (let i = 0; i < noOfChanges; i++) {
     const word = view.getUint16(changesStart + i * 2, false);
     if (word === 0x0000 || word === 0xFFFF) continue;
-    const slot = (word >> 15) & 0x01;
-    const cardInserted = ((word >> 13) & 0x01) === 0;
-    const activity = (word >> 11) & 0x03;
-    const minutes = word & 0x07FF;
+    const slot = (word >> 15) & 0x01;          // bit 15: 0=driver, 1=codriver
+    const drivingStatus = (word >> 14) & 0x01; // bit 14: 0=SINGLE, 1=CREW
+    const cardInserted = ((word >> 13) & 0x01) === 0; // bit 13: 0=inserted, 1=not inserted
+    const activity = (word >> 11) & 0x03;      // bits 12-11: activity type
+    const minutes = word & 0x07FF;             // bits 10-0: minutes since 00:00
     if (minutes >= 1440) continue;
-    rawWords.push({ slot, cardInserted, activity, minutes });
+    rawWords.push({ slot, drivingStatus, cardInserted, activity, minutes });
   }
 
   if (rawWords.length === 0) return [];
@@ -2237,16 +2260,24 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
             const word = view.getUint16(arrayStart + i * 2, false);
             if (word === 0x0000 || word === 0xFFFF) continue;
             const slot = (word >> 15) & 0x01;
+            const drivingStatus = (word >> 14) & 0x01;
             const cardInserted = ((word >> 13) & 0x01) === 0;
             const activity = (word >> 11) & 0x03;
             const minutes = word & 0x07FF;
             if (minutes >= 1440) continue;
-            activityWords.push({ slot, cardInserted, activity, minutes });
+            activityWords.push({ slot, drivingStatus, cardInserted, activity, minutes });
           }
         }
         break;
 
-      // All other types: skip silently
+      // Known RecordArray types from TREP 32h (Activities) per Appendix 7:
+      // 0x0D — VuCardIWRecordArray (skip, parsed separately in Gen1 path)
+      // 0x1C — VuPlaceDailyWorkPeriodRecordArray (places, TODO: parse)
+      // 0x16 — VuGNSSADRecordArray (GNSS accumulated driving, TODO: parse)
+      // 0x09 — VuSpecificConditionRecordArray (specific conditions, skip)
+      // 0x22 — VuBorderCrossingRecordArray (border crossings, TODO: parse)
+      // 0x23 — VuLoadUnloadRecordArray (load/unload operations, TODO: parse)
+      // 0x08 — SignatureRecordArray (digital signature, skip)
       default:
         break;
     }
@@ -2316,6 +2347,7 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
 
 type RawActivityWord = {
   slot: number;
+  drivingStatus: number; // bit 14: 0=SINGLE, 1=CREW
   cardInserted: boolean;
   activity: number;
   minutes: number;
@@ -2348,8 +2380,12 @@ function decodeActivityEntries(rawEntries: RawActivityWord[]): ActivityChangeEnt
       const hTo = Math.floor(Math.min(nextMinutes, 1440) / 60);
       const mTo = Math.min(nextMinutes, 1440) % 60;
 
+      // Determine drivingStatus for this time segment: use the latest known value from this slot
+      const drivingStatusValue = current.drivingStatus === 1 ? 'crew' as const : 'single' as const;
+
       entries.push({
         slot: slot === 0 ? 'driver' : 'codriver',
+        drivingStatus: drivingStatusValue,
         status: statusMap[current.activity] || 'unknown',
         cardInserted: current.cardInserted,
         minutes: current.minutes,
@@ -2444,16 +2480,17 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
         r.position = pos + 10;
       }
 
-      const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
+      const rawEntries: RawActivityWord[] = [];
       for (let i = 0; i < count && r.remaining >= 2; i++) {
         const word = r.readUint16();
         if (word === 0x0000 || word === 0xFFFF) continue; // skip padding/invalid
         const slot = (word >> 15) & 0x01;
+        const drivingStatus = (word >> 14) & 0x01;
         const cardInserted = ((word >> 13) & 0x01) === 0;
         const activity = (word >> 11) & 0x03;
         const minutes = word & 0x07FF;
         if (minutes >= 1440) continue;
-        rawEntries.push({ slot, cardInserted, activity, minutes });
+        rawEntries.push({ slot, drivingStatus, cardInserted, activity, minutes });
       }
 
       const entries = decodeActivityEntries(rawEntries);
@@ -2857,7 +2894,7 @@ function parseCyclicActivities(
 
     // N = (totalLength - 4(header) - 4(date) - 2(counter) - 2(distance)) / 2
     const activityChangeCount = Math.floor((recLen - 12) / 2);
-    const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
+    const rawEntries: RawActivityWord[] = [];
 
     for (let i = 0; i < activityChangeCount; i++) {
       const off = 12 + i * 2;
@@ -2866,11 +2903,12 @@ function parseCyclicActivities(
       // Skip padding/invalid entries per tachograph-go reference
       if (word === 0x0000 || word === 0xFFFF) continue;
       const slot = (word >> 15) & 0x01;
+      const drivingStatus = (word >> 14) & 0x01;
       const cardInserted = ((word >> 13) & 0x01) === 0;
       const activity = (word >> 11) & 0x03;
       const minutes = word & 0x07FF;
       if (minutes >= 1440) continue;
-      rawEntries.push({ slot, cardInserted, activity, minutes });
+      rawEntries.push({ slot, drivingStatus, cardInserted, activity, minutes });
     }
 
     const entries = decodeActivityEntries(rawEntries);
@@ -2982,16 +3020,17 @@ function parseActivitiesForward(data: Uint8Array): ActivityRecord[] {
       const activityChangeCount = Math.floor((recordLength - 12) / 2);
       if (activityChangeCount > 1440 || activityChangeCount < 0) break;
 
-      const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
+      const rawEntries: RawActivityWord[] = [];
       for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
         const word = r.readUint16();
         if (word === 0x0000 || word === 0xFFFF) continue; // skip padding
         const slot = (word >> 15) & 0x01;
+        const drivingStatus = (word >> 14) & 0x01;
         const cardInserted = ((word >> 13) & 0x01) === 0;
         const activity = (word >> 11) & 0x03;
         const minutes = word & 0x07FF;
         if (minutes >= 1440) continue;
-        rawEntries.push({ slot, cardInserted, activity, minutes });
+        rawEntries.push({ slot, drivingStatus, cardInserted, activity, minutes });
       }
 
       // recordLength includes the 4-byte header, so next record starts at recordStart + recordLength
