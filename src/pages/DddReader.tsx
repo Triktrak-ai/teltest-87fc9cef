@@ -884,26 +884,76 @@ const DddReader = () => {
             {/* Diagnostics */}
             <TabsContent value="diagnostics">
               <div className="space-y-4">
-                <div className="grid gap-4 sm:grid-cols-3">
-                  <Card>
-                    <CardContent className="py-4">
-                      <p className="text-xs text-muted-foreground">Rozmiar pliku</p>
-                      <p className="mt-1 font-semibold font-mono">{data.fileSize.toLocaleString()} B</p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="py-4">
-                      <p className="text-xs text-muted-foreground">Bajty sparsowane</p>
-                      <p className="mt-1 font-semibold font-mono">{data.bytesParsed.toLocaleString()} B ({Math.round(data.bytesParsed / data.fileSize * 100)}%)</p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="py-4">
-                      <p className="text-xs text-muted-foreground">Sekcje TLV</p>
-                      <p className="mt-1 font-semibold">{data.rawSections.length}</p>
-                    </CardContent>
-                  </Card>
-                </div>
+                {/* Per-file section breakdown */}
+                {(() => {
+                  const bySource = new Map<string, number>();
+                  data.rawSections.forEach(s => {
+                    const src = s.sourceFile || 'unknown';
+                    const shortName = src.replace(/^.*[\\/]/, '').replace(/^\d+_/, '');
+                    bySource.set(shortName, (bySource.get(shortName) || 0) + 1);
+                  });
+                  const activityDaysFound = data.activities.length + data.activityRejections.length;
+                  const activityDaysDisplayed = data.activities.length;
+                  const activityDaysRejected = data.activityRejections.length;
+                  return (
+                    <>
+                      <div className="grid gap-4 sm:grid-cols-3">
+                        <Card>
+                          <CardContent className="py-4">
+                            <p className="text-xs text-muted-foreground">Rozmiar pliku</p>
+                            <p className="mt-1 font-semibold font-mono">{data.fileSize.toLocaleString()} B</p>
+                          </CardContent>
+                        </Card>
+                        <Card>
+                          <CardContent className="py-4">
+                            <p className="text-xs text-muted-foreground">Bajty sparsowane</p>
+                            <p className="mt-1 font-semibold font-mono">{data.bytesParsed.toLocaleString()} B ({Math.round(data.bytesParsed / data.fileSize * 100)}%)</p>
+                          </CardContent>
+                        </Card>
+                        <Card>
+                          <CardContent className="py-4">
+                            <p className="text-xs text-muted-foreground">Sekcje TLV (łącznie)</p>
+                            <p className="mt-1 font-semibold">{data.rawSections.length}</p>
+                            {bySource.size > 1 && (
+                              <div className="mt-1 space-y-0.5">
+                                {Array.from(bySource.entries()).map(([src, count]) => (
+                                  <p key={src} className="text-xs text-muted-foreground font-mono">{src}: {count}</p>
+                                ))}
+                              </div>
+                            )}
+                          </CardContent>
+                        </Card>
+                      </div>
+                      {activityDaysFound > 0 && (
+                        <Card className="border-primary/20">
+                          <CardContent className="py-4">
+                            <p className="text-xs text-muted-foreground font-medium mb-2">Dni czynności</p>
+                            <div className="flex items-center gap-4">
+                              <div className="text-center">
+                                <p className="text-lg font-semibold">{activityDaysFound}</p>
+                                <p className="text-xs text-muted-foreground">znalezionych</p>
+                              </div>
+                              <span className="text-muted-foreground">→</span>
+                              {activityDaysRejected > 0 && (
+                                <>
+                                  <div className="text-center">
+                                    <p className="text-lg font-semibold text-orange-500">{activityDaysRejected}</p>
+                                    <p className="text-xs text-muted-foreground">odfiltrowanych</p>
+                                  </div>
+                                  <span className="text-muted-foreground">→</span>
+                                </>
+                              )}
+                              <div className="text-center">
+                                <p className="text-lg font-semibold text-green-600">{activityDaysDisplayed}</p>
+                                <p className="text-xs text-muted-foreground">wyświetlonych</p>
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      )}
+                    </>
+                  );
+                })()}
 
                 <Card>
                   <CardHeader className="py-3"><CardTitle className="text-sm">Znalezione sekcje</CardTitle></CardHeader>
