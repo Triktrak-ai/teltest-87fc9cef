@@ -676,9 +676,11 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
 
         if (actSections.length > 0) {
           // ── Concatenated strategy (primary) ──
-          // Records in a cyclic buffer can span chunk boundaries, so per-section
-          // parsing is fundamentally wrong. We concatenate all chunks, stripping
-          // TRTP transport prefixes, to reconstruct the original card EF payload.
+          // VU Activities download (0x76 0x32) contains sequential RecordArrays
+          // per Annex 1C: DateOfDayDownloaded, OdometerValueMidnight,
+          // VuCardIWRecordArray, VuActivityDailyRecordArray, etc.
+          // We concatenate ALL chunks (stripping TRTP), then extract only
+          // VuActivityDailyRecordArray data using RecordArray-aware parsing.
           const strippedChunks: Uint8Array[] = [];
           for (let ci = 0; ci < actSections.length; ci++) {
             const s = actSections[ci];
@@ -1676,6 +1678,37 @@ function parseEventsStructured(bytes: Uint8Array, warnings: ParserWarning[]): { 
 }
 
 // ─── TRTP prefix stripping for chunk concatenation ──────────────────────────
+
+/**
+ * Classify a TRTP-stripped VU activity chunk as either VuActivityDailyData
+ * or VuCardIWData (card insertion/withdrawal records with driver names).
+ *
+ * VuCardIWData chunks contain HolderName structures (codePage + ASCII surname)
+ * starting around byte 8 after TRTP strip. We detect this by checking for
+ * high printable ASCII density in that region.
+ *
+ * VuActivityDailyData contains binary activity change words (2B each) which
+ * have very low ASCII density.
+ */
+function classifyVuActivityChunk(data: Uint8Array): 'activity' | 'cardIW' {
+  if (data.length < 30) return 'activity';
+
+  // After TRTP strip, the structure is:
+  //   4B timestamp + 3B (odometer/header) + 1B (codePage for CardIW, or data for activity)
+  //   Then: CardIW → ASCII name bytes; Activity → binary change words
+  //
+  // Check bytes 8–40 for printable ASCII density
+  const sampleStart = 8;
+  const sampleEnd = Math.min(40, data.length);
+  const sample = data.slice(sampleStart, sampleEnd);
+  const asciiCount = Array.from(sample).filter(b => b >= 0x20 && b < 0x7F).length;
+  const ratio = asciiCount / sample.length;
+
+  // CardIW records have driver names (>60% printable ASCII in this region)
+  // Activity data has packed binary words (<30% printable ASCII)
+  if (ratio > 0.5) return 'cardIW';
+  return 'activity';
+}
 
 /**
  * Strip TRTP transport prefix from a TLV section's data payload.
