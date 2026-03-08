@@ -1680,37 +1680,30 @@ function parseEventsStructured(bytes: Uint8Array, warnings: ParserWarning[]): { 
 /**
  * Strip TRTP transport prefix from a TLV section's data payload.
  * 
- * The first chunk typically starts with the cyclic buffer header (oldestPtr + newestPtr)
- * and has no TRTP prefix. Subsequent chunks have a 5-byte prefix: 04 00 {01|02} XX XX.
- * 
- * @param data - Raw section data
- * @param isFirstChunk - Whether this is the first chunk (may contain cyclic header)
+ * Observed format in Gen2v2 activities chunks:
+ *   04 00 01 XX XX YY YY 05 00 03 00 01 05 [card EF data...]
+ *   ^^^^^^^^ ^^^^^ ^^^^^ ^^^^^^^^^^^^^^^^
+ *   TRTP hdr  vary  vary   constant tail    = 13 bytes total
+ *
+ * The constant `03 00` at offset 9 = 768 decimal, which is the known artifact value.
+ * Shorter prefix patterns (5-byte `04 00 01 XX XX`) are also supported as fallback.
  */
-function stripTrtpPrefix(data: Uint8Array, isFirstChunk: boolean): Uint8Array {
-  if (data.length < 5) return data;
+function stripTrtpPrefix(data: Uint8Array, _isFirstChunk: boolean): Uint8Array {
+  if (data.length < 14) return data;
 
-  // Check for TRTP prefix pattern: 04 00 {01|02} XX XX
-  const hasTrtpPrefix = data[0] === 0x04 && data[1] === 0x00 &&
-    (data[2] === 0x01 || data[2] === 0x02);
+  // Detect 13-byte TRTP header: 04 00 01 .. .. .. .. 05 00 03 00 01 05
+  if (data[0] === 0x04 && data[1] === 0x00 && data[2] === 0x01 &&
+      data[7] === 0x05 && data[8] === 0x00 && data[9] === 0x03 &&
+      data[10] === 0x00 && data[11] === 0x01 && data[12] === 0x05) {
+    return data.slice(13);
+  }
 
-  if (isFirstChunk) {
-    // First chunk: check if bytes 0-3 look like a valid cyclic header
-    // (two uint16 pointers, both reasonable values < total expected body size)
-    if (!hasTrtpPrefix) {
-      // No TRTP prefix detected — assume raw cyclic header, keep as-is
-      return data;
-    }
-    // First chunk HAS a TRTP prefix — strip it
-    // (some firmware wraps even the first chunk)
+  // Fallback: 5-byte prefix 04 00 {01|02} XX XX
+  if (data.length > 5 && data[0] === 0x04 && data[1] === 0x00 &&
+      (data[2] === 0x01 || data[2] === 0x02)) {
     return data.slice(5);
   }
 
-  // Subsequent chunks: strip TRTP prefix if detected
-  if (hasTrtpPrefix) {
-    return data.slice(5);
-  }
-
-  // No recognized prefix — pass through (raw continuation data)
   return data;
 }
 
