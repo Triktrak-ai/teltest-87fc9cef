@@ -2310,7 +2310,9 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
     const bodyLen = data.length - bodyStart;
 
     if (bodyLen < 12) continue;
-    if (oldestPtr >= bodyLen || newestPtr >= bodyLen) continue;
+    // Allow oldestPtr to be out of bounds (truncated download of a larger card EF).
+    // We only need newestPtr to be valid to traverse backward.
+    if (newestPtr >= bodyLen) continue;
 
     // Validate: there should be a valid record at newestPtr
     const newestAbsPos = bodyStart + newestPtr;
