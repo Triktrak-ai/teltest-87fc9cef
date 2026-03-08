@@ -2018,7 +2018,9 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
 //     OdometerValueMidnight (3B)  — reference odometer
 //     VuCardIWData:
 //       NoOfIWRecords (2B)
-//       VuCardIWRecordFirstGen[N] — each 129B
+//       VuCardIWRecordFirstGen[N] — each 129B (Gen1)
+//       Note: Gen2 uses 131B records (fullCardNumberAndGeneration + vuGeneration)
+//       but this function is Gen1-specific fallback
 //     VuActivityDailyData:
 //       NoOfActivityChanges (2B)
 //       ActivityChangeInfo[N]     — each 2B, FLAT across all days
@@ -2030,6 +2032,7 @@ const VU_CARD_IW_RECORD_SIZE_GEN1 = 129;
 // HolderName(72) + FullCardNumber(18) + ExpiryDate(4) + InsertionTime(4)
 // + OdoInsertion(3) + SlotNumber(1) + WithdrawalTime(4) + OdoWithdrawal(3)
 // + PreviousVehicleInfoFirstGen(19) + ManualInputFlag(1) = 129
+// Gen2: +2B (fullCardNumberAndGeneration + vuGeneration) = 131B
 
 function parseVuActivitiesGen1Style(
   data: Uint8Array,
