@@ -72,7 +72,7 @@ describe('Multi-file DDD merge with filename detection', () => {
     const uniqueDistances = new Set(distances);
     console.log(`  Unique dayDistance values: ${uniqueDistances.size} out of ${distances.length}`);
     console.log(`  Sample distances: ${distances.slice(0, 10).join(', ')}`);
-    expect(uniqueDistances.size).toBeGreaterThan(1);
+    expect(uniqueDistances.size).toBeGreaterThan(3);
 
     // Speed should now have many more records from individual file parsing
     expect(merged.speedRecords.length).toBeGreaterThan(1000);
