@@ -170,11 +170,11 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
     }
   }, []);
 
-  const handleOpenInReader = useCallback((s: DownloadSchedule) => {
-    const tw = getTimeWindow(s);
+  const handleOpenInReader = useCallback(async (s: DownloadSchedule) => {
+    const tw = await getTimeWindow(s);
     if (!tw) { toast.error("Brak daty ostatniego pobrania"); return; }
     navigate(`/ddd-reader?sessionImei=${s.imei}&after=${encodeURIComponent(tw.after)}&before=${encodeURIComponent(tw.before)}`);
-  }, [navigate]);
+  }, [navigate, getTimeWindow]);
 
   const handleToggleDevMode = async (checked: boolean) => {
     setToggling(true);
