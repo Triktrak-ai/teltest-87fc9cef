@@ -676,27 +676,16 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
 
         if (actSections.length > 0) {
           // ── Concatenated strategy (primary) ──
-          // VU Activities download contains multiple sub-structures in separate
-          // 0x76 0x32 TLV sections: VuActivityDailyData (actual activities) and
-          // VuCardIWData (card insertion/withdrawal records with driver names).
-          // We must classify each chunk after TRTP stripping and only concatenate
-          // VuActivityDailyData chunks to avoid mixing in card IW records.
+          // VU Activities download (0x76 0x32) contains sequential RecordArrays
+          // per Annex 1C: DateOfDayDownloaded, OdometerValueMidnight,
+          // VuCardIWRecordArray, VuActivityDailyRecordArray, etc.
+          // We concatenate ALL chunks (stripping TRTP), then extract only
+          // VuActivityDailyRecordArray data using RecordArray-aware parsing.
           const strippedChunks: Uint8Array[] = [];
-          let cardIWCount = 0;
           for (let ci = 0; ci < actSections.length; ci++) {
             const s = actSections[ci];
             const stripped = stripTrtpPrefix(s.data, ci === 0);
-            const chunkType = classifyVuActivityChunk(stripped);
-            if (chunkType === 'cardIW') {
-              cardIWCount++;
-              console.log(`[DDD] Activities chunk #${ci} @${s.offset}: VuCardIWData (${stripped.length} B) — skipped`);
-              continue;
-            }
-            console.log(`[DDD] Activities chunk #${ci} @${s.offset}: VuActivityDailyData (${stripped.length} B)`);
             strippedChunks.push(stripped);
-          }
-          if (cardIWCount > 0) {
-            console.log(`[DDD] Filtered out ${cardIWCount} VuCardIWData chunks, keeping ${strippedChunks.length} activity chunks`);
           }
           const totalLen = strippedChunks.reduce((sum, c) => sum + c.length, 0);
           const mergedData = new Uint8Array(totalLen);
