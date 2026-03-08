@@ -733,7 +733,7 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
 
           const mergedWarnings: ParserWarning[] = [];
           const mergedRejections: ActivityRejection[] = [];
-          const mergedActivities = parseActivitiesFromSections([mergedSection], mergedWarnings, mergedRejections);
+          const mergedActivities = parseActivitiesFromSections([mergedSection], mergedWarnings, mergedRejections, downloadDate);
           const mergedEntryScore = mergedActivities.reduce((sum, d) => sum + d.entries.length, 0);
 
           if (mergedActivities.length > 0) {
