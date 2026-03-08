@@ -2377,7 +2377,7 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
     const noOfRecords = view.getUint16(pos + 3, false);
 
     // Validate RecordArray header
-    if (recordSize === 0 || noOfRecords > 50000) break;
+    if (recordSize === 0 || noOfRecords > 100000) break;
     const totalDataSize = noOfRecords * recordSize;
     if (pos + 5 + totalDataSize > data.length) {
       // Allow partial last array
