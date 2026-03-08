@@ -1684,7 +1684,16 @@ function parseEventsStructured(bytes: Uint8Array, warnings: ParserWarning[]): { 
 function stripTrtpPrefix(data: Uint8Array, _isFirstChunk: boolean): Uint8Array {
   if (data.length < 5) return data;
 
-  // Detect TRTP prefix: 04 00 {01|02} XX XX (5 bytes)
+  // Gen2v2 TRTP header: 04 00 01 [4B ts] 05 00 03 00 01 05 (13 bytes)
+  // Check for the full 13-byte pattern first
+  if (data.length >= 13 &&
+      data[0] === 0x04 && data[1] === 0x00 && (data[2] === 0x01 || data[2] === 0x02) &&
+      data[7] === 0x05 && data[8] === 0x00 && data[9] === 0x03 &&
+      data[10] === 0x00 && data[11] === 0x01 && data[12] === 0x05) {
+    return data.slice(13);
+  }
+
+  // Fallback: 5-byte TRTP prefix: 04 00 {01|02} XX XX
   if (data[0] === 0x04 && data[1] === 0x00 &&
       (data[2] === 0x01 || data[2] === 0x02)) {
     return data.slice(5);
@@ -1694,18 +1703,21 @@ function stripTrtpPrefix(data: Uint8Array, _isFirstChunk: boolean): Uint8Array {
 }
 
 /**
- * Remove runs of 3+ consecutive records with identical dayDistance.
- * Such runs are artifacts from cyclic buffer boundary corruption (e.g. 768 km = 0x0300).
+ * Remove artifact records from cyclic buffer boundary corruption:
+ * 1) Runs of 3+ consecutive records with identical dayDistance
+ * 2) Known artifact values (768 = 0x0300) that appear when TRTP header bytes
+ *    are misread as distance fields — only removed if the value appears
+ *    suspiciously often (≥3 total occurrences across the dataset).
  */
 function filterDistanceArtifacts(records: ActivityRecord[]): ActivityRecord[] {
   if (records.length < 3) return records;
   
   const dominated = new Set<number>();
-  let runStart = 0;
   
+  // Pass 1: Remove runs of 3+ consecutive identical dayDistance
+  let runStart = 0;
   for (let i = 1; i <= records.length; i++) {
     if (i < records.length && records[i].dayDistance === records[runStart].dayDistance) continue;
-    // End of run [runStart..i-1]
     const runLen = i - runStart;
     if (runLen >= 3) {
       for (let j = runStart; j < i; j++) dominated.add(j);
@@ -1713,8 +1725,17 @@ function filterDistanceArtifacts(records: ActivityRecord[]): ActivityRecord[] {
     runStart = i;
   }
   
+  // Pass 2: The value 768 (0x0300) is a specific known artifact from TRTP headers
+  // (05 00 03 00 01 pattern). If it appears ≥3 times, remove all occurrences.
+  const count768 = records.filter(r => r.dayDistance === 768).length;
+  if (count768 >= 3) {
+    for (let i = 0; i < records.length; i++) {
+      if (records[i].dayDistance === 768) dominated.add(i);
+    }
+  }
+  
   if (dominated.size === 0) return records;
-  console.log(`[DDD] Filtered ${dominated.size} artifact records with repeated dayDistance`);
+  console.log(`[DDD] Filtered ${dominated.size} artifact records with corrupted dayDistance`);
   return records.filter((_, idx) => !dominated.has(idx));
 }
 
@@ -1803,6 +1824,9 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
   }
 
   let records = Array.from(byDay.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  // Remove artifact records with repeated dayDistance (e.g. 768 km from chunk boundary corruption)
+  records = filterDistanceArtifacts(records);
 
   // Keep only recent window relative to the densest date cluster
   // (more robust than anchoring to a single outlier max timestamp).
@@ -2012,7 +2036,7 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
     warnings.push({ offset: 0, message: 'Could not extract activity records from raw file' });
   }
 
-  return deduped;
+  return filterDistanceArtifacts(deduped);
 }
 
 // ─── Raw overview file parser ────────────────────────────────────────────────
@@ -2418,7 +2442,7 @@ function parseCyclicActivities(
       unique.set(key, rec);
     }
   }
-  return Array.from(unique.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
+  return filterDistanceArtifacts(Array.from(unique.values()).sort((a, b) => a.date.getTime() - b.date.getTime()));
 }
 
 /** Read `len` bytes from a cyclic buffer with wrap-around. Returns null if len is too large. */
