@@ -1679,32 +1679,43 @@ function parseEventsStructured(bytes: Uint8Array, warnings: ParserWarning[]): { 
 
 /**
  * Strip TRTP transport prefix from a TLV section's data payload.
- * 
- * Observed format in Gen2v2 activities chunks:
- *   04 00 01 XX XX YY YY 05 00 03 00 01 05 [card EF data...]
- *   ^^^^^^^^ ^^^^^ ^^^^^ ^^^^^^^^^^^^^^^^
- *   TRTP hdr  vary  vary   constant tail    = 13 bytes total
- *
- * The constant `03 00` at offset 9 = 768 decimal, which is the known artifact value.
- * Shorter prefix patterns (5-byte `04 00 01 XX XX`) are also supported as fallback.
+ * Detects common prefix patterns and strips them.
  */
 function stripTrtpPrefix(data: Uint8Array, _isFirstChunk: boolean): Uint8Array {
-  if (data.length < 14) return data;
+  if (data.length < 5) return data;
 
-  // Detect 13-byte TRTP header: 04 00 01 .. .. .. .. 05 00 03 00 01 05
-  if (data[0] === 0x04 && data[1] === 0x00 && data[2] === 0x01 &&
-      data[7] === 0x05 && data[8] === 0x00 && data[9] === 0x03 &&
-      data[10] === 0x00 && data[11] === 0x01 && data[12] === 0x05) {
-    return data.slice(13);
-  }
-
-  // Fallback: 5-byte prefix 04 00 {01|02} XX XX
-  if (data.length > 5 && data[0] === 0x04 && data[1] === 0x00 &&
+  // Detect TRTP prefix: 04 00 {01|02} XX XX (5 bytes)
+  if (data[0] === 0x04 && data[1] === 0x00 &&
       (data[2] === 0x01 || data[2] === 0x02)) {
     return data.slice(5);
   }
 
   return data;
+}
+
+/**
+ * Remove runs of 3+ consecutive records with identical dayDistance.
+ * Such runs are artifacts from cyclic buffer boundary corruption (e.g. 768 km = 0x0300).
+ */
+function filterDistanceArtifacts(records: ActivityRecord[]): ActivityRecord[] {
+  if (records.length < 3) return records;
+  
+  const dominated = new Set<number>();
+  let runStart = 0;
+  
+  for (let i = 1; i <= records.length; i++) {
+    if (i < records.length && records[i].dayDistance === records[runStart].dayDistance) continue;
+    // End of run [runStart..i-1]
+    const runLen = i - runStart;
+    if (runLen >= 3) {
+      for (let j = runStart; j < i; j++) dominated.add(j);
+    }
+    runStart = i;
+  }
+  
+  if (dominated.size === 0) return records;
+  console.log(`[DDD] Filtered ${dominated.size} artifact records with repeated dayDistance`);
+  return records.filter((_, idx) => !dominated.has(idx));
 }
 
 // ─── TLV-section-based activities parser (Gen2/Gen2v2) ──────────────────────
