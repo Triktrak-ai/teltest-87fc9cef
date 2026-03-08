@@ -635,6 +635,8 @@ export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileDat
 function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, result: DddFileData): DddFileData {
   const bytes = new Uint8Array(buffer);
   result.generation = 'gen2'; // Individual files from TRTP are typically Gen2/Gen2v2
+  const fileName = result.rawFileBuffers?.[0]?.fileName;
+  const downloadDate = extractDownloadDate(fileName);
 
   // Extract TLV sections first — individual TRTP files may contain TLV-wrapped data
   const sections = extractSections(buffer, result.warnings);
