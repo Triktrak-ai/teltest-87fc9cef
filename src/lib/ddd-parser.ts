@@ -199,7 +199,7 @@ export interface DriverCardIdentification {
   driverName: { surname: string; firstName: string };
   cardIssueDate: Date | null;
   cardExpiryDate: Date | null;
-  cardValidityBegin: Date | null;
+  cardValidityBegin?: Date | null;
 }
 
 export interface VehicleUsedRecord {
