@@ -1928,15 +1928,15 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
 
     // Strategy 1: VU RecordArray parser (Gen2/Gen2v2 — proper structure)
     const vuRecordArrayParsed = parseVuActivitiesRecordArrays(data, warnings);
-    if (vuRecordArrayParsed.length > 0) {
-      for (const rec of vuRecordArrayParsed) {
+    if (vuRecordArrayParsed.activities.length > 0) {
+      for (const rec of vuRecordArrayParsed.activities) {
         const key = dayKey(rec.date);
         const existing = byDay.get(key);
         if (!existing || rec.entries.length > existing.entries.length) {
           byDay.set(key, rec);
         }
       }
-      console.log(`[DDD] Activities section @${section.offset}: VU RecordArray parser found ${vuRecordArrayParsed.length} days`);
+      console.log(`[DDD] Activities section @${section.offset}: VU RecordArray parser found ${vuRecordArrayParsed.activities.length} days`);
       continue;
     }
 
