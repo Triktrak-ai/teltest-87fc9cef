@@ -2226,7 +2226,7 @@ function parseVuActivitiesGen1Style(
 
   // VuActivityDailyData: NoOfActivityChanges (2B)
   const noOfChanges = view.getUint16(cardIWDataEnd, false);
-  if (noOfChanges === 0 || noOfChanges > 50000) {
+  if (noOfChanges === 0 || noOfChanges > 100000) {
     console.log(`[DDD] Gen1 VU: NoOfActivityChanges=${noOfChanges} invalid`);
     return [];
   }
