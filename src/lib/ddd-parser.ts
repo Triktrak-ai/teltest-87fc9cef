@@ -3090,7 +3090,7 @@ function parseCyclicActivities(
       if (off + 1 >= body.length) break;
       const word = (body[off] << 8) | body[off + 1];
       // Skip padding/invalid entries per tachograph-go reference
-      if (word === 0x0000 || word === 0xFFFF) continue;
+      if (word === 0xFFFF) continue; // 0xFFFF = padding; 0x0000 is valid start-of-day
       const slot = (word >> 15) & 0x01;
       const drivingStatus = (word >> 14) & 0x01;
       const cardInserted = ((word >> 13) & 0x01) === 0;
