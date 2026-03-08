@@ -1836,36 +1836,77 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
   const view = new DataView(toArrayBuffer(bytes));
   const r = new BinaryReader(toArrayBuffer(bytes));
 
-  // Scan for all valid daily record positions by looking for valid timestamps
-  // followed by plausible dailyPresenceCounter, dayDistance, and changeCount.
-  // Do NOT jump over candidate lengths here: noisy buffers may contain false positives
-  // and jumping can skip real records.
-  const dayPositions: number[] = [];
+  // Scan for valid timestamps. For each candidate, check if 4 bytes before
+  // contain a valid recordLength (CardActivityDailyRecord format).
+  // If so, derive activityChangeCount from (recordLength - 8) / 2.
+  // Otherwise fall back to reading offset+8 as a heuristic count.
+  const dayPositions: Array<{ pos: number; count: number }> = [];
   for (let i = 0; i < bytes.length - 10; i++) {
     const ts = view.getUint32(i, false);
     if (!isValidTimestamp(ts)) continue;
     const dist = view.getUint16(i + 6, false);
-    const changes = view.getUint16(i + 8, false);
-    if (dist <= 9999 && changes <= 1440 && i + 10 + changes * 2 <= bytes.length) {
-      dayPositions.push(i);
+    if (dist > 9999) continue;
+
+    // Try to derive count from recordLength prefix (4 bytes before timestamp)
+    let activityChangeCount = -1;
+    if (i >= 4) {
+      const recLen = view.getUint16(i - 2, false);
+      const prevLen = view.getUint16(i - 4, false);
+      if (recLen >= 8 && recLen <= 3000 && prevLen <= 3000) {
+        const derived = Math.floor((recLen - 8) / 2);
+        if (derived >= 0 && derived <= 1440 && i + 8 + derived * 2 <= bytes.length) {
+          activityChangeCount = derived;
+        }
+      }
+    }
+
+    // Fallback: read offset+8 as explicit count (legacy heuristic)
+    if (activityChangeCount < 0) {
+      if (i + 10 <= bytes.length) {
+        const changes = view.getUint16(i + 8, false);
+        if (changes <= 1440 && i + 10 + changes * 2 <= bytes.length) {
+          activityChangeCount = changes;
+        }
+      }
+    }
+
+    if (activityChangeCount >= 0) {
+      dayPositions.push({ pos: i, count: activityChangeCount });
     }
   }
 
-  // Freshness filtering is handled at higher level (section parser) where we can
-  // compare all candidate records together and reject outliers more reliably.
-
-  for (const pos of dayPositions) {
+  for (const { pos, count } of dayPositions) {
     r.position = pos;
     try {
       const tsValue = r.readUint32();
       const ts = new Date(tsValue * 1000);
       const dailyPresenceCounter = r.readUint16();
       const dayDistance = r.readUint16();
-      const activityChangeCount = r.readUint16();
 
-      // First pass: read all raw change entries
+      // Check if count was derived from recordLength (no explicit count field in stream)
+      // vs fallback (where we consumed a count word). If derived from recordLength,
+      // the stream is already at the first ActivityChangeInfo word. If fallback,
+      // we need to skip the 2-byte "count" that is actually the first activity word.
+      // Since we always position at the timestamp and read 8 bytes (ts+counter+dist),
+      // we're now at offset+8. For length-prefix records, this IS the first activity word.
+      // For fallback, the "count" at offset+8 was already read as dayDistance... no:
+      // ts=4, counter=2, dist=2 = 8 bytes, so r.position = pos+8.
+      // If count came from recordLength, activities start at pos+8 (correct).
+      // If count came from fallback heuristic (reading pos+8 as count), we need to skip 2.
+      const hasLengthPrefix = pos >= 4 && (() => {
+        const recLen = view.getUint16(pos - 2, false);
+        const prevLen = view.getUint16(pos - 4, false);
+        return recLen >= 8 && recLen <= 3000 && prevLen <= 3000 &&
+               Math.floor((recLen - 8) / 2) === count;
+      })();
+
+      if (!hasLengthPrefix) {
+        // Skip the 2-byte "count" field (legacy format)
+        r.position = pos + 10;
+      }
+
       const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
-      for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
+      for (let i = 0; i < count && r.remaining >= 2; i++) {
         const word = r.readUint16();
         const slot = (word >> 15) & 0x01;
         const cardInserted = ((word >> 13) & 0x01) === 0;
@@ -1885,7 +1926,7 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
         const dur = (hT * 60 + mT) - (hF * 60 + mF);
         slotTotals[e.slot === 'driver' ? 0 : 1] += dur;
       }
-      if (slotTotals[0] > 1440 || slotTotals[1] > 1440) continue; // garbage record
+      if (slotTotals[0] > 1440 || slotTotals[1] > 1440) continue;
 
       records.push({ date: ts, dailyPresenceCounter, dayDistance, entries });
     } catch {
