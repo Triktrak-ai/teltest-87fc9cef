@@ -2364,12 +2364,46 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
   const view = new DataView(toArrayBuffer(data));
   let pos = 0;
 
-  const dates: Date[] = [];
-  const odometers: number[] = [];
-  const activityWords: RawActivityWord[] = [];
   const borderCrossings: BorderCrossingRecord[] = [];
   const loadUnloadOperations: LoadUnloadRecord[] = [];
   const recordArraysFound: string[] = [];
+
+  // === Per-day sequential state ===
+  interface PendingDay {
+    date: Date;
+    odometer: number;
+    words: RawActivityWord[];
+  }
+  const completedDays: PendingDay[] = [];
+  let currentDay: PendingDay | null = null;
+
+  // Also collect flat arrays for fallback
+  const flatDates: Date[] = [];
+  const flatOdometers: number[] = [];
+  const flatActivityWords: RawActivityWord[] = [];
+
+  function flushCurrentDay() {
+    if (currentDay && currentDay.words.length > 0) {
+      completedDays.push(currentDay);
+    }
+    currentDay = null;
+  }
+
+  function parseActivityWordsFromArray(arrayStart: number, noOfRecords: number): RawActivityWord[] {
+    const words: RawActivityWord[] = [];
+    for (let i = 0; i < noOfRecords; i++) {
+      const word = view.getUint16(arrayStart + i * 2, false);
+      if (word === 0xFFFF) continue;
+      const slot = (word >> 15) & 0x01;
+      const drivingStatus = (word >> 14) & 0x01;
+      const cardInserted = ((word >> 13) & 0x01) === 0;
+      const activity = (word >> 11) & 0x03;
+      const minutes = word & 0x07FF;
+      if (minutes >= 1440) continue;
+      words.push({ slot, drivingStatus, cardInserted, activity, minutes });
+    }
+    return words;
+  }
 
   // Parse sequential RecordArrays
   while (pos + 5 <= data.length) {
@@ -2377,13 +2411,9 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
     const recordSize = view.getUint16(pos + 1, false);
     const noOfRecords = view.getUint16(pos + 3, false);
 
-    // Validate RecordArray header
     if (recordSize === 0 || noOfRecords > 100000) break;
     const totalDataSize = noOfRecords * recordSize;
-    if (pos + 5 + totalDataSize > data.length) {
-      // Allow partial last array
-      break;
-    }
+    if (pos + 5 + totalDataSize > data.length) break;
 
     const arrayStart = pos + 5;
     recordArraysFound.push(`type=0x${recordType.toString(16).padStart(2, '0')}, size=${recordSize}, count=${noOfRecords}`);
@@ -2394,7 +2424,11 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
           for (let i = 0; i < noOfRecords; i++) {
             const ts = view.getUint32(arrayStart + i * 4, false);
             if (isValidTimestamp(ts)) {
-              dates.push(new Date(ts * 1000));
+              const d = new Date(ts * 1000);
+              flatDates.push(d);
+              // Per-day sequential: new date = flush previous day, start new one
+              flushCurrentDay();
+              currentDay = { date: d, odometer: 0, words: [] };
             }
           }
         }
@@ -2405,10 +2439,11 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
           for (let i = 0; i < noOfRecords; i++) {
             const off = arrayStart + i * 3;
             const odo = (data[off] << 16) | (data[off + 1] << 8) | data[off + 2];
-            if (odo !== 0xFFFFFF) {
-              odometers.push(odo);
-            } else {
-              odometers.push(0);
+            const val = odo !== 0xFFFFFF ? odo : 0;
+            flatOdometers.push(val);
+            // Per-day sequential: assign to current day
+            if (currentDay) {
+              currentDay.odometer = val;
             }
           }
         }
@@ -2416,46 +2451,33 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
 
       case 0x01: // ActivityChangeInfo (2B)
         if (recordSize === 2) {
-          for (let i = 0; i < noOfRecords; i++) {
-            const word = view.getUint16(arrayStart + i * 2, false);
-            if (word === 0xFFFF) continue; // 0xFFFF = padding; 0x0000 is valid (slot0, single, break, min0)
-            const slot = (word >> 15) & 0x01;
-            const drivingStatus = (word >> 14) & 0x01;
-            const cardInserted = ((word >> 13) & 0x01) === 0;
-            const activity = (word >> 11) & 0x03;
-            const minutes = word & 0x07FF;
-            if (minutes >= 1440) continue;
-            activityWords.push({ slot, drivingStatus, cardInserted, activity, minutes });
+          const words = parseActivityWordsFromArray(arrayStart, noOfRecords);
+          flatActivityWords.push(...words);
+          // Per-day sequential: append to current day
+          if (currentDay) {
+            currentDay.words.push(...words);
           }
         }
         break;
 
-      // Known RecordArray types from TREP 32h (Activities) per Appendix 7:
-      // 0x0D — VuCardIWRecordArray (skip, parsed separately in Gen1 path)
-      // 0x1C — VuPlaceDailyWorkPeriodRecordArray (places, TODO: parse)
-      // 0x16 — VuGNSSADRecordArray (GNSS accumulated driving, TODO: parse)
-      // 0x09 — VuSpecificConditionRecordArray (specific conditions, skip)
-      // 0x08 — SignatureRecordArray (digital signature, skip)
-
-      case 0x22: // VuBorderCrossingRecordArray (55B per record)
+      case 0x22: // VuBorderCrossingRecordArray
         for (let i = 0; i < noOfRecords; i++) {
           const recOff = arrayStart + i * recordSize;
-          if (recOff + 17 > data.length) break; // minimum: 2B countries + 12B gnssPlace + 3B odo
+          if (recOff + 17 > data.length) break;
           const countryLeft = NATION_CODES[data[recOff]] || `0x${data[recOff].toString(16)}`;
           const countryEntered = NATION_CODES[data[recOff + 1]] || `0x${data[recOff + 1].toString(16)}`;
           const gnssPlace = parseGnssPlaceAuthRecord(data, recOff + 2, view);
           const odoOff = recOff + 14;
           const vehicleOdometerValue = (data[odoOff] << 16) | (data[odoOff + 1] << 8) | data[odoOff + 2];
-          // Skip records with no valid timestamp
           if (!gnssPlace.timestamp) continue;
           borderCrossings.push({ countryLeft, countryEntered, gnssPlace, vehicleOdometerValue });
         }
         break;
 
-      case 0x23: // VuLoadUnloadRecordArray (58B per record)
+      case 0x23: // VuLoadUnloadRecordArray
         for (let i = 0; i < noOfRecords; i++) {
           const recOff = arrayStart + i * recordSize;
-          if (recOff + 16 > data.length) break; // minimum: 1B type + 12B gnssPlace + 3B odo
+          if (recOff + 16 > data.length) break;
           const opByte = data[recOff];
           const operationType: LoadUnloadRecord['operationType'] =
             opByte === 0x01 ? 'loading' : opByte === 0x02 ? 'unloading' :
@@ -2475,25 +2497,69 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
     pos = arrayStart + totalDataSize;
   }
 
-  console.log(`[DDD] VU RecordArrays: ${recordArraysFound.length} arrays found: [${recordArraysFound.join('; ')}]`);
-  console.log(`[DDD] VU RecordArrays: ${dates.length} dates, ${odometers.length} odometers, ${activityWords.length} activity words`);
+  // Flush last pending day
+  flushCurrentDay();
 
-  if (dates.length === 0 || activityWords.length === 0) {
+  console.log(`[DDD] VU RecordArrays: ${recordArraysFound.length} arrays found: [${recordArraysFound.join('; ')}]`);
+  console.log(`[DDD] VU RecordArrays: ${flatDates.length} dates, ${flatOdometers.length} odometers, ${flatActivityWords.length} activity words`);
+  console.log(`[DDD] VU RecordArrays: per-day sequential yielded ${completedDays.length} days`);
+
+  if (flatDates.length === 0 || flatActivityWords.length === 0) {
     return { activities: [], borderCrossings, loadUnloadOperations };
   }
 
-  // Split flat activity words into per-day groups.
-  // Per Annex 1C: slot 0 and slot 1 entries are interleaved chronologically
-  // within a day. We track minutes per-slot to avoid false day boundaries
-  // when slot 1 has minute 5 after slot 0 has minute 800 (same day).
-  // A new day is detected when slot 0's minutes decrease (slot 0 always has
-  // the mandatory start-of-day entry at minute 0).
+  // === Strategy 1: Per-day sequential (spec-compliant, Annex 1C) ===
+  let dayRecords = buildActivityRecordsFromDays(completedDays);
+
+  // === Strategy 2: Fallback to flat-collection + minute-regression ===
+  if (dayRecords.length === 0) {
+    console.log(`[DDD] VU RecordArrays: per-day sequential yielded 0 days, falling back to flat minute-regression`);
+    const dayGroups = splitActivityWordsByMinuteRegression(flatActivityWords);
+    dayRecords = buildActivityRecordsFromFlat(flatDates, flatOdometers, dayGroups);
+  }
+
+  console.log(`[DDD] VU RecordArrays: parsed ${dayRecords.length} activity days`);
+  return { activities: dayRecords, borderCrossings, loadUnloadOperations };
+}
+
+/** Build ActivityRecord[] from per-day sequential parsing result */
+function buildActivityRecordsFromDays(days: Array<{ date: Date; odometer: number; words: RawActivityWord[] }>): ActivityRecord[] {
+  const records: ActivityRecord[] = [];
+  for (let i = 0; i < days.length; i++) {
+    const day = days[i];
+    const entries = decodeActivityEntries(day.words);
+    if (entries.length === 0) continue;
+
+    // Day distance: difference between this day's odometer and next day's
+    const dayDistance = (i < days.length - 1)
+      ? Math.max(0, days[i + 1].odometer - day.odometer)
+      : 0;
+
+    // Validate slot totals
+    const slotTotals = { driver: 0, codriver: 0 };
+    let valid = true;
+    for (const e of entries) {
+      const [hF, mF] = e.timeFrom.split(':').map(Number);
+      const [hT, mT] = e.timeTo.split(':').map(Number);
+      const dur = (hT * 60 + mT) - (hF * 60 + mF);
+      if (dur < 0 || dur > 1440) { valid = false; break; }
+      if (dur === 0) continue;
+      slotTotals[e.slot] += dur;
+    }
+    if (!valid || slotTotals.driver > 1440 || slotTotals.codriver > 1440) continue;
+
+    records.push({ date: day.date, dailyPresenceCounter: 0, dayDistance, entries });
+  }
+  return records;
+}
+
+/** Split flat activity words into per-day groups using slot-0 minute regression (legacy fallback) */
+function splitActivityWordsByMinuteRegression(activityWords: RawActivityWord[]): RawActivityWord[][] {
   const dayGroups: RawActivityWord[][] = [[]];
-  const prevMinutesPerSlot = [-1, -1]; // slot 0, slot 1
+  const prevMinutesPerSlot = [-1, -1];
   for (const word of activityWords) {
     const slotPrev = prevMinutesPerSlot[word.slot];
     if (slotPrev >= 0 && word.minutes < slotPrev && word.slot === 0 && dayGroups[dayGroups.length - 1].length > 0) {
-      // Slot 0 minutes decreased → new day boundary
       dayGroups.push([]);
       prevMinutesPerSlot[0] = -1;
       prevMinutesPerSlot[1] = -1;
@@ -2501,9 +2567,11 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
     dayGroups[dayGroups.length - 1].push(word);
     prevMinutesPerSlot[word.slot] = word.minutes;
   }
+  return dayGroups;
+}
 
-  // If the number of day groups doesn't match dates, try to align.
-  // In most cases they should match, but edge cases exist.
+/** Build ActivityRecord[] from flat-collection strategy */
+function buildActivityRecordsFromFlat(dates: Date[], odometers: number[], dayGroups: RawActivityWord[][]): ActivityRecord[] {
   const records: ActivityRecord[] = [];
   const numDays = Math.min(dates.length, dayGroups.length);
 
@@ -2517,7 +2585,6 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
 
     if (entries.length === 0) continue;
 
-    // Validate slot totals
     const slotTotals = { driver: 0, codriver: 0 };
     let valid = true;
     for (const e of entries) {
@@ -2525,22 +2592,19 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
       const [hT, mT] = e.timeTo.split(':').map(Number);
       const dur = (hT * 60 + mT) - (hF * 60 + mF);
       if (dur < 0 || dur > 1440) { valid = false; break; }
-      if (dur === 0) continue; // Zero-duration = multiple changes in same minute, legal
+      if (dur === 0) continue;
       slotTotals[e.slot] += dur;
     }
     if (!valid || slotTotals.driver > 1440 || slotTotals.codriver > 1440) continue;
 
-    // BCD-decode dailyPresenceCounter if we had it (not in RecordArray format)
     records.push({ date, dailyPresenceCounter: 0, dayDistance, entries });
   }
 
-  // If we got fewer days than expected, log it
   if (dayGroups.length !== dates.length) {
-    console.log(`[DDD] VU RecordArrays: day groups (${dayGroups.length}) ≠ dates (${dates.length}), used min=${numDays}`);
+    console.log(`[DDD] VU RecordArrays fallback: day groups (${dayGroups.length}) ≠ dates (${dates.length}), used min=${numDays}`);
   }
 
-  console.log(`[DDD] VU RecordArrays: parsed ${records.length} activity days`);
-  return { activities: records, borderCrossings, loadUnloadOperations };
+  return records;
 }
 
 type RawActivityWord = {
