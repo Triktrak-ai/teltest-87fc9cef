@@ -983,8 +983,8 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
           break;
 
         case 0x0505: // CardVehiclesUsed
-          result.vehiclesUsed = parseVehiclesUsed(sectionData);
-          console.log(`[DDD] Driver card vehicles: ${result.vehiclesUsed.length}`);
+          result.vehiclesUsed = parseVehiclesUsed(sectionData, tagType === 0x02);
+          console.log(`[DDD] Driver card vehicles: ${result.vehiclesUsed.length} (gen2=${tagType === 0x02})`);
           break;
 
         case 0x0502: // CardEventData
@@ -1028,19 +1028,34 @@ function readName(r: BinaryReader): string {
   return r.readString(35);
 }
 
+function readVehicleRegistration(r: BinaryReader): { nation: string; vrn: string } {
+  // VehicleRegistrationIdentification = nation(1B) + VehicleRegistrationNumber(codePage 1B + regNumber 13B) = 15B
+  if (r.remaining < 15) return { nation: '', vrn: '' };
+  const nationByte = r.readUint8();
+  r.skip(1); // codePage
+  const vrn = r.readString(13);
+  return {
+    nation: NATION_CODES[nationByte] || `0x${nationByte.toString(16)}`,
+    vrn,
+  };
+}
+
 function parseCardIdentification(data: Uint8Array): DriverCardIdentification {
   const r = new BinaryReader(toArrayBuffer(data));
 
-  // Per Annex 1C Appendix 7 §2.1:
-  // cardIssuingMemberState (1B) + cardNumber (16B) + cardIssuingAuthorityName (Name 36B)
-  // + cardStartOfValidityDate (4B) + cardExpiryDate (4B)
-  // + holderSurname (Name 36B) + holderFirstNames (Name 36B)
-  // + holderBirthDate (4B) + preferredLanguage (2B)
+  // Per Annex 1C Appendix 1 §2.24 + §2.62:
+  // CardIdentification:
+  //   cardIssuingMemberState (1B) + cardNumber (16B) + cardIssuingAuthorityName (Name 36B)
+  //   + cardIssueDate (4B) + cardValidityBegin (4B) + cardExpiryDate (4B)
+  // DriverCardHolderIdentification:
+  //   holderSurname (Name 36B) + holderFirstNames (Name 36B)
+  //   + cardHolderBirthDate (4B) + preferredLanguage (2B)
   const nationByte = r.remaining >= 1 ? r.readUint8() : 0;
   const cardIssuingMemberState = NATION_CODES[nationByte] || `0x${nationByte.toString(16)}`;
   const cardNumber = r.remaining >= 16 ? r.readString(16) : '';
   const _cardIssuingAuthorityName = readName(r);
   const cardIssueDate = r.remaining >= 4 ? r.readTimestamp() : null;
+  const cardValidityBegin = r.remaining >= 4 ? r.readTimestamp() : null;
   const cardExpiryDate = r.remaining >= 4 ? r.readTimestamp() : null;
   const surname = readName(r);
   const firstName = readName(r);
@@ -1049,7 +1064,7 @@ function parseCardIdentification(data: Uint8Array): DriverCardIdentification {
   return {
     cardNumber, cardIssuingMemberState,
     driverName: { surname, firstName },
-    cardIssueDate, cardExpiryDate,
+    cardIssueDate, cardValidityBegin, cardExpiryDate,
   };
 }
 
@@ -1059,30 +1074,32 @@ function parseCardActivities(data: Uint8Array, warnings: ParserWarning[]): Activ
   return parseRawActivitiesFile(data, warnings);
 }
 
-function parseVehiclesUsed(data: Uint8Array): VehicleUsedRecord[] {
+function parseVehiclesUsed(data: Uint8Array, isGen2 = false): VehicleUsedRecord[] {
   const records: VehicleUsedRecord[] = [];
   const r = new BinaryReader(toArrayBuffer(data));
 
-  // Skip header: vehiclePointerNewestRecord (2B) if present
+  // Skip header: vehiclePointerNewestRecord (2B)
   if (r.remaining < 2) return records;
-  const pointerOrCount = r.readUint16();
+  const _pointer = r.readUint16();
 
-  // Each VehicleUsedRecord: odometerBegin(3B) + odometerEnd(3B) + firstUse(4B) + lastUse(4B) + VRN nation(1B) + VRN(14B) = 29 bytes
-  const recordSize = 29;
+  // Gen1 CardVehicleRecord: odometer(3+3) + firstUse(4) + lastUse(4) + VRI(15) + vuDataBlockCounter(2) = 31B
+  // Gen2 CardVehicleRecord: same + VIN(17) = 48B
+  const recordSize = isGen2 ? 48 : 31;
   while (r.remaining >= recordSize) {
     const odometerBegin = (r.readUint8() << 16) | r.readUint16();
     const odometerEnd = (r.readUint8() << 16) | r.readUint16();
     const firstUse = r.readTimestamp();
     const lastUse = r.readTimestamp();
-    const nationByte = r.readUint8();
-    const vrn = r.readString(14);
+    const vri = readVehicleRegistration(r);
+    r.skip(2); // vuDataBlockCounter
+    if (isGen2) r.skip(17); // VIN
 
     // Skip empty records
-    if (!firstUse && !lastUse && !vrn) continue;
+    if (!firstUse && !lastUse && !vri.vrn) continue;
 
     records.push({
-      vehicleRegistrationNumber: vrn,
-      vehicleRegistrationNation: NATION_CODES[nationByte] || `0x${nationByte.toString(16)}`,
+      vehicleRegistrationNumber: vri.vrn,
+      vehicleRegistrationNation: vri.nation,
       firstUse, lastUse,
       odometerBegin, odometerEnd,
     });
@@ -1095,28 +1112,22 @@ function parseCardEvents(data: Uint8Array): EventRecord[] {
   const events: EventRecord[] = [];
   const r = new BinaryReader(toArrayBuffer(data));
 
-  // CardEventRecord: eventType(1B) + beginTime(4B) + endTime(4B) + VRN(15B) = 24B
-  while (r.remaining >= 9) {
+  // CardEventRecord: eventType(1B) + beginTime(4B) + endTime(4B) + VRI(15B) = 24B
+  while (r.remaining >= 24) {
     const eventType = r.readUint8();
     const eventBeginTime = r.readTimestamp();
     const eventEndTime = r.readTimestamp();
+    const vri = readVehicleRegistration(r);
 
     // Skip empty records
     if (!eventBeginTime && !eventEndTime) continue;
     if (eventType > 0x3F) continue;
 
-    // Try reading VRN if available
-    let cardNumberDriverSlot = '';
-    if (r.remaining >= 15) {
-      const nationByte = r.readUint8();
-      cardNumberDriverSlot = r.readString(14);
-    }
-
     events.push({
       eventType,
       eventTypeName: EVENT_TYPE_NAMES[eventType] || `Nieznany (0x${eventType.toString(16)})`,
       eventBeginTime, eventEndTime,
-      cardNumberDriverSlot,
+      cardNumberDriverSlot: vri.vrn,
       cardNumberCodriverSlot: '',
     });
   }
@@ -1128,25 +1139,21 @@ function parseCardFaults(data: Uint8Array): FaultRecord[] {
   const faults: FaultRecord[] = [];
   const r = new BinaryReader(toArrayBuffer(data));
 
-  while (r.remaining >= 9) {
+  // CardFaultRecord: faultType(1B) + beginTime(4B) + endTime(4B) + VRI(15B) = 24B
+  while (r.remaining >= 24) {
     const faultType = r.readUint8();
     const faultBeginTime = r.readTimestamp();
     const faultEndTime = r.readTimestamp();
+    const vri = readVehicleRegistration(r);
 
     if (!faultBeginTime && !faultEndTime) continue;
     if (faultType > 0x07) continue;
-
-    let cardNumberDriverSlot = '';
-    if (r.remaining >= 15) {
-      const nationByte = r.readUint8();
-      cardNumberDriverSlot = r.readString(14);
-    }
 
     faults.push({
       faultType,
       faultTypeName: FAULT_TYPE_NAMES[faultType] || `Nieznany (0x${faultType.toString(16)})`,
       faultBeginTime, faultEndTime,
-      cardNumberDriverSlot,
+      cardNumberDriverSlot: vri.vrn,
       cardNumberCodriverSlot: '',
     });
   }
