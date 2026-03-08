@@ -862,9 +862,16 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         result.overview = parseRawOverviewFile(bytes, result.warnings);
         result.bytesParsed = buffer.byteLength;
         break;
-      case 'driver_card':
-        result.driverCard = parseDriverCardFile(bytes, result.warnings);
+      case 'driver_card': {
+        const cardResult = parseDriverCardFile(bytes, result.warnings);
+        result.driverCard = cardResult.card;
+        if (cardResult.detectedGeneration) {
+          result.generation = cardResult.detectedGeneration;
+          console.log(`[DDD] Card cardStructureVersion → ${cardResult.detectedGeneration}`);
+        }
         result.bytesParsed = buffer.byteLength;
+        break;
+      }
         break;
     }
   } catch (e) {
