@@ -1675,6 +1675,45 @@ function parseEventsStructured(bytes: Uint8Array, warnings: ParserWarning[]): { 
   return { events, faults };
 }
 
+// ─── TRTP prefix stripping for chunk concatenation ──────────────────────────
+
+/**
+ * Strip TRTP transport prefix from a TLV section's data payload.
+ * 
+ * The first chunk typically starts with the cyclic buffer header (oldestPtr + newestPtr)
+ * and has no TRTP prefix. Subsequent chunks have a 5-byte prefix: 04 00 {01|02} XX XX.
+ * 
+ * @param data - Raw section data
+ * @param isFirstChunk - Whether this is the first chunk (may contain cyclic header)
+ */
+function stripTrtpPrefix(data: Uint8Array, isFirstChunk: boolean): Uint8Array {
+  if (data.length < 5) return data;
+
+  // Check for TRTP prefix pattern: 04 00 {01|02} XX XX
+  const hasTrtpPrefix = data[0] === 0x04 && data[1] === 0x00 &&
+    (data[2] === 0x01 || data[2] === 0x02);
+
+  if (isFirstChunk) {
+    // First chunk: check if bytes 0-3 look like a valid cyclic header
+    // (two uint16 pointers, both reasonable values < total expected body size)
+    if (!hasTrtpPrefix) {
+      // No TRTP prefix detected — assume raw cyclic header, keep as-is
+      return data;
+    }
+    // First chunk HAS a TRTP prefix — strip it
+    // (some firmware wraps even the first chunk)
+    return data.slice(5);
+  }
+
+  // Subsequent chunks: strip TRTP prefix if detected
+  if (hasTrtpPrefix) {
+    return data.slice(5);
+  }
+
+  // No recognized prefix — pass through (raw continuation data)
+  return data;
+}
+
 // ─── TLV-section-based activities parser (Gen2/Gen2v2) ──────────────────────
 
 function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWarning[], rejections?: ActivityRejection[]): ActivityRecord[] {
