@@ -937,6 +937,22 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
 
     try {
       switch (tagHigh) {
+        case 0x0501: {
+          // EF Application_Identification — contains cardStructureVersion
+          // Structure: typeOfTachographCardId(2B) + cardStructureVersion(2B) + ...
+          // cardStructureVersion: {01 00} = Gen2v1, {01 01} = Gen2v2
+          if (sectionData.length >= 4) {
+            const csvMajor = sectionData[2];
+            const csvMinor = sectionData[3];
+            console.log(`[DDD] EF Application_Identification (0501h): cardStructureVersion=${csvMajor}.${csvMinor}`);
+            if (csvMajor === 0x01 && csvMinor === 0x01) {
+              detectedGeneration = 'gen2v2';
+            } else if (csvMajor === 0x01 && csvMinor === 0x00) {
+              detectedGeneration = 'gen2v1';
+            }
+          }
+          break;
+        }
         case 0x0520: // CardIdentificationAndDriverCardHolderIdentification
           result.identification = parseCardIdentification(sectionData);
           console.log(`[DDD] Driver card identification: ${result.identification?.cardNumber}`);
