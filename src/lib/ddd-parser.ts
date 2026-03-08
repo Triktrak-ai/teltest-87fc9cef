@@ -594,6 +594,7 @@ export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileDat
 
   // Otherwise, try TLV-based parsing for merged VU files
   const sections = extractSections(buffer, warnings);
+  sections.forEach(s => s.sourceFile = fileName);
   result.rawSections = sections;
   result.bytesParsed = sections.reduce((sum, s) => sum + s.length + 4, 0);
 
