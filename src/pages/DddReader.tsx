@@ -362,6 +362,12 @@ const DddReader = () => {
               {data.speedRecords.length > 0 && (
                 <TabsTrigger value="speed"><Gauge className="mr-1.5 h-3.5 w-3.5" />Prędkość ({data.speedRecords.length})</TabsTrigger>
               )}
+              {data.borderCrossings.length > 0 && (
+                <TabsTrigger value="borders"><Globe className="mr-1.5 h-3.5 w-3.5" />Granice ({data.borderCrossings.length})</TabsTrigger>
+              )}
+              {data.loadUnloadOperations.length > 0 && (
+                <TabsTrigger value="loadunload"><Package className="mr-1.5 h-3.5 w-3.5" />Załadunki ({data.loadUnloadOperations.length})</TabsTrigger>
+              )}
               {data.driverCard && (
                 <TabsTrigger value="drivercard"><CreditCard className="mr-1.5 h-3.5 w-3.5" />Karta kierowcy</TabsTrigger>
               )}
