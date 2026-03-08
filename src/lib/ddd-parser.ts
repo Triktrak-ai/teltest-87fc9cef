@@ -1963,8 +1963,39 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
   if (data.length < 10) return [];
 
   const view = new DataView(toArrayBuffer(data));
-  let pos = 0;
 
+  // Valid RecordTypes per Annex 1C: 0x01–0x24
+  const isValidRecordType = (b: number) => b >= 0x01 && b <= 0x24;
+
+  // Scan for the first valid RecordArray header.
+  // The data may start with a VuDownloadActivityData preamble (DownloadingTime 4B + FullCardNumber 18-20B)
+  // or other non-RecordArray data. We look for a sequence of at least 2 consecutive
+  // valid RecordArray headers to confirm we found the right offset.
+  let startPos = -1;
+  for (let scan = 0; scan < Math.min(data.length - 10, 200); scan++) {
+    const rt = data[scan];
+    if (!isValidRecordType(rt)) continue;
+    const rs = view.getUint16(scan + 1, false);
+    const nr = view.getUint16(scan + 3, false);
+    if (rs === 0 || rs > 1000 || nr > 50000) continue;
+    const totalSize = 5 + nr * rs;
+    if (scan + totalSize + 5 > data.length) continue;
+    // Check if next RecordArray also looks valid
+    const nextRt = data[scan + totalSize];
+    if (isValidRecordType(nextRt)) {
+      const nextRs = view.getUint16(scan + totalSize + 1, false);
+      const nextNr = view.getUint16(scan + totalSize + 3, false);
+      if (nextRs > 0 && nextRs <= 1000 && nextNr <= 50000) {
+        startPos = scan;
+        break;
+      }
+    }
+  }
+
+  if (startPos < 0) return [];
+  console.log(`[DDD] VU RecordArrays: found first header at offset ${startPos}`);
+
+  let pos = startPos;
   const dates: Date[] = [];
   const odometers: number[] = [];
   const activityWords: RawActivityWord[] = [];
