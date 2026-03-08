@@ -2988,7 +2988,7 @@ function parseActivitiesForward(data: Uint8Array): ActivityRecord[] {
       const activityChangeCount = Math.floor((recordLength - 12) / 2);
       if (activityChangeCount > 1440 || activityChangeCount < 0) break;
 
-      const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
+      const rawEntries: RawActivityWord[] = [];
       for (let i = 0; i < activityChangeCount && r.remaining >= 2; i++) {
         const word = r.readUint16();
         if (word === 0x0000 || word === 0xFFFF) continue; // skip padding
