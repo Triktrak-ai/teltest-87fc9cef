@@ -240,6 +240,8 @@ export interface DddFileData {
   faults: FaultRecord[];
   technicalData: TechnicalData | null;
   speedRecords: SpeedRecord[];
+  borderCrossings: BorderCrossingRecord[];
+  loadUnloadOperations: LoadUnloadRecord[];
   rawSections: DddSection[];
   warnings: ParserWarning[];
   activityRejections: ActivityRejection[];
