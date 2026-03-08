@@ -983,8 +983,8 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
           break;
 
         case 0x0505: // CardVehiclesUsed
-          result.vehiclesUsed = parseVehiclesUsed(sectionData);
-          console.log(`[DDD] Driver card vehicles: ${result.vehiclesUsed.length}`);
+          result.vehiclesUsed = parseVehiclesUsed(sectionData, tagType === 0x02);
+          console.log(`[DDD] Driver card vehicles: ${result.vehiclesUsed.length} (gen2=${tagType === 0x02})`);
           break;
 
         case 0x0502: // CardEventData
