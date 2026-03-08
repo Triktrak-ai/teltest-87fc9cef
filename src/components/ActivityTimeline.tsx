@@ -129,7 +129,7 @@ interface DayCardProps {
 function DayCard({ day, defaultExpanded = false }: DayCardProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const summary = useMemo(() => computeDaySummary(day), [day]);
-  const hasCodriver = day.entries.some((e) => e.slot === "codriver");
+  const hasCodriver = day.entries.some((e) => e.slot === "codriver" && e.cardInserted);
   const dateStr = day.date ? day.date.toLocaleDateString("pl-PL", { weekday: "short", year: "numeric", month: "2-digit", day: "2-digit" }) : "—";
 
   return (
