@@ -675,8 +675,13 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         console.log(`[DDD] Activities: ${sections.length} total sections, ${actSections.length} activity sections, tags: [${sections.map(s => '0x' + s.tag.toString(16)).join(', ')}]`);
 
         if (actSections.length > 0) {
-          // Some devices split one activities payload into multiple same-tag TLV chunks.
-          // Per Annex 1C file semantics we should parse the concatenated payload first.
+          // Strategy A (spec-aligned for segmented TRTP payloads):
+          // parse each 0x76 0x32/0x36 chunk independently and merge by day.
+          const perSectionWarnings: ParserWarning[] = [];
+          const perSectionRejections: ActivityRejection[] = [];
+          const perSectionActivities = parseActivitiesFromSections(actSections, perSectionWarnings, perSectionRejections);
+
+          // Strategy B: concatenate chunks and parse as one payload.
           const totalLen = actSections.reduce((sum, s) => sum + s.data.length, 0);
           const mergedData = new Uint8Array(totalLen);
           let writePos = 0;
@@ -693,13 +698,27 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
             data: mergedData,
           };
 
-          result.activities = parseActivitiesFromSections([mergedSection], result.warnings, result.activityRejections);
-          console.log(`[DDD] Activities from concatenated TLV payload (${mergedData.length} B): ${result.activities.length} days`);
+          const mergedWarnings: ParserWarning[] = [];
+          const mergedRejections: ActivityRejection[] = [];
+          const mergedActivities = parseActivitiesFromSections([mergedSection], mergedWarnings, mergedRejections);
 
-          // Fallback: if concatenated parse fails, try chunk-by-chunk parsing
-          if (result.activities.length === 0) {
-            result.activities = parseActivitiesFromSections(actSections, result.warnings, result.activityRejections);
-            console.log(`[DDD] Activities from per-section parsing: ${result.activities.length} days`);
+          const perSectionEntryScore = perSectionActivities.reduce((sum, d) => sum + d.entries.length, 0);
+          const mergedEntryScore = mergedActivities.reduce((sum, d) => sum + d.entries.length, 0);
+
+          const usePerSection =
+            perSectionActivities.length > mergedActivities.length ||
+            (perSectionActivities.length === mergedActivities.length && perSectionEntryScore > mergedEntryScore);
+
+          if (usePerSection) {
+            result.activities = perSectionActivities;
+            result.warnings.push(...perSectionWarnings);
+            result.activityRejections.push(...perSectionRejections);
+            console.log(`[DDD] Activities strategy=per-section: ${result.activities.length} days (entries=${perSectionEntryScore})`);
+          } else {
+            result.activities = mergedActivities;
+            result.warnings.push(...mergedWarnings);
+            result.activityRejections.push(...mergedRejections);
+            console.log(`[DDD] Activities strategy=concatenated: ${result.activities.length} days (entries=${mergedEntryScore}, payload=${mergedData.length} B)`);
           }
         }
 
