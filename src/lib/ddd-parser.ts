@@ -868,23 +868,9 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         result.bytesParsed = buffer.byteLength;
         break;
       case 'driver_card': {
-        // Driver card files from TRTP are wrapped in 0x76 VU-style sections.
-        // Extract inner data, strip TRTP headers, concatenate, then parse card TLV.
-        let cardBytes = bytes;
-        if (sections.length > 0) {
-          const chunks: Uint8Array[] = [];
-          for (let ci = 0; ci < sections.length; ci++) {
-            const stripped = stripTrtpPrefix(sections[ci].data, ci === 0);
-            chunks.push(stripped);
-          }
-          const totalLen = chunks.reduce((s, c) => s + c.length, 0);
-          const merged = new Uint8Array(totalLen);
-          let wp = 0;
-          for (const c of chunks) { merged.set(c, wp); wp += c.length; }
-          cardBytes = merged;
-          console.log(`[DDD] Driver card: extracted ${chunks.length} sections → ${totalLen} bytes`);
-        }
-        const cardResult = parseDriverCardFile(cardBytes, result.warnings);
+        // Card files from TRTP may have protocol headers interspersed.
+        // The card TLV parser scans byte-by-byte for valid FID+type+len patterns.
+        const cardResult = parseDriverCardFile(bytes, result.warnings);
         result.driverCard = cardResult.card;
         if (cardResult.detectedGeneration) {
           result.generation = cardResult.detectedGeneration;
@@ -893,7 +879,6 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         result.bytesParsed = buffer.byteLength;
         break;
       }
-        break;
     }
   } catch (e) {
     console.warn(`[DDD] Error parsing individual ${fileType} file:`, e);
