@@ -2318,9 +2318,15 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
     const newestAbsPos = bodyStart + newestPtr;
     if (newestAbsPos + 12 > data.length) continue;
     const recLen = view.getUint16(newestAbsPos + 2, false);
-    if (recLen < 12 || recLen > 3000) continue;
+    if (recLen < 12 || recLen > 3000) {
+      console.log(`[DDD] Cyclic probe off=${headerOffset}: newest=${newestPtr}, recLen=${recLen} FAIL(range)`);
+      continue;
+    }
     const ts = view.getUint32(newestAbsPos + 4, false);
-    if (!isValidTimestamp(ts)) continue;
+    if (!isValidTimestamp(ts)) {
+      console.log(`[DDD] Cyclic probe off=${headerOffset}: newest=${newestPtr}, recLen=${recLen}, ts=0x${ts.toString(16)} FAIL(ts)`);
+      continue;
+    }
 
     // Valid cyclic buffer found — traverse backward from newest
     console.log(`[DDD] Cyclic header found: headerOffset=${headerOffset}, oldest=${oldestPtr}, newest=${newestPtr}, bodyLen=${bodyLen}, recLen=${recLen}, ts=${ts} (${new Date(ts*1000).toISOString()})`);
