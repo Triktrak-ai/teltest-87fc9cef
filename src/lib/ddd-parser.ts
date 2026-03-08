@@ -1997,7 +1997,8 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
       const from = hF * 60 + mF;
       const to = hT * 60 + mT;
       const dur = to - from;
-      if (dur <= 0 || dur > 1440) return `Nieprawidłowy czas trwania wpisu: ${e.timeFrom}–${e.timeTo} (${dur} min)`;
+      if (dur < 0 || dur > 1440) return `Nieprawidłowy czas trwania wpisu: ${e.timeFrom}–${e.timeTo} (${dur} min)`;
+      if (dur === 0) continue; // Zero-duration entries are legal (multiple status changes in same minute)
       slotTotals[e.slot] += dur;
     }
     if (slotTotals.driver > 1440) return `Suma minut K1 > 24h: ${slotTotals.driver} min`;
