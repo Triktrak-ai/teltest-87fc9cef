@@ -192,7 +192,7 @@ function DayCard({ day, defaultExpanded = false }: DayCardProps) {
                 <span className="text-muted-foreground">{e.timeFrom}–{e.timeTo}</span>
                 <span className="font-medium">{ACTIVITY_LABELS[e.status]}</span>
                 {e.drivingStatus === 'crew' && (
-                  <Users className="h-2.5 w-2.5 text-primary shrink-0" title="Załoga (CREW)" />
+                  <Users className="h-2.5 w-2.5 text-primary shrink-0" />
                 )}
                 <span className="text-muted-foreground ml-auto">{e.slot === "driver" ? "K1" : "K2"}</span>
               </div>
