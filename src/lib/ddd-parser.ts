@@ -2435,7 +2435,7 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
   }
 
   console.log(`[DDD] VU RecordArrays: parsed ${records.length} activity days`);
-  return records;
+  return { activities: records, borderCrossings, loadUnloadOperations };
 }
 
 type RawActivityWord = {
