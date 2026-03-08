@@ -184,7 +184,9 @@ function DayCard({ day, defaultExpanded = false }: DayCardProps) {
 
           {/* Detailed entries table */}
           <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-x-4 gap-y-0.5">
-            {day.entries.map((e, j) => (
+            {day.entries
+              .filter((e) => e.slot === "driver" || e.cardInserted)
+              .map((e, j) => (
               <div key={j} className="flex items-center gap-1.5 text-[11px]">
                 <div className="h-2 w-2 rounded-sm shrink-0" style={{ backgroundColor: ACTIVITY_BAR_COLORS[e.status] }} />
                 <span className="text-muted-foreground">{e.timeFrom}–{e.timeTo}</span>
