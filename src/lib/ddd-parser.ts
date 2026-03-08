@@ -284,6 +284,11 @@ export function mergeDddData(existing: DddFileData, incoming: DddFileData): DddF
     }
   }
 
+  // Prefer the most specific generation: gen2v2 > gen2v1 > gen2 > gen1 > unknown
+  const genPriority: Record<string, number> = { unknown: 0, gen1: 1, gen2: 2, gen2v1: 3, gen2v2: 4 };
+  const mergedGeneration = (genPriority[incoming.generation] || 0) >= (genPriority[existing.generation] || 0)
+    ? incoming.generation : existing.generation;
+
   return {
     overview,
     activities: deduplicateActivities([...existing.activities, ...incoming.activities]),
