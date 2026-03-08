@@ -1074,30 +1074,32 @@ function parseCardActivities(data: Uint8Array, warnings: ParserWarning[]): Activ
   return parseRawActivitiesFile(data, warnings);
 }
 
-function parseVehiclesUsed(data: Uint8Array): VehicleUsedRecord[] {
+function parseVehiclesUsed(data: Uint8Array, isGen2 = false): VehicleUsedRecord[] {
   const records: VehicleUsedRecord[] = [];
   const r = new BinaryReader(toArrayBuffer(data));
 
-  // Skip header: vehiclePointerNewestRecord (2B) if present
+  // Skip header: vehiclePointerNewestRecord (2B)
   if (r.remaining < 2) return records;
-  const pointerOrCount = r.readUint16();
+  const _pointer = r.readUint16();
 
-  // Each VehicleUsedRecord: odometerBegin(3B) + odometerEnd(3B) + firstUse(4B) + lastUse(4B) + VRN nation(1B) + VRN(14B) = 29 bytes
-  const recordSize = 29;
+  // Gen1 CardVehicleRecord: odometer(3+3) + firstUse(4) + lastUse(4) + VRI(15) + vuDataBlockCounter(2) = 31B
+  // Gen2 CardVehicleRecord: same + VIN(17) = 48B
+  const recordSize = isGen2 ? 48 : 31;
   while (r.remaining >= recordSize) {
     const odometerBegin = (r.readUint8() << 16) | r.readUint16();
     const odometerEnd = (r.readUint8() << 16) | r.readUint16();
     const firstUse = r.readTimestamp();
     const lastUse = r.readTimestamp();
-    const nationByte = r.readUint8();
-    const vrn = r.readString(14);
+    const vri = readVehicleRegistration(r);
+    r.skip(2); // vuDataBlockCounter
+    if (isGen2) r.skip(17); // VIN
 
     // Skip empty records
-    if (!firstUse && !lastUse && !vrn) continue;
+    if (!firstUse && !lastUse && !vri.vrn) continue;
 
     records.push({
-      vehicleRegistrationNumber: vrn,
-      vehicleRegistrationNation: NATION_CODES[nationByte] || `0x${nationByte.toString(16)}`,
+      vehicleRegistrationNumber: vri.vrn,
+      vehicleRegistrationNation: vri.nation,
       firstUse, lastUse,
       odometerBegin, odometerEnd,
     });
