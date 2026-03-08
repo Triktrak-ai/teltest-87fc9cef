@@ -2098,12 +2098,13 @@ function parseVuActivitiesGen1Style(
   for (let i = 0; i < noOfChanges; i++) {
     const word = view.getUint16(changesStart + i * 2, false);
     if (word === 0x0000 || word === 0xFFFF) continue;
-    const slot = (word >> 15) & 0x01;
-    const cardInserted = ((word >> 13) & 0x01) === 0;
-    const activity = (word >> 11) & 0x03;
-    const minutes = word & 0x07FF;
+    const slot = (word >> 15) & 0x01;          // bit 15: 0=driver, 1=codriver
+    const drivingStatus = (word >> 14) & 0x01; // bit 14: 0=SINGLE, 1=CREW
+    const cardInserted = ((word >> 13) & 0x01) === 0; // bit 13: 0=inserted, 1=not inserted
+    const activity = (word >> 11) & 0x03;      // bits 12-11: activity type
+    const minutes = word & 0x07FF;             // bits 10-0: minutes since 00:00
     if (minutes >= 1440) continue;
-    rawWords.push({ slot, cardInserted, activity, minutes });
+    rawWords.push({ slot, drivingStatus, cardInserted, activity, minutes });
   }
 
   if (rawWords.length === 0) return [];
