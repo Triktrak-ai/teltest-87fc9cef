@@ -1951,36 +1951,32 @@ function stripTrtpPrefix(data: Uint8Array, _isFirstChunk: boolean): Uint8Array {
  * 1) Runs of 3+ consecutive records with identical dayDistance
  * 2) Known artifact values (768 = 0x0300) that appear when TRTP header bytes
  *    are misread as distance fields — only removed if the value appears
- *    suspiciously often (≥3 total occurrences across the dataset).
+ * Remove artifact records from cyclic buffer boundary corruption:
+ * Only removes known TRTP artifact value 768 (0x0300) when it appears ≥5 times
+ * AND the record has minimal activity entries (≤2), indicating corrupted data
+ * rather than real driving days with that distance.
+ * 
+ * Note: Consecutive identical distances are NOT filtered — they are normal
+ * in professional transport (fixed routes, daily shuttles).
  */
 function filterDistanceArtifacts(records: ActivityRecord[]): ActivityRecord[] {
-  if (records.length < 3) return records;
+  if (records.length < 5) return records;
   
-  const dominated = new Set<number>();
-  
-  // Pass 1: Remove runs of 3+ consecutive identical dayDistance
-  let runStart = 0;
-  for (let i = 1; i <= records.length; i++) {
-    if (i < records.length && records[i].dayDistance === records[runStart].dayDistance) continue;
-    const runLen = i - runStart;
-    if (runLen >= 3) {
-      for (let j = runStart; j < i; j++) dominated.add(j);
-    }
-    runStart = i;
-  }
-  
-  // Pass 2: The value 768 (0x0300) is a specific known artifact from TRTP headers
-  // (05 00 03 00 01 pattern). If it appears ≥3 times, remove all occurrences.
-  const count768 = records.filter(r => r.dayDistance === 768).length;
-  if (count768 >= 3) {
+  // Only filter the specific TRTP artifact value 768 (0x0300 from header bytes)
+  // Require ≥5 occurrences AND low entry count to avoid false positives
+  const artifact768 = records.filter(r => r.dayDistance === 768 && r.entries.length <= 2);
+  if (artifact768.length >= 5) {
+    const dominated = new Set<number>();
     for (let i = 0; i < records.length; i++) {
-      if (records[i].dayDistance === 768) dominated.add(i);
+      if (records[i].dayDistance === 768 && records[i].entries.length <= 2) {
+        dominated.add(i);
+      }
     }
+    console.log(`[DDD] Filtered ${dominated.size} artifact records with TRTP distance 768`);
+    return records.filter((_, idx) => !dominated.has(idx));
   }
   
-  if (dominated.size === 0) return records;
-  console.log(`[DDD] Filtered ${dominated.size} artifact records with corrupted dayDistance`);
-  return records.filter((_, idx) => !dominated.has(idx));
+  return records;
 }
 
 // ─── TLV-section-based activities parser (Gen2/Gen2v2) ──────────────────────
