@@ -544,6 +544,21 @@ function selectDenseTimestampAnchor(values: number[], windowSeconds = 90 * 86400
   return best;
 }
 
+/**
+ * Extract download date from DDD filename.
+ * Format: {IMEI}_{type}_{YYYYMMDD}_{HHMMSS}.ddd
+ * Returns Date or null if not parseable.
+ */
+function extractDownloadDate(fileName?: string): Date | null {
+  if (!fileName) return null;
+  const match = fileName.match(/_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})\.ddd$/i);
+  if (!match) return null;
+  const [, y, m, d, hh, mm, ss] = match;
+  const date = new Date(Date.UTC(+y, +m - 1, +d, +hh, +mm, +ss));
+  if (isNaN(date.getTime())) return null;
+  return date;
+}
+
 // ─── Main parser ─────────────────────────────────────────────────────────────
 
 export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileData {
@@ -620,6 +635,8 @@ export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileDat
 function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, result: DddFileData): DddFileData {
   const bytes = new Uint8Array(buffer);
   result.generation = 'gen2'; // Individual files from TRTP are typically Gen2/Gen2v2
+  const fileName = result.rawFileBuffers?.[0]?.fileName;
+  const downloadDate = extractDownloadDate(fileName);
 
   // Extract TLV sections first — individual TRTP files may contain TLV-wrapped data
   const sections = extractSections(buffer, result.warnings);
@@ -716,7 +733,7 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
 
           const mergedWarnings: ParserWarning[] = [];
           const mergedRejections: ActivityRejection[] = [];
-          const mergedActivities = parseActivitiesFromSections([mergedSection], mergedWarnings, mergedRejections);
+          const mergedActivities = parseActivitiesFromSections([mergedSection], mergedWarnings, mergedRejections, downloadDate);
           const mergedEntryScore = mergedActivities.reduce((sum, d) => sum + d.entries.length, 0);
 
           if (mergedActivities.length > 0) {
@@ -729,7 +746,7 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
             // Only used if concatenated strategy yields 0 results
             const perSectionWarnings: ParserWarning[] = [];
             const perSectionRejections: ActivityRejection[] = [];
-            const perSectionActivities = parseActivitiesFromSections(actSections, perSectionWarnings, perSectionRejections);
+            const perSectionActivities = parseActivitiesFromSections(actSections, perSectionWarnings, perSectionRejections, downloadDate);
             if (perSectionActivities.length > 0) {
               result.activities = perSectionActivities;
               result.warnings.push(...perSectionWarnings);
@@ -1774,7 +1791,7 @@ function filterDistanceArtifacts(records: ActivityRecord[]): ActivityRecord[] {
 
 // ─── TLV-section-based activities parser (Gen2/Gen2v2) ──────────────────────
 
-function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWarning[], rejections?: ActivityRejection[]): ActivityRecord[] {
+function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWarning[], rejections?: ActivityRejection[], downloadDate?: Date | null): ActivityRecord[] {
   const byDay = new Map<string, ActivityRecord>();
 
   const dayKey = (d: Date) => `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
@@ -1861,27 +1878,50 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
   // Remove artifact records with repeated dayDistance (e.g. 768 km from chunk boundary corruption)
   records = filterDistanceArtifacts(records);
 
-  // Keep only recent window relative to the densest date cluster
-  // (more robust than anchoring to a single outlier max timestamp).
+  // Keep only records within a plausible date range
   if (records.length > 0) {
-    const timestamps = records.map(r => Math.floor(r.date.getTime() / 1000));
-    const anchorTs = selectDenseTimestampAnchor(timestamps, 90 * 86400);
-    const oneYearSecs = 366 * 86400;
+    // If we have a download date from the filename, use it as hard upper bound.
+    // VU stores max 56 days (Gen2v2) or 28 days (Gen1/Gen2).
+    // Use 90 days as generous lower bound.
+    if (downloadDate) {
+      const upperTs = Math.floor(downloadDate.getTime() / 1000);
+      const lowerTs = upperTs - 90 * 86400; // 90 days before download
+      console.log(`[DDD] Download date filter: ${downloadDate.toISOString().slice(0, 10)}, window ${new Date(lowerTs * 1000).toISOString().slice(0, 10)} – ${downloadDate.toISOString().slice(0, 10)}`);
+      records = records.filter(r => {
+        const ts = Math.floor(r.date.getTime() / 1000);
+        const keep = ts >= lowerTs && ts <= upperTs;
+        if (!keep) {
+          rejections?.push({
+            offset: 0,
+            date: r.date.toISOString().slice(0, 10),
+            reason: `Data poza oknem pobierania (${new Date(lowerTs * 1000).toISOString().slice(0, 10)} – ${downloadDate.toISOString().slice(0, 10)})`,
+            dayDistance: r.dayDistance,
+            changeCount: r.entries.length,
+          });
+        }
+        return keep;
+      });
+    } else {
+      // Fallback: use dense timestamp anchor with 1 year window
+      const timestamps = records.map(r => Math.floor(r.date.getTime() / 1000));
+      const anchorTs = selectDenseTimestampAnchor(timestamps, 90 * 86400);
+      const oneYearSecs = 366 * 86400;
 
-    records = records.filter(r => {
-      const ts = Math.floor(r.date.getTime() / 1000);
-      const keep = Math.abs(anchorTs - ts) <= oneYearSecs;
-      if (!keep) {
-        rejections?.push({
-          offset: 0,
-          date: r.date.toISOString().slice(0, 10),
-          reason: `Odrzucony przez filtr świeżości (> 1 rok od kotwicy ${new Date(anchorTs * 1000).toISOString().slice(0, 10)})`,
-          dayDistance: r.dayDistance,
-          changeCount: r.entries.length,
-        });
-      }
-      return keep;
-    });
+      records = records.filter(r => {
+        const ts = Math.floor(r.date.getTime() / 1000);
+        const keep = Math.abs(anchorTs - ts) <= oneYearSecs;
+        if (!keep) {
+          rejections?.push({
+            offset: 0,
+            date: r.date.toISOString().slice(0, 10),
+            reason: `Odrzucony przez filtr świeżości (> 1 rok od kotwicy ${new Date(anchorTs * 1000).toISOString().slice(0, 10)})`,
+            dayDistance: r.dayDistance,
+            changeCount: r.entries.length,
+          });
+        }
+        return keep;
+      });
+    }
   }
 
   if (records.length === 0) {
