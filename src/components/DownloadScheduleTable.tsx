@@ -111,6 +111,7 @@ interface DownloadScheduleTableProps {
 export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProps) {
   const { getOwner, isAdmin } = useImeiOwners();
   const { data: schedules, isLoading, resetSchedule } = useDownloadSchedule();
+  const { data: fileCounts } = useLatestSessionFileCounts();
   const { data: sessionsWithLogs } = useLatestSessionsWithLogs();
   const { isDevMode, toggle: toggleDevMode } = useDevMode();
   const [resetting, setResetting] = useState<string | null>(null);
