@@ -675,22 +675,15 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         console.log(`[DDD] Activities: ${sections.length} total sections, ${actSections.length} activity sections, tags: [${sections.map(s => '0x' + s.tag.toString(16)).join(', ')}]`);
 
         if (actSections.length > 0) {
-          // Strategy A (spec-aligned for segmented TRTP payloads):
-          // parse each 0x76 0x32/0x36 chunk independently and merge by day.
-          const perSectionWarnings: ParserWarning[] = [];
-          const perSectionRejections: ActivityRejection[] = [];
-          const perSectionActivities = parseActivitiesFromSections(actSections, perSectionWarnings, perSectionRejections);
-
-          // Strategy B: concatenate chunks, stripping TRTP prefix (04 00 01 XX XX) from each section.
-          // Each TLV section may carry a 5-byte TRTP sub-header before the actual card data.
+          // ── Concatenated strategy (primary) ──
+          // Records in a cyclic buffer can span chunk boundaries, so per-section
+          // parsing is fundamentally wrong. We concatenate all chunks, stripping
+          // TRTP transport prefixes, to reconstruct the original card EF payload.
           const strippedChunks: Uint8Array[] = [];
-          for (const s of actSections) {
-            // Detect TRTP prefix: 04 00 01 followed by 2 bytes
-            if (s.data.length > 5 && s.data[0] === 0x04 && s.data[1] === 0x00 && s.data[2] === 0x01) {
-              strippedChunks.push(s.data.slice(5));
-            } else {
-              strippedChunks.push(s.data);
-            }
+          for (let ci = 0; ci < actSections.length; ci++) {
+            const s = actSections[ci];
+            const stripped = stripTrtpPrefix(s.data, ci === 0);
+            strippedChunks.push(stripped);
           }
           const totalLen = strippedChunks.reduce((sum, c) => sum + c.length, 0);
           const mergedData = new Uint8Array(totalLen);
@@ -698,6 +691,17 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
           for (const chunk of strippedChunks) {
             mergedData.set(chunk, writePos);
             writePos += chunk.length;
+          }
+
+          // Validate cyclic header integrity after concatenation
+          if (mergedData.length >= 4) {
+            const mdView = new DataView(mergedData.buffer, mergedData.byteOffset, mergedData.byteLength);
+            const oldP = mdView.getUint16(0, false);
+            const newP = mdView.getUint16(2, false);
+            const bodyLen = mergedData.length - 4;
+            if (oldP >= bodyLen || newP >= bodyLen) {
+              console.warn(`[DDD] Cyclic header pointers out of bounds after concatenation: oldest=${oldP}, newest=${newP}, bodyLen=${bodyLen}`);
+            }
           }
 
           const mergedSection: DddSection = {
@@ -711,24 +715,26 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
           const mergedWarnings: ParserWarning[] = [];
           const mergedRejections: ActivityRejection[] = [];
           const mergedActivities = parseActivitiesFromSections([mergedSection], mergedWarnings, mergedRejections);
-
-          const perSectionEntryScore = perSectionActivities.reduce((sum, d) => sum + d.entries.length, 0);
           const mergedEntryScore = mergedActivities.reduce((sum, d) => sum + d.entries.length, 0);
 
-          const usePerSection =
-            perSectionActivities.length > mergedActivities.length ||
-            (perSectionActivities.length === mergedActivities.length && perSectionEntryScore > mergedEntryScore);
-
-          if (usePerSection) {
-            result.activities = perSectionActivities;
-            result.warnings.push(...perSectionWarnings);
-            result.activityRejections.push(...perSectionRejections);
-            console.log(`[DDD] Activities strategy=per-section: ${result.activities.length} days (entries=${perSectionEntryScore})`);
-          } else {
+          if (mergedActivities.length > 0) {
             result.activities = mergedActivities;
             result.warnings.push(...mergedWarnings);
             result.activityRejections.push(...mergedRejections);
             console.log(`[DDD] Activities strategy=concatenated: ${result.activities.length} days (entries=${mergedEntryScore}, payload=${mergedData.length} B)`);
+          } else {
+            // ── Per-section fallback (last resort) ──
+            // Only used if concatenated strategy yields 0 results
+            const perSectionWarnings: ParserWarning[] = [];
+            const perSectionRejections: ActivityRejection[] = [];
+            const perSectionActivities = parseActivitiesFromSections(actSections, perSectionWarnings, perSectionRejections);
+            if (perSectionActivities.length > 0) {
+              result.activities = perSectionActivities;
+              result.warnings.push(...perSectionWarnings);
+              result.activityRejections.push(...perSectionRejections);
+              const perSectionEntryScore = perSectionActivities.reduce((sum, d) => sum + d.entries.length, 0);
+              console.log(`[DDD] Activities strategy=per-section (fallback): ${result.activities.length} days (entries=${perSectionEntryScore})`);
+            }
           }
         }
 
