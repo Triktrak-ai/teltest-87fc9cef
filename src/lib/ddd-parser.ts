@@ -2862,7 +2862,7 @@ function parseCyclicActivities(
 
     // N = (totalLength - 4(header) - 4(date) - 2(counter) - 2(distance)) / 2
     const activityChangeCount = Math.floor((recLen - 12) / 2);
-    const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
+    const rawEntries: RawActivityWord[] = [];
 
     for (let i = 0; i < activityChangeCount; i++) {
       const off = 12 + i * 2;
