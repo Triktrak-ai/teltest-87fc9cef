@@ -3003,7 +3003,7 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
   //   previousRecordLength  2B
   //   recordLength          2B   (covers date..activityChangeInfo[])
   //   activityRecordDate    4B
-  //   dailyPresenceCounter  2B   (BCD)
+  //   dailyPresenceCounter  2B   (uint16)
   //   activityDayDistance    2B
    //   activityChangeInfo[N] N×2B  where N = (recordLength - 12) / 2
    //   NOTE: recordLength INCLUDES the 4-byte header (prevLen + recLen)
@@ -3076,8 +3076,8 @@ function parseCyclicActivities(
     if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) break;
     const date = new Date(tsValue * 1000);
 
-    // DailyPresenceCounter — BCD encoded (2 bytes)
-    const dailyPresenceCounter = decodeBcd(body[8]) * 100 + decodeBcd(body[9]);
+    // DailyPresenceCounter — uint16 (2 bytes), NOT BCD per spec type 2.56
+    const dailyPresenceCounter = (body[8] << 8) | body[9];
     const dayDistance = (body[10] << 8) | body[11];
     if (dayDistance > 9999) break;
 
