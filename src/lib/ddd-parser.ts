@@ -2253,15 +2253,18 @@ function parseVuActivitiesGen1Style(
 
   if (rawWords.length === 0) return [];
 
-  // Split into per-day groups by minute resets
+  // Split into per-day groups by slot 0 minute resets (per Annex 1C: slots are interleaved)
   const dayGroups: RawActivityWord[][] = [[]];
-  let prevMinutes = -1;
+  const prevMinutesPerSlot = [-1, -1];
   for (const word of rawWords) {
-    if (prevMinutes >= 0 && word.minutes < prevMinutes && dayGroups[dayGroups.length - 1].length > 0) {
+    const slotPrev = prevMinutesPerSlot[word.slot];
+    if (slotPrev >= 0 && word.minutes < slotPrev && word.slot === 0 && dayGroups[dayGroups.length - 1].length > 0) {
       dayGroups.push([]);
+      prevMinutesPerSlot[0] = -1;
+      prevMinutesPerSlot[1] = -1;
     }
     dayGroups[dayGroups.length - 1].push(word);
-    prevMinutes = word.minutes;
+    prevMinutesPerSlot[word.slot] = word.minutes;
   }
 
   // Remove empty groups
