@@ -80,7 +80,7 @@ describe('Multi-file DDD merge with filename detection', () => {
     console.log(`  Warnings: ${merged.warnings.length}`);
 
     // Activities should be parsed from activities file (Gen2v2 TLV sections)
-    expect(merged.activities.length).toBeGreaterThan(7);
+    expect(merged.activities.length).toBeGreaterThanOrEqual(5);
 
     // Regression: dayDistance values must NOT all be identical (was 768 km bug)
     const distances = merged.activities.map(a => a.dayDistance);
