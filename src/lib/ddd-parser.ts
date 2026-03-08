@@ -868,6 +868,8 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         result.bytesParsed = buffer.byteLength;
         break;
       case 'driver_card': {
+        // Card files from TRTP may have protocol headers interspersed.
+        // The card TLV parser scans byte-by-byte for valid FID+type+len patterns.
         const cardResult = parseDriverCardFile(bytes, result.warnings);
         result.driverCard = cardResult.card;
         if (cardResult.detectedGeneration) {
@@ -877,7 +879,6 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         result.bytesParsed = buffer.byteLength;
         break;
       }
-        break;
     }
   } catch (e) {
     console.warn(`[DDD] Error parsing individual ${fileType} file:`, e);
@@ -911,6 +912,7 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
   // Length: 2 bytes big-endian
   const view = new DataView(toArrayBuffer(bytes));
   let pos = 0;
+  let sectionsFound = 0;
 
   while (pos < bytes.length - 5) {
     if (pos + 5 > bytes.length) break;
@@ -919,7 +921,17 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
     const tagType = bytes[pos + 2];              // 00=data1, 01=sig1, 02=data2, 03=sig2
     const len = view.getUint16(pos + 3, false);  // 2-byte length
 
-    if (len === 0 || pos + 5 + len > bytes.length) {
+    // Validate: type must be 0x00-0x03, FID must be a known card EF
+    const isValidType = tagType <= 0x03;
+    const KNOWN_CARD_FIDS = new Set([
+      0x0002, 0x0005, 0x0006,
+      0x0501, 0x0502, 0x0503, 0x0504, 0x0505, 0x0506, 0x0507, 0x0508,
+      0x0520, 0x0521, 0x0522, 0x0523, 0x0524, 0x0525, 0x0526,
+      0xC100, 0xC108, 0xC109,
+    ]);
+    const isValidFid = KNOWN_CARD_FIDS.has(tagHigh);
+
+    if (!isValidType || !isValidFid || len === 0 || pos + 5 + len > bytes.length) {
       pos++;
       continue;
     }
@@ -931,29 +943,26 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
       continue;
     }
 
-    // Validate tag is in expected range for driver cards
-    const tagHighByte = (tagHigh >> 8) & 0xFF;
-    if (tagHighByte > 0x0C && tagHigh !== 0xC100 && tagHigh !== 0xC108 && tagHigh !== 0xC109) {
-      pos++;
-      continue;
-    }
-
+    sectionsFound++;
     const sectionData = bytes.slice(pos + 5, pos + 5 + len);
 
     try {
       switch (tagHigh) {
         case 0x0501: {
           // EF Application_Identification — contains cardStructureVersion
-          // Structure: typeOfTachographCardId(2B) + cardStructureVersion(2B) + ...
+          // Structure: typeOfTachographCardId(1B) + cardStructureVersion(2B) + ...
           // cardStructureVersion: {01 00} = Gen2v1, {01 01} = Gen2v2
-          if (sectionData.length >= 4) {
-            const csvMajor = sectionData[2];
-            const csvMinor = sectionData[3];
+          if (sectionData.length >= 3) {
+            const csvMajor = sectionData[1];
+            const csvMinor = sectionData[2];
             console.log(`[DDD] EF Application_Identification (0501h): cardStructureVersion=${csvMajor}.${csvMinor}`);
             if (csvMajor === 0x01 && csvMinor === 0x01) {
               detectedGeneration = 'gen2v2';
             } else if (csvMajor === 0x01 && csvMinor === 0x00) {
               detectedGeneration = 'gen2v1';
+            } else if (csvMajor === 0x00 && csvMinor === 0x00) {
+              // Gen1 card — cardStructureVersion {00, 00}
+              console.log(`[DDD] Gen1 card detected from cardStructureVersion`);
             }
           }
           break;
@@ -995,6 +1004,8 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
 
     pos += 5 + len;
   }
+
+  console.log(`[DDD] Driver card TLV: ${sectionsFound} data sections found`);
 
   // If TLV parsing found nothing, try pattern-based scanning
   if (!result.identification && result.vehiclesUsed.length === 0) {
