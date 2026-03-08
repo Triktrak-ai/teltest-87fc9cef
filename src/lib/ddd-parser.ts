@@ -1015,6 +1015,8 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
     pos += 5 + len;
   }
 
+  console.log(`[DDD] Driver card TLV: ${sectionsFound} data sections found`);
+
   // If TLV parsing found nothing, try pattern-based scanning
   if (!result.identification && result.vehiclesUsed.length === 0) {
     warnings.push({ offset: 0, message: 'No TLV sections found in driver card file, trying pattern scan' });
