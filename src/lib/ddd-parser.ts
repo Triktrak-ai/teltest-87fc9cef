@@ -1773,6 +1773,60 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
   return records;
 }
 
+// ─── Activities decode helpers ───────────────────────────────────────────────
+
+type RawActivityWord = {
+  slot: number;
+  cardInserted: boolean;
+  activity: number;
+  minutes: number;
+};
+
+function decodeActivityEntries(rawEntries: RawActivityWord[]): ActivityChangeEntry[] {
+  const statusMap: Record<number, ActivityChangeEntry['status']> = {
+    0: 'break',
+    1: 'availability',
+    2: 'work',
+    3: 'driving',
+  };
+
+  const entries: ActivityChangeEntry[] = [];
+
+  for (const slot of [0, 1] as const) {
+    // Annex 1C data can arrive newest→oldest in cyclic buffers.
+    // Normalize to chronological order per slot before computing durations.
+    const slotEntries = rawEntries
+      .filter((e) => e.slot === slot)
+      .sort((a, b) => a.minutes - b.minutes);
+
+    for (let i = 0; i < slotEntries.length; i++) {
+      const current = slotEntries[i];
+      const nextMinutes = slotEntries[i + 1]?.minutes ?? 1440;
+      if (current.minutes >= nextMinutes) continue;
+
+      const hFrom = Math.floor(current.minutes / 60);
+      const mFrom = current.minutes % 60;
+      const hTo = Math.floor(Math.min(nextMinutes, 1440) / 60);
+      const mTo = Math.min(nextMinutes, 1440) % 60;
+
+      entries.push({
+        slot: slot === 0 ? 'driver' : 'codriver',
+        status: statusMap[current.activity] || 'unknown',
+        cardInserted: current.cardInserted,
+        minutes: current.minutes,
+        timeFrom: `${hFrom.toString().padStart(2, '0')}:${mFrom.toString().padStart(2, '0')}`,
+        timeTo: `${hTo.toString().padStart(2, '0')}:${mTo.toString().padStart(2, '0')}`,
+      });
+    }
+  }
+
+  return entries.sort((a, b) => {
+    if (a.minutes !== b.minutes) return a.minutes - b.minutes;
+    if (a.slot === b.slot) return 0;
+    return a.slot === 'driver' ? -1 : 1;
+  });
+}
+
 // ─── Raw activities file parser ──────────────────────────────────────────────
 
 function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): ActivityRecord[] {
