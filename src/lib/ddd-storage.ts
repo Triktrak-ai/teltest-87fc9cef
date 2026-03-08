@@ -107,15 +107,10 @@ export async function downloadDddZip(
   const zip = new JSZip();
 
   for (const f of files) {
-    const isDriverCard = DRIVER_CARD_PATTERNS.some((p) =>
-      f.name.toLowerCase().includes(p)
-    );
-    const source = (f as DddFileInfo & { source?: string }).source === "cloud"
-      ? "cloud"
-      : isDriverCard && !hasDriverCard(await listCloudFiles(imei))
-        ? "vps"
-        : undefined;
-    const buf = await downloadDddFile(imei, f.name, source as "cloud" | "vps" | undefined);
+    // Files from VPS (driver cards) have source marker from listDddFiles
+    const fileWithSource = f as DddFileInfo & { source?: string };
+    const source = fileWithSource.source === "cloud" ? "cloud" : "vps";
+    const buf = await downloadDddFile(imei, f.name, source);
     if (buf.byteLength > 0) {
       zip.file(f.name, buf);
     }
