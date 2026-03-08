@@ -981,7 +981,7 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
     tryPatternScanDriverCard(bytes, result, warnings);
   }
 
-  return result;
+  return { card: result, detectedGeneration };
 }
 
 function parseCardIdentification(data: Uint8Array): DriverCardIdentification {
