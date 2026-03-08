@@ -948,7 +948,12 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
 
     // Only process data tags (00=Gen1, 02=Gen2), skip signatures (01, 03)
     const isData = tagType === 0x00 || tagType === 0x02;
+    if (!isData) {
+      pos += 5 + len;
+      continue;
+    }
 
+    sectionsFound++;
     const sectionData = bytes.slice(pos + 5, pos + 5 + len);
 
     try {
