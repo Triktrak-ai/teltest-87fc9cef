@@ -1694,18 +1694,21 @@ function stripTrtpPrefix(data: Uint8Array, _isFirstChunk: boolean): Uint8Array {
 }
 
 /**
- * Remove runs of 3+ consecutive records with identical dayDistance.
- * Such runs are artifacts from cyclic buffer boundary corruption (e.g. 768 km = 0x0300).
+ * Remove artifact records from cyclic buffer boundary corruption:
+ * 1) Runs of 3+ consecutive records with identical dayDistance
+ * 2) Known artifact values (768 = 0x0300) that appear when TRTP header bytes
+ *    are misread as distance fields — only removed if the value appears
+ *    suspiciously often (≥3 total occurrences across the dataset).
  */
 function filterDistanceArtifacts(records: ActivityRecord[]): ActivityRecord[] {
   if (records.length < 3) return records;
   
   const dominated = new Set<number>();
-  let runStart = 0;
   
+  // Pass 1: Remove runs of 3+ consecutive identical dayDistance
+  let runStart = 0;
   for (let i = 1; i <= records.length; i++) {
     if (i < records.length && records[i].dayDistance === records[runStart].dayDistance) continue;
-    // End of run [runStart..i-1]
     const runLen = i - runStart;
     if (runLen >= 3) {
       for (let j = runStart; j < i; j++) dominated.add(j);
@@ -1713,8 +1716,24 @@ function filterDistanceArtifacts(records: ActivityRecord[]): ActivityRecord[] {
     runStart = i;
   }
   
+  // Pass 2: Known artifact values — if a specific distance appears ≥3 times total,
+  // it's almost certainly a boundary corruption artifact (real trucks rarely have
+  // exactly the same distance on 3+ different days).
+  const KNOWN_ARTIFACTS = [768, 256, 512, 1024, 1280, 1536]; // common 0x0N00 patterns
+  const distCounts = new Map<number, number>();
+  for (const rec of records) {
+    distCounts.set(rec.dayDistance, (distCounts.get(rec.dayDistance) || 0) + 1);
+  }
+  for (const artifactVal of KNOWN_ARTIFACTS) {
+    if ((distCounts.get(artifactVal) || 0) >= 3) {
+      for (let i = 0; i < records.length; i++) {
+        if (records[i].dayDistance === artifactVal) dominated.add(i);
+      }
+    }
+  }
+  
   if (dominated.size === 0) return records;
-  console.log(`[DDD] Filtered ${dominated.size} artifact records with repeated dayDistance`);
+  console.log(`[DDD] Filtered ${dominated.size} artifact records with corrupted dayDistance`);
   return records.filter((_, idx) => !dominated.has(idx));
 }
 
