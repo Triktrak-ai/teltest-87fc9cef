@@ -945,7 +945,6 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
 
     sectionsFound++;
     const sectionData = bytes.slice(pos + 5, pos + 5 + len);
-    const sectionData = bytes.slice(pos + 5, pos + 5 + len);
 
     try {
       switch (tagHigh) {
