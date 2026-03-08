@@ -2015,7 +2015,7 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
     warnings.push({ offset: 0, message: 'Could not extract activity records from raw file' });
   }
 
-  return deduped;
+  return filterDistanceArtifacts(deduped);
 }
 
 // ─── Raw overview file parser ────────────────────────────────────────────────
