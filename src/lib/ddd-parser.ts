@@ -921,10 +921,15 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
     const tagType = bytes[pos + 2];              // 00=data1, 01=sig1, 02=data2, 03=sig2
     const len = view.getUint16(pos + 3, false);  // 2-byte length
 
-    // Validate: type must be 0x00-0x03, length must fit, FID must be in card range
-    const tagHighByte = (tagHigh >> 8) & 0xFF;
+    // Validate: type must be 0x00-0x03, FID must be a known card EF
     const isValidType = tagType <= 0x03;
-    const isValidFid = tagHighByte <= 0x0C || tagHigh === 0xC100 || tagHigh === 0xC108 || tagHigh === 0xC109;
+    const KNOWN_CARD_FIDS = new Set([
+      0x0002, 0x0005, 0x0006,
+      0x0501, 0x0502, 0x0503, 0x0504, 0x0505, 0x0506, 0x0507, 0x0508,
+      0x0520, 0x0521, 0x0522, 0x0523, 0x0524, 0x0525, 0x0526,
+      0xC100, 0xC108, 0xC109,
+    ]);
+    const isValidFid = KNOWN_CARD_FIDS.has(tagHigh);
 
     if (!isValidType || !isValidFid || len === 0 || pos + 5 + len > bytes.length) {
       pos++;
