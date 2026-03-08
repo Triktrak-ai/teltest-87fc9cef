@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useImeiOwners } from "@/hooks/useImeiOwners";
 import { useNavigate } from "react-router-dom";
-import { apiListDddFiles, apiDownloadDddFile, apiDownloadDddZip } from "@/lib/api-client";
+import { downloadDddZip } from "@/lib/ddd-storage";
 import { toast } from "sonner";
 
 type SessionStatus = Session["status"];
