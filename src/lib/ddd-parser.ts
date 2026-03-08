@@ -1182,17 +1182,11 @@ function parseCardPlaces(data: Uint8Array, isGen2v2: boolean): CardPlaceRecord[]
     const vehicleOdometerValue = (r.readUint8() << 16) | r.readUint16();
 
     let gnssPlace: GnssPlaceAuthRecord | undefined;
-    if (isGen2v2) {
-      // GnssPlaceAuthRecord: timestamp(4B) + accuracy(1B) + lat(3B) + lon(3B) + authStatus(1B)
-      const gnssTimestamp = r.readTimestamp();
-      const accuracy = r.readUint8();
-      const latRaw = (r.readUint8() << 16) | r.readUint16();
-      const lonRaw = (r.readUint8() << 16) | r.readUint16();
-      const authStatus = r.readUint8();
-      // Convert from 1/10 arc-seconds to decimal degrees
-      const latitude = (latRaw - 324000 * 10) / 36000;
-      const longitude = (lonRaw - 648000 * 10) / 36000;
-      gnssPlace = { timestamp: gnssTimestamp, accuracy, latitude, longitude, authStatus };
+    if (isGen2v2 && r.remaining >= 12) {
+      const gnssData = new Uint8Array(data.buffer, data.byteOffset + r.offset, 12);
+      const gnssView = new DataView(data.buffer, data.byteOffset + r.offset, 12);
+      gnssPlace = parseGnssPlaceAuthRecord(gnssData, 0, gnssView);
+      r.skip(12);
     }
 
     if (!entryTime) continue;
