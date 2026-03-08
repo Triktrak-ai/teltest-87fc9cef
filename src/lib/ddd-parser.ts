@@ -2252,7 +2252,8 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
   //   activityRecordDate    4B
   //   dailyPresenceCounter  2B   (BCD)
   //   activityDayDistance    2B
-  //   activityChangeInfo[N] N×2B  where N = (recordLength - 8) / 2
+   //   activityChangeInfo[N] N×2B  where N = (recordLength - 12) / 2
+   //   NOTE: recordLength INCLUDES the 4-byte header (prevLen + recLen)
 
   // Detect cyclic header: try common header offsets
   for (const headerOffset of [0, 5, 3, 8, 12]) {
