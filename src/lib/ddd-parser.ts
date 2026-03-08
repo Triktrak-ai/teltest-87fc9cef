@@ -1684,7 +1684,16 @@ function parseEventsStructured(bytes: Uint8Array, warnings: ParserWarning[]): { 
 function stripTrtpPrefix(data: Uint8Array, _isFirstChunk: boolean): Uint8Array {
   if (data.length < 5) return data;
 
-  // Detect TRTP prefix: 04 00 {01|02} XX XX (5 bytes)
+  // Gen2v2 TRTP header: 04 00 01 [4B ts] 05 00 03 00 01 05 (13 bytes)
+  // Check for the full 13-byte pattern first
+  if (data.length >= 13 &&
+      data[0] === 0x04 && data[1] === 0x00 && (data[2] === 0x01 || data[2] === 0x02) &&
+      data[7] === 0x05 && data[8] === 0x00 && data[9] === 0x03 &&
+      data[10] === 0x00 && data[11] === 0x01 && data[12] === 0x05) {
+    return data.slice(13);
+  }
+
+  // Fallback: 5-byte TRTP prefix: 04 00 {01|02} XX XX
   if (data[0] === 0x04 && data[1] === 0x00 &&
       (data[2] === 0x01 || data[2] === 0x02)) {
     return data.slice(5);
