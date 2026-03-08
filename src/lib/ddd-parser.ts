@@ -877,7 +877,12 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
 
 // ─── Driver Card file parser ─────────────────────────────────────────────────
 
-function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): DriverCardData {
+interface DriverCardParseResult {
+  card: DriverCardData;
+  detectedGeneration: 'gen2v1' | 'gen2v2' | null;
+}
+
+function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): DriverCardParseResult {
   const result: DriverCardData = {
     identification: null,
     activities: [],
