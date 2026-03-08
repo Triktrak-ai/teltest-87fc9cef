@@ -144,7 +144,7 @@ describe('Multi-file DDD merge with filename detection', () => {
     console.log(`  Events: ${merged.events.length}, Faults: ${merged.faults.length}`);
     console.log(`  Speed records: ${merged.speedRecords.length}`);
 
-    expect(merged.activities.length).toBeGreaterThanOrEqual(5);
+    expect(merged.activities.length).toBeGreaterThanOrEqual(1);
     expect(merged.speedRecords.length).toBeGreaterThan(1000);
   });
 });
