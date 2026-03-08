@@ -247,7 +247,7 @@ export interface DddFileData {
   activityRejections: ActivityRejection[];
   fileSize: number;
   bytesParsed: number;
-  generation: 'gen1' | 'gen2' | 'unknown';
+  generation: 'gen1' | 'gen2' | 'gen2v1' | 'gen2v2' | 'unknown';
   driverCard: DriverCardData | null;
   rawFileBuffers: RawFileBuffer[];
 }
