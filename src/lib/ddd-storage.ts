@@ -15,6 +15,14 @@ import {
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const useApi = !!API_BASE;
 
+const DRIVER_CARD_PATTERNS = ["driver1", "driver2", "drivercard"];
+
+function hasDriverCard(files: DddFileInfo[]): boolean {
+  return files.some((f) =>
+    DRIVER_CARD_PATTERNS.some((p) => f.name.toLowerCase().includes(p))
+  );
+}
+
 // ── List DDD files ────────────────────────────────────────────
 
 export async function listDddFiles(
@@ -24,6 +32,29 @@ export async function listDddFiles(
 ): Promise<DddFileInfo[]> {
   if (useApi) return apiListDddFiles(imei, after, before);
 
+  const cloudFiles = await listCloudFiles(imei);
+
+  // If Cloud is missing driver cards and VPS API is available, supplement
+  if (!hasDriverCard(cloudFiles) && API_BASE) {
+    try {
+      const vpsFiles = await apiListDddFiles(imei, after, before);
+      const vpsDriverCards = vpsFiles
+        .filter((f) =>
+          DRIVER_CARD_PATTERNS.some((p) => f.name.toLowerCase().includes(p))
+        )
+        .map((f) => ({ ...f, source: "vps" as const }));
+      if (vpsDriverCards.length > 0) {
+        return [...cloudFiles, ...vpsDriverCards];
+      }
+    } catch {
+      // VPS not reachable, continue with cloud-only files
+    }
+  }
+
+  return cloudFiles;
+}
+
+async function listCloudFiles(imei: string): Promise<DddFileInfo[]> {
   const { data, error } = await supabase.storage
     .from("ddd-files")
     .list(imei, { sortBy: { column: "name", order: "asc" } });
@@ -31,15 +62,13 @@ export async function listDddFiles(
   if (error) throw new Error(error.message);
   if (!data) return [];
 
-  // In cloud storage mode, return all .ddd files for the IMEI folder.
-  // Time-window filtering is only relevant on the VPS backend where
-  // file timestamps match download times; in storage, upload times differ.
   return data
     .filter((f) => f.name.endsWith(".ddd"))
     .map((f) => ({
       name: f.name,
-      size: (f.metadata as Record<string, unknown>)?.size as number ?? 0,
+      size: ((f.metadata as Record<string, unknown>)?.size as number) ?? 0,
       modified_at: f.updated_at ?? "",
+      source: "cloud" as const,
     }));
 }
 
@@ -47,9 +76,13 @@ export async function listDddFiles(
 
 export async function downloadDddFile(
   imei: string,
-  fileName: string
+  fileName: string,
+  source?: "cloud" | "vps"
 ): Promise<ArrayBuffer> {
-  if (useApi) return apiDownloadDddFile(imei, fileName);
+  // If explicitly VPS or useApi-only mode
+  if (source === "vps" || (useApi && source !== "cloud")) {
+    return apiDownloadDddFile(imei, fileName);
+  }
 
   const { data, error } = await supabase.storage
     .from("ddd-files")
@@ -66,7 +99,9 @@ export async function downloadDddZip(
   after: string,
   before: string
 ): Promise<ArrayBuffer> {
-  if (useApi) return apiDownloadDddZip(imei, after, before);
+  if (useApi && !import.meta.env.VITE_SUPABASE_URL) {
+    return apiDownloadDddZip(imei, after, before);
+  }
 
   const files = await listDddFiles(imei, after, before);
   if (files.length === 0) throw new Error("Brak plików DDD");
@@ -74,8 +109,13 @@ export async function downloadDddZip(
   const zip = new JSZip();
 
   for (const f of files) {
-    const buf = await downloadDddFile(imei, f.name);
-    zip.file(f.name, buf);
+    // Files from VPS (driver cards) have source marker from listDddFiles
+    const fileWithSource = f as DddFileInfo & { source?: string };
+    const source = fileWithSource.source === "cloud" ? "cloud" : "vps";
+    const buf = await downloadDddFile(imei, f.name, source);
+    if (buf.byteLength > 0) {
+      zip.file(f.name, buf);
+    }
   }
 
   const blob = await zip.generateAsync({ type: "arraybuffer" });
