@@ -2239,11 +2239,12 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
             const word = view.getUint16(arrayStart + i * 2, false);
             if (word === 0x0000 || word === 0xFFFF) continue;
             const slot = (word >> 15) & 0x01;
+            const drivingStatus = (word >> 14) & 0x01;
             const cardInserted = ((word >> 13) & 0x01) === 0;
             const activity = (word >> 11) & 0x03;
             const minutes = word & 0x07FF;
             if (minutes >= 1440) continue;
-            activityWords.push({ slot, cardInserted, activity, minutes });
+            activityWords.push({ slot, drivingStatus, cardInserted, activity, minutes });
           }
         }
         break;
