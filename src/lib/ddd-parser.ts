@@ -944,7 +944,7 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
     }
 
     sectionsFound++;
-    console.log(`[DDD] Card TLV @${pos}: FID=0x${tagHigh.toString(16).padStart(4,'0')} type=${tagType} len=${len}`);
+    const sectionData = bytes.slice(pos + 5, pos + 5 + len);
     const sectionData = bytes.slice(pos + 5, pos + 5 + len);
 
     try {
