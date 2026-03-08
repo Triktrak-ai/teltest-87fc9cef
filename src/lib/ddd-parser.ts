@@ -2417,7 +2417,7 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
         if (recordSize === 2) {
           for (let i = 0; i < noOfRecords; i++) {
             const word = view.getUint16(arrayStart + i * 2, false);
-            if (word === 0x0000 || word === 0xFFFF) continue;
+            if (word === 0xFFFF) continue; // 0xFFFF = padding; 0x0000 is valid (slot0, single, break, min0)
             const slot = (word >> 15) & 0x01;
             const drivingStatus = (word >> 14) & 0x01;
             const cardInserted = ((word >> 13) & 0x01) === 0;
