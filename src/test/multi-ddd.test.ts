@@ -67,6 +67,13 @@ describe('Multi-file DDD merge with filename detection', () => {
     // Activities should be parsed from activities file (Gen2v2 TLV sections)
     expect(merged.activities.length).toBeGreaterThan(7);
 
+    // Regression: dayDistance values must NOT all be identical (was 768 km bug)
+    const distances = merged.activities.map(a => a.dayDistance);
+    const uniqueDistances = new Set(distances);
+    console.log(`  Unique dayDistance values: ${uniqueDistances.size} out of ${distances.length}`);
+    console.log(`  Sample distances: ${distances.slice(0, 10).join(', ')}`);
+    expect(uniqueDistances.size).toBeGreaterThan(1);
+
     // Speed should now have many more records from individual file parsing
     expect(merged.speedRecords.length).toBeGreaterThan(1000);
   });
