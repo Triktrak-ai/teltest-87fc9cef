@@ -803,8 +803,10 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
               result.activities = mergedActivities;
               result.warnings.push(...mergedWarnings);
               result.activityRejections.push(...mergedRejections);
+              result.borderCrossings.push(...allBorderCrossings);
+              result.loadUnloadOperations.push(...allLoadUnloads);
               const entryScore = mergedActivities.reduce((sum, d) => sum + d.entries.length, 0);
-              console.log(`[DDD] Activities strategy=per-chunk-RecordArray: ${mergedActivities.length} days from ${raChunksWithData} chunks (entries=${entryScore})`);
+              console.log(`[DDD] Activities strategy=per-chunk-RecordArray: ${mergedActivities.length} days from ${raChunksWithData} chunks (entries=${entryScore}), borders=${allBorderCrossings.length}, loads=${allLoadUnloads.length}`);
             }
           }
 
