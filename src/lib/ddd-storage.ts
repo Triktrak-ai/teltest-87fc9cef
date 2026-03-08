@@ -38,9 +38,11 @@ export async function listDddFiles(
   if (!hasDriverCard(cloudFiles) && API_BASE) {
     try {
       const vpsFiles = await apiListDddFiles(imei, after, before);
-      const vpsDriverCards = vpsFiles.filter((f) =>
-        DRIVER_CARD_PATTERNS.some((p) => f.name.toLowerCase().includes(p))
-      );
+      const vpsDriverCards = vpsFiles
+        .filter((f) =>
+          DRIVER_CARD_PATTERNS.some((p) => f.name.toLowerCase().includes(p))
+        )
+        .map((f) => ({ ...f, source: "vps" as const }));
       if (vpsDriverCards.length > 0) {
         return [...cloudFiles, ...vpsDriverCards];
       }
