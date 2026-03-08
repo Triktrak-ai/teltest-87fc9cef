@@ -305,7 +305,7 @@ export function mergeDddData(existing: DddFileData, incoming: DddFileData): DddF
     activityRejections: [...existing.activityRejections, ...incoming.activityRejections],
     fileSize: existing.fileSize + incoming.fileSize,
     bytesParsed: existing.bytesParsed + incoming.bytesParsed,
-    generation: mergeGeneration(existing.generation, incoming.generation),
+    generation: mergedGeneration,
     driverCard: incoming.driverCard ?? existing.driverCard,
     rawFileBuffers: [...existing.rawFileBuffers, ...incoming.rawFileBuffers],
   };
