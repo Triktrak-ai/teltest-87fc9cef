@@ -3336,8 +3336,8 @@ function parseDetailedSpeed(data: Uint8Array): SpeedRecord[] {
     }
   }
 
-  if (records.length > 50000) {
-    return records.slice(0, 50000);
+  if (records.length > 100000) {
+    return records.slice(0, 100000);
   }
   return records;
 }
