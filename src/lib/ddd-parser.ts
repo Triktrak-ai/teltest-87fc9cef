@@ -630,9 +630,9 @@ export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileDat
   result.bytesParsed = sections.reduce((sum, s) => sum + s.length + 4, 0);
 
   if (sections.some(s => s.tag >= 0x31 && s.tag <= 0x39)) {
-    result.generation = 'gen2';
+    result.generation = 'gen2v2';
   } else if (sections.some(s => s.tag >= 0x21 && s.tag <= 0x29)) {
-    result.generation = 'gen2';
+    result.generation = 'gen2v1';
   } else if (sections.some(s => s.tagHigh === 0x76)) {
     result.generation = 'gen1';
   }
