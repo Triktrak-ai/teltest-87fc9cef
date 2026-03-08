@@ -2457,7 +2457,8 @@ function parseActivitiesForward(data: Uint8Array): ActivityRecord[] {
         rawEntries.push({ slot, cardInserted, activity, minutes });
       }
 
-      r.position = recordStart + 4 + recordLength;
+      // recordLength includes the 4-byte header, so next record starts at recordStart + recordLength
+      r.position = recordStart + recordLength;
       const entries = decodeActivityEntries(rawEntries);
       records.push({ date, dailyPresenceCounter, dayDistance, entries });
     } catch {
