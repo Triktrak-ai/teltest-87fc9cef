@@ -211,14 +211,6 @@ export interface VehicleUsedRecord {
   odometerEnd: number;
 }
 
-export interface GnssPlaceAuthRecord {
-  timestamp: Date | null;
-  accuracy: number;
-  latitude: number;
-  longitude: number;
-  authStatus: number;
-}
-
 export interface CardPlaceRecord {
   entryTime: Date | null;
   dailyWorkPeriodCountry: string;
