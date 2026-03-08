@@ -2442,7 +2442,7 @@ function parseActivitiesForward(data: Uint8Array): ActivityRecord[] {
       const dayDistance = r.readUint16();
       if (dayDistance > 9999) break;
 
-      const activityChangeCount = Math.floor((recordLength - 8) / 2);
+      const activityChangeCount = Math.floor((recordLength - 12) / 2);
       if (activityChangeCount > 1440 || activityChangeCount < 0) break;
 
       const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
