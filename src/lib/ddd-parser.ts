@@ -2323,7 +2323,9 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
     if (!isValidTimestamp(ts)) continue;
 
     // Valid cyclic buffer found — traverse backward from newest
+    console.log(`[DDD] Cyclic header found: headerOffset=${headerOffset}, oldest=${oldestPtr}, newest=${newestPtr}, bodyLen=${bodyLen}, recLen=${recLen}, ts=${ts} (${new Date(ts*1000).toISOString()})`);
     const cyclicRecords = parseCyclicActivities(data, bodyStart, bodyLen, newestPtr);
+    console.log(`[DDD] Cyclic traversal result: ${cyclicRecords.length} records`);
     if (cyclicRecords.length > 0) return cyclicRecords;
   }
 
