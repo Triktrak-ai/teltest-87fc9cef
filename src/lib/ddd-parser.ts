@@ -642,6 +642,7 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
 
   // Extract TLV sections first — individual TRTP files may contain TLV-wrapped data
   const sections = extractSections(buffer, result.warnings);
+  sections.forEach(s => s.sourceFile = fileName);
   result.rawSections = sections;
 
   // For overview, events, and activities, try using TLV sections first
