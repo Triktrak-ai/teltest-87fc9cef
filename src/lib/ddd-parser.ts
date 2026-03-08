@@ -2232,7 +2232,38 @@ function parseVuActivitiesGen1Style(
 //   VuSpecificConditionRecord (type=0x09): specific condition records (skip)
 //   Signature (type=0x08): signature (skip)
 
-function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning[]): ActivityRecord[] {
+interface VuRecordArrayResult {
+  activities: ActivityRecord[];
+  borderCrossings: BorderCrossingRecord[];
+  loadUnloadOperations: LoadUnloadRecord[];
+}
+
+function parseGnssPlaceAuthRecord(data: Uint8Array, offset: number, view: DataView): GnssPlaceAuthRecord {
+  const ts = view.getUint32(offset, false);
+  const gnssAccuracy = data[offset + 4];
+  // GeoCoordinates: latitude (3B signed) + longitude (3B signed)
+  // 1/10 minute-of-arc encoding: value * 1/600 = degrees
+  const latRaw = (data[offset + 5] << 16) | (data[offset + 6] << 8) | data[offset + 7];
+  const lonRaw = (data[offset + 8] << 16) | (data[offset + 9] << 8) | data[offset + 10];
+  // Sign-extend 24-bit to 32-bit
+  const latSigned = latRaw & 0x800000 ? latRaw - 0x1000000 : latRaw;
+  const lonSigned = lonRaw & 0x800000 ? lonRaw - 0x1000000 : lonRaw;
+  const latitude = latSigned / 600;
+  const longitude = lonSigned / 600;
+  const authByte = data[offset + 11];
+  const authenticationStatus: GnssPlaceAuthRecord['authenticationStatus'] =
+    authByte === 0x01 ? 'authenticated' : authByte === 0x00 ? 'not_authenticated' : 'unknown';
+
+  return {
+    timestamp: isValidTimestamp(ts) ? new Date(ts * 1000) : null,
+    gnssAccuracy,
+    latitude: latRaw === 0x7FFFFF ? 0 : latitude,
+    longitude: lonRaw === 0x7FFFFF ? 0 : longitude,
+    authenticationStatus,
+  };
+}
+
+function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning[]): VuRecordArrayResult {
   const view = new DataView(toArrayBuffer(data));
   let pos = 0;
 
