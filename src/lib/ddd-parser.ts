@@ -1822,7 +1822,21 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
       continue;
     }
 
-    // Prefer structured parser; only fall back to raw scanner if structured finds nothing
+    // Strategy 1: VU RecordArray parser (Gen2/Gen2v2 — proper structure)
+    const vuRecordArrayParsed = parseVuActivitiesRecordArrays(data, warnings);
+    if (vuRecordArrayParsed.length > 0) {
+      for (const rec of vuRecordArrayParsed) {
+        const key = dayKey(rec.date);
+        const existing = byDay.get(key);
+        if (!existing || rec.entries.length > existing.entries.length) {
+          byDay.set(key, rec);
+        }
+      }
+      console.log(`[DDD] Activities section @${section.offset}: VU RecordArray parser found ${vuRecordArrayParsed.length} days`);
+      continue;
+    }
+
+    // Strategy 2: Cyclic buffer / forward scan (Card data or fallback)
     const structuredParsed = parseActivities(data);
     let allParsed = structuredParsed;
     let source = 'structured';
