@@ -2249,7 +2249,14 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
         }
         break;
 
-      // All other types: skip silently
+      // Known RecordArray types from TREP 32h (Activities) per Appendix 7:
+      // 0x0D — VuCardIWRecordArray (skip, parsed separately in Gen1 path)
+      // 0x1C — VuPlaceDailyWorkPeriodRecordArray (places, TODO: parse)
+      // 0x16 — VuGNSSADRecordArray (GNSS accumulated driving, TODO: parse)
+      // 0x09 — VuSpecificConditionRecordArray (specific conditions, skip)
+      // 0x22 — VuBorderCrossingRecordArray (border crossings, TODO: parse)
+      // 0x23 — VuLoadUnloadRecordArray (load/unload operations, TODO: parse)
+      // 0x08 — SignatureRecordArray (digital signature, skip)
       default:
         break;
     }
