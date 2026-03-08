@@ -2317,6 +2317,7 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
 
 type RawActivityWord = {
   slot: number;
+  drivingStatus: number; // bit 14: 0=SINGLE, 1=CREW
   cardInserted: boolean;
   activity: number;
   minutes: number;
