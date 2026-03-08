@@ -2382,7 +2382,7 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
   console.log(`[DDD] VU RecordArrays: ${dates.length} dates, ${odometers.length} odometers, ${activityWords.length} activity words`);
 
   if (dates.length === 0 || activityWords.length === 0) {
-    return [];
+    return { activities: [], borderCrossings, loadUnloadOperations };
   }
 
   // Split flat activity words into per-day groups.
