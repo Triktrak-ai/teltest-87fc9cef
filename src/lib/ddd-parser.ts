@@ -1112,28 +1112,22 @@ function parseCardEvents(data: Uint8Array): EventRecord[] {
   const events: EventRecord[] = [];
   const r = new BinaryReader(toArrayBuffer(data));
 
-  // CardEventRecord: eventType(1B) + beginTime(4B) + endTime(4B) + VRN(15B) = 24B
-  while (r.remaining >= 9) {
+  // CardEventRecord: eventType(1B) + beginTime(4B) + endTime(4B) + VRI(15B) = 24B
+  while (r.remaining >= 24) {
     const eventType = r.readUint8();
     const eventBeginTime = r.readTimestamp();
     const eventEndTime = r.readTimestamp();
+    const vri = readVehicleRegistration(r);
 
     // Skip empty records
     if (!eventBeginTime && !eventEndTime) continue;
     if (eventType > 0x3F) continue;
 
-    // Try reading VRN if available
-    let cardNumberDriverSlot = '';
-    if (r.remaining >= 15) {
-      const nationByte = r.readUint8();
-      cardNumberDriverSlot = r.readString(14);
-    }
-
     events.push({
       eventType,
       eventTypeName: EVENT_TYPE_NAMES[eventType] || `Nieznany (0x${eventType.toString(16)})`,
       eventBeginTime, eventEndTime,
-      cardNumberDriverSlot,
+      cardNumberDriverSlot: vri.vrn,
       cardNumberCodriverSlot: '',
     });
   }
@@ -1145,25 +1139,21 @@ function parseCardFaults(data: Uint8Array): FaultRecord[] {
   const faults: FaultRecord[] = [];
   const r = new BinaryReader(toArrayBuffer(data));
 
-  while (r.remaining >= 9) {
+  // CardFaultRecord: faultType(1B) + beginTime(4B) + endTime(4B) + VRI(15B) = 24B
+  while (r.remaining >= 24) {
     const faultType = r.readUint8();
     const faultBeginTime = r.readTimestamp();
     const faultEndTime = r.readTimestamp();
+    const vri = readVehicleRegistration(r);
 
     if (!faultBeginTime && !faultEndTime) continue;
     if (faultType > 0x07) continue;
-
-    let cardNumberDriverSlot = '';
-    if (r.remaining >= 15) {
-      const nationByte = r.readUint8();
-      cardNumberDriverSlot = r.readString(14);
-    }
 
     faults.push({
       faultType,
       faultTypeName: FAULT_TYPE_NAMES[faultType] || `Nieznany (0x${faultType.toString(16)})`,
       faultBeginTime, faultEndTime,
-      cardNumberDriverSlot,
+      cardNumberDriverSlot: vri.vrn,
       cardNumberCodriverSlot: '',
     });
   }
