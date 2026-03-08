@@ -1183,8 +1183,9 @@ function parseCardPlaces(data: Uint8Array, isGen2v2: boolean): CardPlaceRecord[]
 
     let gnssPlace: GnssPlaceAuthRecord | undefined;
     if (isGen2v2 && r.remaining >= 12) {
-      const gnssData = new Uint8Array(data.buffer, data.byteOffset + r.offset, 12);
-      const gnssView = new DataView(data.buffer, data.byteOffset + r.offset, 12);
+      const curPos = r.position;
+      const gnssData = new Uint8Array(data.buffer, data.byteOffset + curPos, 12);
+      const gnssView = new DataView(data.buffer, data.byteOffset + curPos, 12);
       gnssPlace = parseGnssPlaceAuthRecord(gnssData, 0, gnssView);
       r.skip(12);
     }
