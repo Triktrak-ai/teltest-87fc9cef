@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Radio, Upload, FileText, ArrowLeft, Activity, AlertTriangle, Wrench, Gauge, Search, X, Plus, CreditCard, MapPin, Car, Loader2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { Radio, Upload, FileText, ArrowLeft, Activity, AlertTriangle, Wrench, Gauge, Search, X, Plus, CreditCard, MapPin, Car, Loader2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Globe, Package } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -362,6 +362,12 @@ const DddReader = () => {
               {data.speedRecords.length > 0 && (
                 <TabsTrigger value="speed"><Gauge className="mr-1.5 h-3.5 w-3.5" />Prędkość ({data.speedRecords.length})</TabsTrigger>
               )}
+              {data.borderCrossings.length > 0 && (
+                <TabsTrigger value="borders"><Globe className="mr-1.5 h-3.5 w-3.5" />Granice ({data.borderCrossings.length})</TabsTrigger>
+              )}
+              {data.loadUnloadOperations.length > 0 && (
+                <TabsTrigger value="loadunload"><Package className="mr-1.5 h-3.5 w-3.5" />Załadunki ({data.loadUnloadOperations.length})</TabsTrigger>
+              )}
               {data.driverCard && (
                 <TabsTrigger value="drivercard"><CreditCard className="mr-1.5 h-3.5 w-3.5" />Karta kierowcy</TabsTrigger>
               )}
@@ -474,7 +480,99 @@ const DddReader = () => {
               </div>
             </TabsContent>
 
-            {/* Technical Data */}
+            {/* Border Crossings */}
+            <TabsContent value="borders">
+              {data.borderCrossings.length > 0 ? (
+                <Card>
+                  <CardHeader className="py-3"><CardTitle className="text-sm">Przekroczenia granic ({data.borderCrossings.length})</CardTitle></CardHeader>
+                  <CardContent className="p-0">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Data</TableHead>
+                          <TableHead>Kraj opuszczany</TableHead>
+                          <TableHead>Kraj wjeżdżany</TableHead>
+                          <TableHead>Pozycja</TableHead>
+                          <TableHead>Przebieg</TableHead>
+                          <TableHead>GNSS</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {data.borderCrossings.map((bc, i) => (
+                          <TableRow key={i}>
+                            <TableCell className="text-xs">{formatDateTime(bc.gnssPlace.timestamp)}</TableCell>
+                            <TableCell className="text-xs font-semibold">{bc.countryLeft}</TableCell>
+                            <TableCell className="text-xs font-semibold">{bc.countryEntered}</TableCell>
+                            <TableCell className="text-xs font-mono">
+                              {bc.gnssPlace.latitude !== 0 || bc.gnssPlace.longitude !== 0
+                                ? `${bc.gnssPlace.latitude.toFixed(4)}°, ${bc.gnssPlace.longitude.toFixed(4)}°`
+                                : '—'}
+                            </TableCell>
+                            <TableCell className="text-xs">{bc.vehicleOdometerValue < 0xFFFFFF ? `${bc.vehicleOdometerValue} km` : '—'}</TableCell>
+                            <TableCell className="text-xs">
+                              <Badge variant={bc.gnssPlace.authenticationStatus === 'authenticated' ? 'default' : 'outline'} className="text-[10px]">
+                                {bc.gnssPlace.authenticationStatus === 'authenticated' ? '✓ Auth' : bc.gnssPlace.authenticationStatus === 'not_authenticated' ? '✗ No auth' : '?'}
+                              </Badge>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
+              ) : (
+                <Card><CardContent className="py-8 text-center text-muted-foreground">Brak danych o przekroczeniach granic</CardContent></Card>
+              )}
+            </TabsContent>
+
+            {/* Load/Unload Operations */}
+            <TabsContent value="loadunload">
+              {data.loadUnloadOperations.length > 0 ? (
+                <Card>
+                  <CardHeader className="py-3"><CardTitle className="text-sm">Operacje załadunku/rozładunku ({data.loadUnloadOperations.length})</CardTitle></CardHeader>
+                  <CardContent className="p-0">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Data</TableHead>
+                          <TableHead>Typ operacji</TableHead>
+                          <TableHead>Pozycja</TableHead>
+                          <TableHead>Przebieg</TableHead>
+                          <TableHead>GNSS</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {data.loadUnloadOperations.map((lu, i) => {
+                          const opLabel = lu.operationType === 'loading' ? 'Załadunek' :
+                            lu.operationType === 'unloading' ? 'Rozładunek' :
+                            lu.operationType === 'simultaneous' ? 'Załadunek/Rozładunek' : 'Nieznany';
+                          return (
+                            <TableRow key={i}>
+                              <TableCell className="text-xs">{formatDateTime(lu.gnssPlace.timestamp)}</TableCell>
+                              <TableCell className="text-xs font-semibold">{opLabel}</TableCell>
+                              <TableCell className="text-xs font-mono">
+                                {lu.gnssPlace.latitude !== 0 || lu.gnssPlace.longitude !== 0
+                                  ? `${lu.gnssPlace.latitude.toFixed(4)}°, ${lu.gnssPlace.longitude.toFixed(4)}°`
+                                  : '—'}
+                              </TableCell>
+                              <TableCell className="text-xs">{lu.vehicleOdometerValue < 0xFFFFFF ? `${lu.vehicleOdometerValue} km` : '—'}</TableCell>
+                              <TableCell className="text-xs">
+                                <Badge variant={lu.gnssPlace.authenticationStatus === 'authenticated' ? 'default' : 'outline'} className="text-[10px]">
+                                  {lu.gnssPlace.authenticationStatus === 'authenticated' ? '✓ Auth' : lu.gnssPlace.authenticationStatus === 'not_authenticated' ? '✗ No auth' : '?'}
+                                </Badge>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
+              ) : (
+                <Card><CardContent className="py-8 text-center text-muted-foreground">Brak danych o załadunkach/rozładunkach</CardContent></Card>
+              )}
+            </TabsContent>
+
             <TabsContent value="technical">
               {data.technicalData ? (
                 <div className="space-y-4">

@@ -145,6 +145,29 @@ export interface SpeedRecord {
   speed: number;
 }
 
+// ─── Gen2v2 border crossing and load/unload types ────────────────────────────
+
+export interface GnssPlaceAuthRecord {
+  timestamp: Date | null;
+  gnssAccuracy: number;
+  latitude: number;
+  longitude: number;
+  authenticationStatus: 'authenticated' | 'not_authenticated' | 'unknown';
+}
+
+export interface BorderCrossingRecord {
+  countryLeft: string;
+  countryEntered: string;
+  gnssPlace: GnssPlaceAuthRecord;
+  vehicleOdometerValue: number;
+}
+
+export interface LoadUnloadRecord {
+  operationType: 'loading' | 'unloading' | 'simultaneous' | 'unknown';
+  gnssPlace: GnssPlaceAuthRecord;
+  vehicleOdometerValue: number;
+}
+
 export interface DddSection {
   tag: number;
   tagHigh: number;
@@ -217,6 +240,8 @@ export interface DddFileData {
   faults: FaultRecord[];
   technicalData: TechnicalData | null;
   speedRecords: SpeedRecord[];
+  borderCrossings: BorderCrossingRecord[];
+  loadUnloadOperations: LoadUnloadRecord[];
   rawSections: DddSection[];
   warnings: ParserWarning[];
   activityRejections: ActivityRejection[];
@@ -268,6 +293,8 @@ export function mergeDddData(existing: DddFileData, incoming: DddFileData): DddF
     speedRecords: [...existing.speedRecords, ...incoming.speedRecords].sort(
       (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
     ),
+    borderCrossings: [...existing.borderCrossings, ...incoming.borderCrossings],
+    loadUnloadOperations: [...existing.loadUnloadOperations, ...incoming.loadUnloadOperations],
     rawSections: [...existing.rawSections, ...incoming.rawSections],
     warnings: [...existing.warnings, ...incoming.warnings],
     activityRejections: [...existing.activityRejections, ...incoming.activityRejections],
@@ -291,7 +318,8 @@ function deduplicateActivities(records: ActivityRecord[]): ActivityRecord[] {
 export function emptyDddData(): DddFileData {
   return {
     overview: null, activities: [], events: [], faults: [],
-    technicalData: null, speedRecords: [], rawSections: [],
+    technicalData: null, speedRecords: [], borderCrossings: [], loadUnloadOperations: [],
+    rawSections: [],
     warnings: [], activityRejections: [], fileSize: 0, bytesParsed: 0, generation: 'unknown',
     driverCard: null, rawFileBuffers: [],
   };
@@ -573,6 +601,8 @@ export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileDat
     faults: [],
     technicalData: null,
     speedRecords: [],
+    borderCrossings: [],
+    loadUnloadOperations: [],
     rawSections: [],
     warnings,
     activityRejections: [],
@@ -716,13 +746,17 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
           // Parse each chunk through RecordArray parser independently
           let allRecordArrayDays: ActivityRecord[] = [];
           let raChunksWithData = 0;
+          const allBorderCrossings: BorderCrossingRecord[] = [];
+          const allLoadUnloads: LoadUnloadRecord[] = [];
           for (const chunk of chunksToParse) {
             const chunkWarnings: ParserWarning[] = [];
             const parsed = parseVuActivitiesRecordArrays(chunk, chunkWarnings);
-            if (parsed.length > 0) {
-              allRecordArrayDays.push(...parsed);
+            if (parsed.activities.length > 0) {
+              allRecordArrayDays.push(...parsed.activities);
               raChunksWithData++;
             }
+            allBorderCrossings.push(...parsed.borderCrossings);
+            allLoadUnloads.push(...parsed.loadUnloadOperations);
           }
 
           if (allRecordArrayDays.length > 0) {
@@ -769,8 +803,10 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
               result.activities = mergedActivities;
               result.warnings.push(...mergedWarnings);
               result.activityRejections.push(...mergedRejections);
+              result.borderCrossings.push(...allBorderCrossings);
+              result.loadUnloadOperations.push(...allLoadUnloads);
               const entryScore = mergedActivities.reduce((sum, d) => sum + d.entries.length, 0);
-              console.log(`[DDD] Activities strategy=per-chunk-RecordArray: ${mergedActivities.length} days from ${raChunksWithData} chunks (entries=${entryScore})`);
+              console.log(`[DDD] Activities strategy=per-chunk-RecordArray: ${mergedActivities.length} days from ${raChunksWithData} chunks (entries=${entryScore}), borders=${allBorderCrossings.length}, loads=${allLoadUnloads.length}`);
             }
           }
 
@@ -1892,15 +1928,15 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
 
     // Strategy 1: VU RecordArray parser (Gen2/Gen2v2 — proper structure)
     const vuRecordArrayParsed = parseVuActivitiesRecordArrays(data, warnings);
-    if (vuRecordArrayParsed.length > 0) {
-      for (const rec of vuRecordArrayParsed) {
+    if (vuRecordArrayParsed.activities.length > 0) {
+      for (const rec of vuRecordArrayParsed.activities) {
         const key = dayKey(rec.date);
         const existing = byDay.get(key);
         if (!existing || rec.entries.length > existing.entries.length) {
           byDay.set(key, rec);
         }
       }
-      console.log(`[DDD] Activities section @${section.offset}: VU RecordArray parser found ${vuRecordArrayParsed.length} days`);
+      console.log(`[DDD] Activities section @${section.offset}: VU RecordArray parser found ${vuRecordArrayParsed.activities.length} days`);
       continue;
     }
 
@@ -2202,13 +2238,46 @@ function parseVuActivitiesGen1Style(
 //   VuSpecificConditionRecord (type=0x09): specific condition records (skip)
 //   Signature (type=0x08): signature (skip)
 
-function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning[]): ActivityRecord[] {
+interface VuRecordArrayResult {
+  activities: ActivityRecord[];
+  borderCrossings: BorderCrossingRecord[];
+  loadUnloadOperations: LoadUnloadRecord[];
+}
+
+function parseGnssPlaceAuthRecord(data: Uint8Array, offset: number, view: DataView): GnssPlaceAuthRecord {
+  const ts = view.getUint32(offset, false);
+  const gnssAccuracy = data[offset + 4];
+  // GeoCoordinates: latitude (3B signed) + longitude (3B signed)
+  // 1/10 minute-of-arc encoding: value * 1/600 = degrees
+  const latRaw = (data[offset + 5] << 16) | (data[offset + 6] << 8) | data[offset + 7];
+  const lonRaw = (data[offset + 8] << 16) | (data[offset + 9] << 8) | data[offset + 10];
+  // Sign-extend 24-bit to 32-bit
+  const latSigned = latRaw & 0x800000 ? latRaw - 0x1000000 : latRaw;
+  const lonSigned = lonRaw & 0x800000 ? lonRaw - 0x1000000 : lonRaw;
+  const latitude = latSigned / 600;
+  const longitude = lonSigned / 600;
+  const authByte = data[offset + 11];
+  const authenticationStatus: GnssPlaceAuthRecord['authenticationStatus'] =
+    authByte === 0x01 ? 'authenticated' : authByte === 0x00 ? 'not_authenticated' : 'unknown';
+
+  return {
+    timestamp: isValidTimestamp(ts) ? new Date(ts * 1000) : null,
+    gnssAccuracy,
+    latitude: latRaw === 0x7FFFFF ? 0 : latitude,
+    longitude: lonRaw === 0x7FFFFF ? 0 : longitude,
+    authenticationStatus,
+  };
+}
+
+function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning[]): VuRecordArrayResult {
   const view = new DataView(toArrayBuffer(data));
   let pos = 0;
 
   const dates: Date[] = [];
   const odometers: number[] = [];
   const activityWords: RawActivityWord[] = [];
+  const borderCrossings: BorderCrossingRecord[] = [];
+  const loadUnloadOperations: LoadUnloadRecord[] = [];
   const recordArraysFound: string[] = [];
 
   // Parse sequential RecordArrays
@@ -2275,9 +2344,39 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
       // 0x1C — VuPlaceDailyWorkPeriodRecordArray (places, TODO: parse)
       // 0x16 — VuGNSSADRecordArray (GNSS accumulated driving, TODO: parse)
       // 0x09 — VuSpecificConditionRecordArray (specific conditions, skip)
-      // 0x22 — VuBorderCrossingRecordArray (border crossings, TODO: parse)
-      // 0x23 — VuLoadUnloadRecordArray (load/unload operations, TODO: parse)
       // 0x08 — SignatureRecordArray (digital signature, skip)
+
+      case 0x22: // VuBorderCrossingRecordArray (55B per record)
+        for (let i = 0; i < noOfRecords; i++) {
+          const recOff = arrayStart + i * recordSize;
+          if (recOff + 17 > data.length) break; // minimum: 2B countries + 12B gnssPlace + 3B odo
+          const countryLeft = NATION_CODES[data[recOff]] || `0x${data[recOff].toString(16)}`;
+          const countryEntered = NATION_CODES[data[recOff + 1]] || `0x${data[recOff + 1].toString(16)}`;
+          const gnssPlace = parseGnssPlaceAuthRecord(data, recOff + 2, view);
+          const odoOff = recOff + 14;
+          const vehicleOdometerValue = (data[odoOff] << 16) | (data[odoOff + 1] << 8) | data[odoOff + 2];
+          // Skip records with no valid timestamp
+          if (!gnssPlace.timestamp) continue;
+          borderCrossings.push({ countryLeft, countryEntered, gnssPlace, vehicleOdometerValue });
+        }
+        break;
+
+      case 0x23: // VuLoadUnloadRecordArray (58B per record)
+        for (let i = 0; i < noOfRecords; i++) {
+          const recOff = arrayStart + i * recordSize;
+          if (recOff + 16 > data.length) break; // minimum: 1B type + 12B gnssPlace + 3B odo
+          const opByte = data[recOff];
+          const operationType: LoadUnloadRecord['operationType'] =
+            opByte === 0x01 ? 'loading' : opByte === 0x02 ? 'unloading' :
+            opByte === 0x03 ? 'simultaneous' : 'unknown';
+          const gnssPlace = parseGnssPlaceAuthRecord(data, recOff + 1, view);
+          const odoOff = recOff + 13;
+          const vehicleOdometerValue = (data[odoOff] << 16) | (data[odoOff + 1] << 8) | data[odoOff + 2];
+          if (!gnssPlace.timestamp) continue;
+          loadUnloadOperations.push({ operationType, gnssPlace, vehicleOdometerValue });
+        }
+        break;
+
       default:
         break;
     }
@@ -2289,7 +2388,7 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
   console.log(`[DDD] VU RecordArrays: ${dates.length} dates, ${odometers.length} odometers, ${activityWords.length} activity words`);
 
   if (dates.length === 0 || activityWords.length === 0) {
-    return [];
+    return { activities: [], borderCrossings, loadUnloadOperations };
   }
 
   // Split flat activity words into per-day groups.
@@ -2342,7 +2441,7 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
   }
 
   console.log(`[DDD] VU RecordArrays: parsed ${records.length} activity days`);
-  return records;
+  return { activities: records, borderCrossings, loadUnloadOperations };
 }
 
 type RawActivityWord = {
