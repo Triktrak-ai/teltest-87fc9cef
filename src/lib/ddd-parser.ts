@@ -1875,39 +1875,7 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
         rawEntries.push({ slot, cardInserted, activity, minutes });
       }
 
-      const statusMap: Record<number, ActivityChangeEntry['status']> = {
-        0: 'break', 1: 'availability', 2: 'work', 3: 'driving',
-      };
-
-      // Second pass: compute timeTo per entry using next entry with SAME slot
-      const entries: ActivityChangeEntry[] = [];
-      for (let i = 0; i < rawEntries.length; i++) {
-        const e = rawEntries[i];
-        // Find next entry with same slot to determine end time
-        let nextMinutes = 1440;
-        for (let j = i + 1; j < rawEntries.length; j++) {
-          if (rawEntries[j].slot === e.slot) {
-            nextMinutes = rawEntries[j].minutes;
-            break;
-          }
-        }
-        // Skip entries where timeFrom >= timeTo (zero or negative duration)
-        if (e.minutes >= nextMinutes) continue;
-
-        const hFrom = Math.floor(e.minutes / 60);
-        const mFrom = e.minutes % 60;
-        const hTo = Math.floor(Math.min(nextMinutes, 1440) / 60);
-        const mTo = Math.min(nextMinutes, 1440) % 60;
-
-        entries.push({
-          slot: e.slot === 0 ? 'driver' : 'codriver',
-          status: statusMap[e.activity] || 'unknown',
-          cardInserted: e.cardInserted,
-          minutes: e.minutes,
-          timeFrom: `${hFrom.toString().padStart(2, '0')}:${mFrom.toString().padStart(2, '0')}`,
-          timeTo: `${hTo.toString().padStart(2, '0')}:${mTo.toString().padStart(2, '0')}`,
-        });
-      }
+      const entries = decodeActivityEntries(rawEntries);
 
       // Validate: total minutes per slot must not exceed 1440
       const slotTotals = { 0: 0, 1: 0 };
