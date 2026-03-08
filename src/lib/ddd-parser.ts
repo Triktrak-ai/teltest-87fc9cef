@@ -1702,15 +1702,17 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
       continue;
     }
 
-    // Parse both strategies and keep the richer result (avoids single false-positive day)
+    // Prefer structured parser; only fall back to raw scanner if structured finds nothing
     const structuredParsed = parseActivities(data);
-    const rawParsed = parseRawActivitiesFile(data, []);
-
     let allParsed = structuredParsed;
     let source = 'structured';
-    if (rawParsed.length > structuredParsed.length) {
-      allParsed = rawParsed;
-      source = 'raw-scanner';
+
+    if (structuredParsed.length === 0) {
+      const rawParsed = parseRawActivitiesFile(data, []);
+      if (rawParsed.length > 0) {
+        allParsed = rawParsed;
+        source = 'raw-scanner';
+      }
     }
 
     if (allParsed.length === 0) {
