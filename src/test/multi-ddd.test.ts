@@ -74,6 +74,11 @@ describe('Multi-file DDD merge with filename detection', () => {
     console.log(`  Sample distances: ${distances.slice(0, 10).join(', ')}`);
     expect(uniqueDistances.size).toBeGreaterThan(3);
 
+    // Regression: no record should have the known 768 km artifact from chunk boundary corruption
+    const artifact768 = distances.filter(d => d === 768);
+    console.log(`  Records with dayDistance=768: ${artifact768.length}`);
+    expect(artifact768.length).toBe(0);
+
     // Speed should now have many more records from individual file parsing
     expect(merged.speedRecords.length).toBeGreaterThan(1000);
   });
