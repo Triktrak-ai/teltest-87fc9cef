@@ -29,6 +29,7 @@ export interface ActivityRecord {
 
 export interface ActivityChangeEntry {
   slot: 'driver' | 'codriver';
+  drivingStatus: 'single' | 'crew';
   status: 'break' | 'availability' | 'work' | 'driving' | 'unknown';
   cardInserted: boolean;
   minutes: number;
