@@ -31,11 +31,38 @@ function useLatestSessionsWithLogs() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("sessions")
-        .select("id, imei, log_uploaded, created_at")
+        .select("id, imei, log_uploaded, created_at, files_downloaded, total_files, status")
         .eq("log_uploaded", true)
         .order("created_at", { ascending: false });
       if (error) throw error;
       return data;
+    },
+    refetchInterval: 30000,
+  });
+}
+
+function useLatestSessionFileCounts() {
+  return useQuery({
+    queryKey: ["latest-session-file-counts"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("sessions")
+        .select("imei, files_downloaded, total_files, status")
+        .in("status", ["completed", "partial"])
+        .order("completed_at", { ascending: false });
+      if (error) throw error;
+      // Group by IMEI, take latest
+      const map = new Map<string, { files_downloaded: number; total_files: number; status: string }>();
+      for (const s of data ?? []) {
+        if (!map.has(s.imei)) {
+          map.set(s.imei, {
+            files_downloaded: s.files_downloaded ?? 0,
+            total_files: s.total_files ?? 0,
+            status: s.status,
+          });
+        }
+      }
+      return map;
     },
     refetchInterval: 30000,
   });
@@ -84,6 +111,7 @@ interface DownloadScheduleTableProps {
 export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProps) {
   const { getOwner, isAdmin } = useImeiOwners();
   const { data: schedules, isLoading, resetSchedule } = useDownloadSchedule();
+  const { data: fileCounts } = useLatestSessionFileCounts();
   const { data: sessionsWithLogs } = useLatestSessionsWithLogs();
   const { isDevMode, toggle: toggleDevMode } = useDevMode();
   const [resetting, setResetting] = useState<string | null>(null);
@@ -242,6 +270,7 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
               {isAdmin && <th className="px-5 py-3">Użytkownik</th>}
               <th className="px-5 py-3">IMEI</th>
               <th className="px-5 py-3">Status</th>
+              <th className="px-5 py-3">Pliki</th>
               <th className="px-5 py-3">Ostatnie pobranie</th>
               <th className="px-5 py-3">Ostatnia próba</th>
               <th className="px-5 py-3">Próby dziś</th>
@@ -254,7 +283,7 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
               <>
                 {[1, 2, 3].map((i) => (
                   <tr key={i} className="border-b border-border/50">
-                    {Array.from({ length: 7 }).map((_, j) => (
+                {Array.from({ length: isAdmin ? 9 : 8 }).map((_, j) => (
                       <td key={j} className="px-5 py-3"><Skeleton className="h-4 w-full" /></td>
                     ))}
                   </tr>
@@ -263,7 +292,7 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
             )}
             {!isLoading && filtered && filtered.length === 0 && (
               <tr>
-                <td colSpan={isAdmin ? 8 : 7} className="px-5 py-12 text-center text-muted-foreground">
+                <td colSpan={isAdmin ? 9 : 8} className="px-5 py-12 text-center text-muted-foreground">
                   Brak wpisów w harmonogramie
                 </td>
               </tr>
@@ -281,6 +310,16 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
                   <td className="px-5 py-3 font-mono text-xs">{s.imei}</td>
                   <td className="px-5 py-3">
                     <Badge variant="outline" className={sc.className}>{sc.label}</Badge>
+                  </td>
+                  <td className="px-5 py-3 font-mono text-xs">
+                    {(() => {
+                      const fc = fileCounts?.get(s.imei);
+                      if (!fc) return "—";
+                      const downloaded = fc.files_downloaded;
+                      const total = fc.total_files;
+                      const color = downloaded >= total ? "text-success" : downloaded >= 5 ? "text-warning" : "text-destructive";
+                      return <span className={color}>{downloaded}/{total}</span>;
+                    })()}
                   </td>
                   <td className="px-5 py-3 text-xs text-muted-foreground">
                     {s.last_success_at ? new Date(s.last_success_at).toLocaleString("pl-PL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"}
