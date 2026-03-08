@@ -216,6 +216,7 @@ export interface CardPlaceRecord {
   dailyWorkPeriodCountry: string;
   dailyWorkPeriodRegion: string;
   vehicleOdometerValue: number;
+  gnssPlace?: GnssPlaceAuthRecord;
 }
 
 export interface DriverCardData {
@@ -998,9 +999,12 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
           break;
 
         case 0x0506: // CardPlaceDailyWorkPeriod (Gen1) 
+          result.places = parseCardPlaces(sectionData, false);
+          console.log(`[DDD] Driver card places (Gen1): ${result.places.length}`);
+          break;
         case 0x0526: // CardPlaceAuthDailyWorkPeriod (Gen2v2)
-          result.places = parseCardPlaces(sectionData);
-          console.log(`[DDD] Driver card places: ${result.places.length}`);
+          result.places = parseCardPlaces(sectionData, true);
+          console.log(`[DDD] Driver card places (Gen2v2): ${result.places.length}`);
           break;
       }
     } catch (e) {
@@ -1161,19 +1165,30 @@ function parseCardFaults(data: Uint8Array): FaultRecord[] {
   return faults;
 }
 
-function parseCardPlaces(data: Uint8Array): CardPlaceRecord[] {
+function parseCardPlaces(data: Uint8Array, isGen2v2: boolean): CardPlaceRecord[] {
   const places: CardPlaceRecord[] = [];
   const r = new BinaryReader(toArrayBuffer(data));
 
   // Skip pointer (2B)
   if (r.remaining >= 2) r.readUint16();
 
-  // CardPlaceDailyWorkPeriod record: entryTime(4B) + country(1B) + region(1B) + odometer(3B) = 9B
-  while (r.remaining >= 9) {
+  // Gen1: 9B, Gen2v2: 21B (9B base + 12B GnssPlaceAuthRecord)
+  const recordSize = isGen2v2 ? 21 : 9;
+
+  while (r.remaining >= recordSize) {
     const entryTime = r.readTimestamp();
     const countryByte = r.readUint8();
     const regionByte = r.readUint8();
     const vehicleOdometerValue = (r.readUint8() << 16) | r.readUint16();
+
+    let gnssPlace: GnssPlaceAuthRecord | undefined;
+    if (isGen2v2 && r.remaining >= 12) {
+      const curPos = r.position;
+      const gnssData = new Uint8Array(data.buffer, data.byteOffset + curPos, 12);
+      const gnssView = new DataView(data.buffer, data.byteOffset + curPos, 12);
+      gnssPlace = parseGnssPlaceAuthRecord(gnssData, 0, gnssView);
+      r.skip(12);
+    }
 
     if (!entryTime) continue;
 
@@ -1182,6 +1197,7 @@ function parseCardPlaces(data: Uint8Array): CardPlaceRecord[] {
       dailyWorkPeriodCountry: NATION_CODES[countryByte] || `0x${countryByte.toString(16)}`,
       dailyWorkPeriodRegion: `0x${regionByte.toString(16).padStart(2, '0')}`,
       vehicleOdometerValue,
+      gnssPlace,
     });
   }
 
