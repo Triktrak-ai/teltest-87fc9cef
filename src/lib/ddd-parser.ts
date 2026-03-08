@@ -2300,27 +2300,30 @@ function parseCyclicActivities(
     const prevRecLen = (recBytes[0] << 8) | recBytes[1];
     const recLen = (recBytes[2] << 8) | recBytes[3];
 
-    if (recLen < 8 || recLen > 3000) break;
+    if (recLen < 12 || recLen > 3000) break;
     if (prevRecLen > 3000) break;
 
-    // Read full record body (recordLength bytes after the 4-byte prefix)
-    const body = readCyclicBytes(data, bodyStart, bodyLen, (pos + 4) % bodyLen, recLen);
+    // recordLength INCLUDES the 4-byte header (prevLen+recLen) per tachograph-go reference
+    // Read full record as recLen bytes from pos (header is inside)
+    const body = readCyclicBytes(data, bodyStart, bodyLen, pos, recLen);
     if (!body) break;
 
-    const tsValue = (body[0] << 24) | (body[1] << 16) | (body[2] << 8) | body[3];
+    // date at offset 4, counter at 8, distance at 10
+    const tsValue = (body[4] << 24) | (body[5] << 16) | (body[6] << 8) | body[7];
     if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) break;
     const date = new Date(tsValue * 1000);
 
     // DailyPresenceCounter — BCD encoded (2 bytes)
-    const dailyPresenceCounter = decodeBcd(body[4]) * 100 + decodeBcd(body[5]);
-    const dayDistance = (body[6] << 8) | body[7];
+    const dailyPresenceCounter = decodeBcd(body[8]) * 100 + decodeBcd(body[9]);
+    const dayDistance = (body[10] << 8) | body[11];
     if (dayDistance > 9999) break;
 
-    const activityChangeCount = Math.floor((recLen - 8) / 2);
+    // N = (totalLength - 4(header) - 4(date) - 2(counter) - 2(distance)) / 2
+    const activityChangeCount = Math.floor((recLen - 12) / 2);
     const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
 
     for (let i = 0; i < activityChangeCount; i++) {
-      const off = 8 + i * 2;
+      const off = 12 + i * 2;
       if (off + 1 >= body.length) break;
       const word = (body[off] << 8) | body[off + 1];
       // Skip padding/invalid entries per tachograph-go reference
