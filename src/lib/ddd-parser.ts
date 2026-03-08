@@ -293,6 +293,8 @@ export function mergeDddData(existing: DddFileData, incoming: DddFileData): DddF
     speedRecords: [...existing.speedRecords, ...incoming.speedRecords].sort(
       (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
     ),
+    borderCrossings: [...existing.borderCrossings, ...incoming.borderCrossings],
+    loadUnloadOperations: [...existing.loadUnloadOperations, ...incoming.loadUnloadOperations],
     rawSections: [...existing.rawSections, ...incoming.rawSections],
     warnings: [...existing.warnings, ...incoming.warnings],
     activityRejections: [...existing.activityRejections, ...incoming.activityRejections],
