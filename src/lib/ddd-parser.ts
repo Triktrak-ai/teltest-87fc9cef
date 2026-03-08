@@ -2302,7 +2302,8 @@ function parseVuActivitiesGen1Style(
       const [hF, mF] = e.timeFrom.split(':').map(Number);
       const [hT, mT] = e.timeTo.split(':').map(Number);
       const dur = (hT * 60 + mT) - (hF * 60 + mF);
-      if (dur <= 0 || dur > 1440) { valid = false; break; }
+      if (dur < 0 || dur > 1440) { valid = false; break; }
+      if (dur === 0) continue; // Zero-duration = multiple changes in same minute, legal
       slotTotals[e.slot] += dur;
     }
     if (!valid || slotTotals.driver > 1440 || slotTotals.codriver > 1440) continue;
