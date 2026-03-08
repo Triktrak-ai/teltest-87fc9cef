@@ -283,7 +283,7 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
               <>
                 {[1, 2, 3].map((i) => (
                   <tr key={i} className="border-b border-border/50">
-                    {Array.from({ length: 7 }).map((_, j) => (
+                {Array.from({ length: isAdmin ? 9 : 8 }).map((_, j) => (
                       <td key={j} className="px-5 py-3"><Skeleton className="h-4 w-full" /></td>
                     ))}
                   </tr>
