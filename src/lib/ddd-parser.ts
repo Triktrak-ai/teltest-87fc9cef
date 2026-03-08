@@ -1804,6 +1804,9 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
 
   let records = Array.from(byDay.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
 
+  // Remove artifact records with repeated dayDistance (e.g. 768 km from chunk boundary corruption)
+  records = filterDistanceArtifacts(records);
+
   // Keep only recent window relative to the densest date cluster
   // (more robust than anchoring to a single outlier max timestamp).
   if (records.length > 0) {
