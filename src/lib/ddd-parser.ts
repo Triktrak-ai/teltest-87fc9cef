@@ -2244,7 +2244,7 @@ function parseVuActivitiesGen1Style(
   const rawWords: RawActivityWord[] = [];
   for (let i = 0; i < noOfChanges; i++) {
     const word = view.getUint16(changesStart + i * 2, false);
-    if (word === 0x0000 || word === 0xFFFF) continue;
+    if (word === 0xFFFF) continue; // 0xFFFF = padding/sentinel; 0x0000 is valid start-of-day
     const slot = (word >> 15) & 0x01;          // bit 15: 0=driver, 1=codriver
     const drivingStatus = (word >> 14) & 0x01; // bit 14: 0=SINGLE, 1=CREW
     const cardInserted = ((word >> 13) & 0x01) === 0; // bit 13: 0=inserted, 1=not inserted
