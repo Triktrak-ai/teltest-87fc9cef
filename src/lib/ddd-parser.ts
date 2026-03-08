@@ -1007,9 +1007,12 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
           break;
 
         case 0x0506: // CardPlaceDailyWorkPeriod (Gen1) 
+          result.places = parseCardPlaces(sectionData, false);
+          console.log(`[DDD] Driver card places (Gen1): ${result.places.length}`);
+          break;
         case 0x0526: // CardPlaceAuthDailyWorkPeriod (Gen2v2)
-          result.places = parseCardPlaces(sectionData);
-          console.log(`[DDD] Driver card places: ${result.places.length}`);
+          result.places = parseCardPlaces(sectionData, true);
+          console.log(`[DDD] Driver card places (Gen2v2): ${result.places.length}`);
           break;
       }
     } catch (e) {
