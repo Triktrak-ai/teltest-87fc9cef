@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useImeiOwners } from "@/hooks/useImeiOwners";
 import { useNavigate } from "react-router-dom";
-import { apiListDddFiles, apiDownloadDddFile, apiDownloadDddZip } from "@/lib/api-client";
+import { downloadDddZip } from "@/lib/ddd-storage";
 import { toast } from "sonner";
 
 type SessionStatus = Session["status"];
@@ -271,7 +271,7 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
       const after = s.started_at ?? s.created_at ?? "";
       const before = s.completed_at ?? s.last_activity ?? "";
       toast.info("Przygotowywanie archiwum ZIP…");
-      const buf = await apiDownloadDddZip(s.imei, after, before);
+      const buf = await downloadDddZip(s.imei, after, before);
       if (!buf || buf.byteLength === 0) { toast.error("Pobrano pusty plik"); return; }
       const blob = new Blob([buf], { type: "application/zip" });
       const url = URL.createObjectURL(blob);
