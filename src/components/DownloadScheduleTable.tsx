@@ -152,7 +152,7 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
   }, []);
 
   const handleDownloadDdd = useCallback(async (s: DownloadSchedule) => {
-    const tw = getTimeWindow(s);
+    const tw = await getTimeWindow(s);
     if (!tw) { toast.error("Brak daty ostatniego pobrania"); return; }
     try {
       toast.info("Przygotowywanie archiwum ZIP…");
