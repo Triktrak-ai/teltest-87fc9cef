@@ -31,11 +31,38 @@ function useLatestSessionsWithLogs() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("sessions")
-        .select("id, imei, log_uploaded, created_at")
+        .select("id, imei, log_uploaded, created_at, files_downloaded, total_files, status")
         .eq("log_uploaded", true)
         .order("created_at", { ascending: false });
       if (error) throw error;
       return data;
+    },
+    refetchInterval: 30000,
+  });
+}
+
+function useLatestSessionFileCounts() {
+  return useQuery({
+    queryKey: ["latest-session-file-counts"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("sessions")
+        .select("imei, files_downloaded, total_files, status")
+        .in("status", ["completed", "partial"])
+        .order("completed_at", { ascending: false });
+      if (error) throw error;
+      // Group by IMEI, take latest
+      const map = new Map<string, { files_downloaded: number; total_files: number; status: string }>();
+      for (const s of data ?? []) {
+        if (!map.has(s.imei)) {
+          map.set(s.imei, {
+            files_downloaded: s.files_downloaded ?? 0,
+            total_files: s.total_files ?? 0,
+            status: s.status,
+          });
+        }
+      }
+      return map;
     },
     refetchInterval: 30000,
   });
