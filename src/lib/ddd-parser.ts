@@ -145,6 +145,29 @@ export interface SpeedRecord {
   speed: number;
 }
 
+// ─── Gen2v2 border crossing and load/unload types ────────────────────────────
+
+export interface GnssPlaceAuthRecord {
+  timestamp: Date | null;
+  gnssAccuracy: number;
+  latitude: number;
+  longitude: number;
+  authenticationStatus: 'authenticated' | 'not_authenticated' | 'unknown';
+}
+
+export interface BorderCrossingRecord {
+  countryLeft: string;
+  countryEntered: string;
+  gnssPlace: GnssPlaceAuthRecord;
+  vehicleOdometerValue: number;
+}
+
+export interface LoadUnloadRecord {
+  operationType: 'loading' | 'unloading' | 'simultaneous' | 'unknown';
+  gnssPlace: GnssPlaceAuthRecord;
+  vehicleOdometerValue: number;
+}
+
 export interface DddSection {
   tag: number;
   tagHigh: number;
