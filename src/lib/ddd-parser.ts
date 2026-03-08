@@ -692,76 +692,97 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         console.log(`[DDD] Activities: ${sections.length} total sections, ${actSections.length} activity sections, tags: [${sections.map(s => '0x' + s.tag.toString(16)).join(', ')}]`);
 
         if (actSections.length > 0) {
-          // ── Concatenated strategy (primary) ──
-          // VU Activities download contains sequential RecordArrays
-          // per Annex 1C: DateOfDayDownloaded, OdometerValueMidnight,
-          // VuCardIWRecordArray, VuActivityDailyRecordArray, etc.
-          // 
-          // IMPORTANT: The file may have pre-TLV data (before first 0x76 tag)
-          // containing the START of the RecordArray structure (headers + first records).
-          // The TLV chunks contain CONTINUATION data. We must prepend pre-TLV bytes.
+          // ── Per-chunk RecordArray strategy (primary) ──
+          // Each TLV chunk (and the pre-TLV header) contains its OWN set of
+          // RecordArrays for different days. Parse each independently and merge.
           const firstTlvOffset = actSections[0].offset;
-          const preTlvData = firstTlvOffset > 0 ? bytes.slice(0, firstTlvOffset) : new Uint8Array(0);
+          const preTlvData = firstTlvOffset > 0 ? bytes.slice(0, firstTlvOffset) : null;
 
-          const strippedChunks: Uint8Array[] = [];
-          if (preTlvData.length > 0) {
-            strippedChunks.push(preTlvData);
-            console.log(`[DDD] Activities: prepending ${preTlvData.length}B pre-TLV data (before first 0x76 at offset ${firstTlvOffset})`);
+          const chunksToParse: Uint8Array[] = [];
+          if (preTlvData && preTlvData.length > 5) {
+            chunksToParse.push(preTlvData);
+            console.log(`[DDD] Activities: including ${preTlvData.length}B pre-TLV data`);
           }
           for (let ci = 0; ci < actSections.length; ci++) {
             const s = actSections[ci];
             const stripped = stripTrtpPrefix(s.data, ci === 0);
-            strippedChunks.push(stripped);
-          }
-          const totalLen = strippedChunks.reduce((sum, c) => sum + c.length, 0);
-          const mergedData = new Uint8Array(totalLen);
-          let writePos = 0;
-          for (const chunk of strippedChunks) {
-            mergedData.set(chunk, writePos);
-            writePos += chunk.length;
+            chunksToParse.push(stripped);
           }
 
-          // Validate cyclic header integrity after concatenation
-          if (mergedData.length >= 4) {
-            const mdView = new DataView(mergedData.buffer, mergedData.byteOffset, mergedData.byteLength);
-            const oldP = mdView.getUint16(0, false);
-            const newP = mdView.getUint16(2, false);
-            const bodyLen = mergedData.length - 4;
-            if (oldP >= bodyLen || newP >= bodyLen) {
-              console.warn(`[DDD] Cyclic header pointers out of bounds after concatenation: oldest=${oldP}, newest=${newP}, bodyLen=${bodyLen}`);
+          // Parse each chunk through RecordArray parser independently
+          let allRecordArrayDays: ActivityRecord[] = [];
+          let raChunksWithData = 0;
+          for (const chunk of chunksToParse) {
+            const chunkWarnings: ParserWarning[] = [];
+            const parsed = parseVuActivitiesRecordArrays(chunk, chunkWarnings);
+            if (parsed.length > 0) {
+              allRecordArrayDays.push(...parsed);
+              raChunksWithData++;
             }
           }
 
-          const mergedSection: DddSection = {
-            tag: actSections[0].tag,
-            tagHigh: actSections[0].tagHigh,
-            offset: actSections[0].offset,
-            length: mergedData.length,
-            data: mergedData,
-          };
+          if (allRecordArrayDays.length > 0) {
+            // Deduplicate by day
+            const byDayLocal = new Map<string, ActivityRecord>();
+            for (const rec of allRecordArrayDays) {
+              const key = `${rec.date.getUTCFullYear()}-${rec.date.getUTCMonth()}-${rec.date.getUTCDate()}`;
+              const existing = byDayLocal.get(key);
+              if (!existing || rec.entries.length > existing.entries.length) {
+                byDayLocal.set(key, rec);
+              }
+            }
+            const mergedWarnings: ParserWarning[] = [];
+            const mergedRejections: ActivityRejection[] = [];
+            let mergedActivities = Array.from(byDayLocal.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
 
-          const mergedWarnings: ParserWarning[] = [];
-          const mergedRejections: ActivityRejection[] = [];
-          const mergedActivities = parseActivitiesFromSections([mergedSection], mergedWarnings, mergedRejections, downloadDate);
-          const mergedEntryScore = mergedActivities.reduce((sum, d) => sum + d.entries.length, 0);
+            // Apply download date filter
+            if (downloadDate) {
+              const upperTs = Math.floor(downloadDate.getTime() / 1000);
+              const lowerTs = upperTs - 90 * 86400;
+              mergedActivities = mergedActivities.filter(r => {
+                const ts = Math.floor(r.date.getTime() / 1000);
+                return ts >= lowerTs && ts <= upperTs;
+              });
+            }
 
-          if (mergedActivities.length > 0) {
-            result.activities = mergedActivities;
-            result.warnings.push(...mergedWarnings);
-            result.activityRejections.push(...mergedRejections);
-            console.log(`[DDD] Activities strategy=concatenated: ${result.activities.length} days (entries=${mergedEntryScore}, payload=${mergedData.length} B)`);
-          } else {
-            // ── Per-section fallback (last resort) ──
-            // Only used if concatenated strategy yields 0 results
-            const perSectionWarnings: ParserWarning[] = [];
-            const perSectionRejections: ActivityRejection[] = [];
-            const perSectionActivities = parseActivitiesFromSections(actSections, perSectionWarnings, perSectionRejections, downloadDate);
-            if (perSectionActivities.length > 0) {
-              result.activities = perSectionActivities;
-              result.warnings.push(...perSectionWarnings);
-              result.activityRejections.push(...perSectionRejections);
-              const perSectionEntryScore = perSectionActivities.reduce((sum, d) => sum + d.entries.length, 0);
-              console.log(`[DDD] Activities strategy=per-section (fallback): ${result.activities.length} days (entries=${perSectionEntryScore})`);
+            if (mergedActivities.length > 0) {
+              result.activities = mergedActivities;
+              result.warnings.push(...mergedWarnings);
+              result.activityRejections.push(...mergedRejections);
+              const entryScore = mergedActivities.reduce((sum, d) => sum + d.entries.length, 0);
+              console.log(`[DDD] Activities strategy=per-chunk-RecordArray: ${mergedActivities.length} days from ${raChunksWithData} chunks (entries=${entryScore})`);
+            }
+          }
+
+          // ── Concatenated fallback ──
+          if (result.activities.length === 0) {
+            const strippedChunks: Uint8Array[] = [];
+            for (let ci = 0; ci < actSections.length; ci++) {
+              const s = actSections[ci];
+              const stripped = stripTrtpPrefix(s.data, ci === 0);
+              strippedChunks.push(stripped);
+            }
+            const totalLen = strippedChunks.reduce((sum, c) => sum + c.length, 0);
+            const mergedData = new Uint8Array(totalLen);
+            let writePos = 0;
+            for (const chunk of strippedChunks) {
+              mergedData.set(chunk, writePos);
+              writePos += chunk.length;
+            }
+
+            const mergedSection: DddSection = {
+              tag: actSections[0].tag, tagHigh: actSections[0].tagHigh,
+              offset: actSections[0].offset, length: mergedData.length, data: mergedData,
+            };
+            const mergedWarnings: ParserWarning[] = [];
+            const mergedRejections: ActivityRejection[] = [];
+            const mergedActivities = parseActivitiesFromSections([mergedSection], mergedWarnings, mergedRejections, downloadDate);
+
+            if (mergedActivities.length > 0) {
+              result.activities = mergedActivities;
+              result.warnings.push(...mergedWarnings);
+              result.activityRejections.push(...mergedRejections);
+              console.log(`[DDD] Activities strategy=concatenated-fallback: ${result.activities.length} days`);
             }
           }
         }
