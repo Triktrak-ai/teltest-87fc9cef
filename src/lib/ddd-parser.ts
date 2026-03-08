@@ -601,6 +601,8 @@ export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileDat
     faults: [],
     technicalData: null,
     speedRecords: [],
+    borderCrossings: [],
+    loadUnloadOperations: [],
     rawSections: [],
     warnings,
     activityRejections: [],
