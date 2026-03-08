@@ -544,6 +544,21 @@ function selectDenseTimestampAnchor(values: number[], windowSeconds = 90 * 86400
   return best;
 }
 
+/**
+ * Extract download date from DDD filename.
+ * Format: {IMEI}_{type}_{YYYYMMDD}_{HHMMSS}.ddd
+ * Returns Date or null if not parseable.
+ */
+function extractDownloadDate(fileName?: string): Date | null {
+  if (!fileName) return null;
+  const match = fileName.match(/_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})\.ddd$/i);
+  if (!match) return null;
+  const [, y, m, d, hh, mm, ss] = match;
+  const date = new Date(Date.UTC(+y, +m - 1, +d, +hh, +mm, +ss));
+  if (isNaN(date.getTime())) return null;
+  return date;
+}
+
 // ─── Main parser ─────────────────────────────────────────────────────────────
 
 export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileData {
