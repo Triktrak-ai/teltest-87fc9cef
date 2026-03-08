@@ -185,13 +185,16 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
     try {
       toast.info("Przygotowywanie archiwum ZIP…");
       const buf = await downloadDddZip(s.imei, tw.after, tw.before);
+      if (!buf || buf.byteLength === 0) { toast.error("Pobrano pusty plik"); return; }
       const blob = new Blob([buf], { type: "application/zip" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = `${s.imei}_ddd.zip`;
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
       toast.success("Pobrano archiwum ZIP");
     } catch (err) {
       toast.error(`Błąd pobierania: ${err instanceof Error ? err.message : String(err)}`);
