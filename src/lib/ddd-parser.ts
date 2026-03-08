@@ -247,7 +247,7 @@ export interface DddFileData {
   activityRejections: ActivityRejection[];
   fileSize: number;
   bytesParsed: number;
-  generation: 'gen1' | 'gen2' | 'unknown';
+  generation: 'gen1' | 'gen2' | 'gen2v1' | 'gen2v2' | 'unknown';
   driverCard: DriverCardData | null;
   rawFileBuffers: RawFileBuffer[];
 }
@@ -284,6 +284,11 @@ export function mergeDddData(existing: DddFileData, incoming: DddFileData): DddF
     }
   }
 
+  // Prefer the most specific generation: gen2v2 > gen2v1 > gen2 > gen1 > unknown
+  const genPriority: Record<string, number> = { unknown: 0, gen1: 1, gen2: 2, gen2v1: 3, gen2v2: 4 };
+  const mergedGeneration = (genPriority[incoming.generation] || 0) >= (genPriority[existing.generation] || 0)
+    ? incoming.generation : existing.generation;
+
   return {
     overview,
     activities: deduplicateActivities([...existing.activities, ...incoming.activities]),
@@ -300,7 +305,7 @@ export function mergeDddData(existing: DddFileData, incoming: DddFileData): DddF
     activityRejections: [...existing.activityRejections, ...incoming.activityRejections],
     fileSize: existing.fileSize + incoming.fileSize,
     bytesParsed: existing.bytesParsed + incoming.bytesParsed,
-    generation: incoming.generation !== 'unknown' ? incoming.generation : existing.generation,
+    generation: mergedGeneration,
     driverCard: incoming.driverCard ?? existing.driverCard,
     rawFileBuffers: [...existing.rawFileBuffers, ...incoming.rawFileBuffers],
   };
@@ -630,9 +635,9 @@ export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileDat
   result.bytesParsed = sections.reduce((sum, s) => sum + s.length + 4, 0);
 
   if (sections.some(s => s.tag >= 0x31 && s.tag <= 0x39)) {
-    result.generation = 'gen2';
+    result.generation = 'gen2v2';
   } else if (sections.some(s => s.tag >= 0x21 && s.tag <= 0x29)) {
-    result.generation = 'gen2';
+    result.generation = 'gen2v1';
   } else if (sections.some(s => s.tagHigh === 0x76)) {
     result.generation = 'gen1';
   }
@@ -667,7 +672,6 @@ export function parseDddFile(buffer: ArrayBuffer, fileName?: string): DddFileDat
 
 function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, result: DddFileData): DddFileData {
   const bytes = new Uint8Array(buffer);
-  result.generation = 'gen2'; // Individual files from TRTP are typically Gen2/Gen2v2
   const fileName = result.rawFileBuffers?.[0]?.fileName;
   const downloadDate = extractDownloadDate(fileName);
 
@@ -675,6 +679,15 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
   const sections = extractSections(buffer, result.warnings);
   sections.forEach(s => s.sourceFile = fileName);
   result.rawSections = sections;
+
+  // Determine generation from TLV tags if available
+  if (sections.some(s => s.tag >= 0x31 && s.tag <= 0x39)) {
+    result.generation = 'gen2v2';
+  } else if (sections.some(s => s.tag >= 0x21 && s.tag <= 0x29)) {
+    result.generation = 'gen2v1';
+  } else {
+    result.generation = 'gen2'; // fallback for individual TRTP files without clear tag ranges
+  }
 
   // For overview, events, and activities, try using TLV sections first
   if (fileType === 'overview' && sections.length > 0) {
@@ -854,9 +867,16 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         result.overview = parseRawOverviewFile(bytes, result.warnings);
         result.bytesParsed = buffer.byteLength;
         break;
-      case 'driver_card':
-        result.driverCard = parseDriverCardFile(bytes, result.warnings);
+      case 'driver_card': {
+        const cardResult = parseDriverCardFile(bytes, result.warnings);
+        result.driverCard = cardResult.card;
+        if (cardResult.detectedGeneration) {
+          result.generation = cardResult.detectedGeneration;
+          console.log(`[DDD] Card cardStructureVersion → ${cardResult.detectedGeneration}`);
+        }
         result.bytesParsed = buffer.byteLength;
+        break;
+      }
         break;
     }
   } catch (e) {
@@ -869,7 +889,12 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
 
 // ─── Driver Card file parser ─────────────────────────────────────────────────
 
-function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): DriverCardData {
+interface DriverCardParseResult {
+  card: DriverCardData;
+  detectedGeneration: 'gen2v1' | 'gen2v2' | null;
+}
+
+function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): DriverCardParseResult {
   const result: DriverCardData = {
     identification: null,
     activities: [],
@@ -878,6 +903,7 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
     faults: [],
     places: [],
   };
+  let detectedGeneration: 'gen2v1' | 'gen2v2' | null = null;
 
   // Driver card files use 3-byte tags + 2-byte length TLV structure
   // Per Annex 1C Appendix 2 §4.1-4.2:
@@ -916,6 +942,22 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
 
     try {
       switch (tagHigh) {
+        case 0x0501: {
+          // EF Application_Identification — contains cardStructureVersion
+          // Structure: typeOfTachographCardId(2B) + cardStructureVersion(2B) + ...
+          // cardStructureVersion: {01 00} = Gen2v1, {01 01} = Gen2v2
+          if (sectionData.length >= 4) {
+            const csvMajor = sectionData[2];
+            const csvMinor = sectionData[3];
+            console.log(`[DDD] EF Application_Identification (0501h): cardStructureVersion=${csvMajor}.${csvMinor}`);
+            if (csvMajor === 0x01 && csvMinor === 0x01) {
+              detectedGeneration = 'gen2v2';
+            } else if (csvMajor === 0x01 && csvMinor === 0x00) {
+              detectedGeneration = 'gen2v1';
+            }
+          }
+          break;
+        }
         case 0x0520: // CardIdentificationAndDriverCardHolderIdentification
           result.identification = parseCardIdentification(sectionData);
           console.log(`[DDD] Driver card identification: ${result.identification?.cardNumber}`);
@@ -960,7 +1002,7 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
     tryPatternScanDriverCard(bytes, result, warnings);
   }
 
-  return result;
+  return { card: result, detectedGeneration };
 }
 
 function parseCardIdentification(data: Uint8Array): DriverCardIdentification {

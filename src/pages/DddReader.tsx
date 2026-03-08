@@ -398,7 +398,9 @@ const DddReader = () => {
                 <Card>
                   <CardContent className="py-4">
                     <p className="text-xs text-muted-foreground">Generacja</p>
-                    <Badge variant="outline" className="mt-1">{data.generation.toUpperCase()}</Badge>
+                    <Badge variant="outline" className="mt-1">
+                      {{ gen1: 'Gen 1', gen2: 'Gen 2', gen2v1: 'Gen 2v1', gen2v2: 'Gen 2v2', unknown: 'Nieznana' }[data.generation] || data.generation.toUpperCase()}
+                    </Badge>
                   </CardContent>
                 </Card>
                 <Card>
