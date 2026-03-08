@@ -2271,7 +2271,7 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
     const newestAbsPos = bodyStart + newestPtr;
     if (newestAbsPos + 12 > data.length) continue;
     const recLen = view.getUint16(newestAbsPos + 2, false);
-    if (recLen < 8 || recLen > 3000) continue;
+    if (recLen < 12 || recLen > 3000) continue;
     const ts = view.getUint32(newestAbsPos + 4, false);
     if (!isValidTimestamp(ts)) continue;
 
