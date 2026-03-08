@@ -693,12 +693,21 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
 
         if (actSections.length > 0) {
           // ── Concatenated strategy (primary) ──
-          // VU Activities download (0x76 0x32) contains sequential RecordArrays
+          // VU Activities download contains sequential RecordArrays
           // per Annex 1C: DateOfDayDownloaded, OdometerValueMidnight,
           // VuCardIWRecordArray, VuActivityDailyRecordArray, etc.
-          // We concatenate ALL chunks (stripping TRTP), then extract only
-          // VuActivityDailyRecordArray data using RecordArray-aware parsing.
+          // 
+          // IMPORTANT: The file may have pre-TLV data (before first 0x76 tag)
+          // containing the START of the RecordArray structure (headers + first records).
+          // The TLV chunks contain CONTINUATION data. We must prepend pre-TLV bytes.
+          const firstTlvOffset = actSections[0].offset;
+          const preTlvData = firstTlvOffset > 0 ? bytes.slice(0, firstTlvOffset) : new Uint8Array(0);
+
           const strippedChunks: Uint8Array[] = [];
+          if (preTlvData.length > 0) {
+            strippedChunks.push(preTlvData);
+            console.log(`[DDD] Activities: prepending ${preTlvData.length}B pre-TLV data (before first 0x76 at offset ${firstTlvOffset})`);
+          }
           for (let ci = 0; ci < actSections.length; ci++) {
             const s = actSections[ci];
             const stripped = stripTrtpPrefix(s.data, ci === 0);
