@@ -1836,6 +1836,21 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
       continue;
     }
 
+    // Strategy 1.5: Gen1-style VU parser (generation locking — Gen1 card in Gen2v2 VU)
+    // Data inside 0x76 0x32 tag uses Gen1 flat format: TimeReal + Odo + CardIW + ActivityChanges
+    const gen1Parsed = parseVuActivitiesGen1Style(data, warnings, downloadDate);
+    if (gen1Parsed.length > 0) {
+      for (const rec of gen1Parsed) {
+        const key = dayKey(rec.date);
+        const existing = byDay.get(key);
+        if (!existing || rec.entries.length > existing.entries.length) {
+          byDay.set(key, rec);
+        }
+      }
+      console.log(`[DDD] Activities section @${section.offset}: Gen1-style VU parser found ${gen1Parsed.length} days`);
+      continue;
+    }
+
     // Strategy 2: Cyclic buffer / forward scan (Card data or fallback)
     const structuredParsed = parseActivities(data);
     let allParsed = structuredParsed;
