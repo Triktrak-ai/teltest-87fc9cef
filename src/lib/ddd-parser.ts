@@ -1716,19 +1716,12 @@ function filterDistanceArtifacts(records: ActivityRecord[]): ActivityRecord[] {
     runStart = i;
   }
   
-  // Pass 2: Known artifact values — if a specific distance appears ≥3 times total,
-  // it's almost certainly a boundary corruption artifact (real trucks rarely have
-  // exactly the same distance on 3+ different days).
-  const KNOWN_ARTIFACTS = [768, 256, 512, 1024, 1280, 1536]; // common 0x0N00 patterns
-  const distCounts = new Map<number, number>();
-  for (const rec of records) {
-    distCounts.set(rec.dayDistance, (distCounts.get(rec.dayDistance) || 0) + 1);
-  }
-  for (const artifactVal of KNOWN_ARTIFACTS) {
-    if ((distCounts.get(artifactVal) || 0) >= 3) {
-      for (let i = 0; i < records.length; i++) {
-        if (records[i].dayDistance === artifactVal) dominated.add(i);
-      }
+  // Pass 2: The value 768 (0x0300) is a specific known artifact from TRTP headers
+  // (05 00 03 00 01 pattern). If it appears ≥3 times, remove all occurrences.
+  const count768 = records.filter(r => r.dayDistance === 768).length;
+  if (count768 >= 3) {
+    for (let i = 0; i < records.length; i++) {
+      if (records[i].dayDistance === 768) dominated.add(i);
     }
   }
   
