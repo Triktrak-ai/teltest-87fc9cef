@@ -1553,6 +1553,16 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
   // Gen2v2 events file uses RecordArray format:
   // arrayType(1B) + recordSize(2B) + noOfRecords(2B) = 5B header, then records
   // Multiple RecordArrays concatenated for different event/fault types.
+  //
+  // Known RecordArray types from TREP 33h (Appendix 7, type 2.120):
+  //   0x15 (21) — VuEventRecordArray (general events)
+  //   0x18 (24) — VuFaultRecordArray (faults)
+  //   0x1A (26) — VuOverSpeedingControlDataRecordArray
+  //   0x1B (27) — VuOverSpeedingEventRecordArray
+  //   0x1E (30) — VuTimeAdjustmentRecordArray
+  const FAULT_ARRAY_TYPES = new Set([0x18]);
+  const EVENT_ARRAY_TYPES = new Set([0x15, 0x1A, 0x1B, 0x1E]);
+
   const view = new DataView(toArrayBuffer(bytes));
   let pos = 0;
   let parsedRecordArrays = 0;
@@ -1566,6 +1576,7 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
     if (recordSize >= 10 && recordSize <= 200 && noOfRecords >= 0 && noOfRecords <= 100 &&
         pos + 5 + recordSize * noOfRecords <= bytes.length) {
       const arrayEnd = pos + 5 + recordSize * noOfRecords;
+      const isFaultArray = FAULT_ARRAY_TYPES.has(arrayType);
 
       for (let i = 0; i < noOfRecords; i++) {
         const recStart = pos + 5 + i * recordSize;
@@ -1600,16 +1611,23 @@ function parseRawEventsFile(bytes: Uint8Array, warnings: ParserWarning[]): { eve
           cardNumberCodriverSlot = '';
         }
 
-        // Determine if this is an event or fault based on type ranges
-        const isFault = (eventType >= 0x00 && eventType <= 0x07 && arrayType >= 0x18) ? false : false;
-
-        events.push({
-          eventType,
-          eventTypeName: EVENT_TYPE_NAMES[eventType] || `Zdarzenie 0x${eventType.toString(16)}`,
-          eventBeginTime, eventEndTime,
-          cardNumberDriverSlot,
-          cardNumberCodriverSlot,
-        });
+        if (isFaultArray) {
+          faults.push({
+            faultType: eventType,
+            faultTypeName: FAULT_TYPE_NAMES[eventType] || `Usterka 0x${eventType.toString(16)}`,
+            faultBeginTime: eventBeginTime, faultEndTime: eventEndTime,
+            cardNumberDriverSlot,
+            cardNumberCodriverSlot,
+          });
+        } else {
+          events.push({
+            eventType,
+            eventTypeName: EVENT_TYPE_NAMES[eventType] || `Zdarzenie 0x${eventType.toString(16)}`,
+            eventBeginTime, eventEndTime,
+            cardNumberDriverSlot,
+            cardNumberCodriverSlot,
+          });
+        }
       }
 
       pos = arrayEnd;
