@@ -891,6 +891,7 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
     faults: [],
     places: [],
   };
+  let detectedGeneration: 'gen2v1' | 'gen2v2' | null = null;
 
   // Driver card files use 3-byte tags + 2-byte length TLV structure
   // Per Annex 1C Appendix 2 §4.1-4.2:
