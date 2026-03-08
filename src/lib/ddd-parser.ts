@@ -1789,7 +1789,7 @@ function filterDistanceArtifacts(records: ActivityRecord[]): ActivityRecord[] {
 
 // ─── TLV-section-based activities parser (Gen2/Gen2v2) ──────────────────────
 
-function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWarning[], rejections?: ActivityRejection[]): ActivityRecord[] {
+function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWarning[], rejections?: ActivityRejection[], downloadDate?: Date | null): ActivityRecord[] {
   const byDay = new Map<string, ActivityRecord>();
 
   const dayKey = (d: Date) => `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
