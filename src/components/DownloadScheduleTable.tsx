@@ -270,6 +270,7 @@ export function DownloadScheduleTable({ adminFilter }: DownloadScheduleTableProp
               {isAdmin && <th className="px-5 py-3">Użytkownik</th>}
               <th className="px-5 py-3">IMEI</th>
               <th className="px-5 py-3">Status</th>
+              <th className="px-5 py-3">Pliki</th>
               <th className="px-5 py-3">Ostatnie pobranie</th>
               <th className="px-5 py-3">Ostatnia próba</th>
               <th className="px-5 py-3">Próby dziś</th>
