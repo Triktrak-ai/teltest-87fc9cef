@@ -675,8 +675,13 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         console.log(`[DDD] Activities: ${sections.length} total sections, ${actSections.length} activity sections, tags: [${sections.map(s => '0x' + s.tag.toString(16)).join(', ')}]`);
 
         if (actSections.length > 0) {
-          // Some devices split one activities payload into multiple same-tag TLV chunks.
-          // Per Annex 1C file semantics we should parse the concatenated payload first.
+          // Strategy A (spec-aligned for segmented TRTP payloads):
+          // parse each 0x76 0x32/0x36 chunk independently and merge by day.
+          const perSectionWarnings: ParserWarning[] = [];
+          const perSectionRejections: ActivityRejection[] = [];
+          const perSectionActivities = parseActivitiesFromSections(actSections, perSectionWarnings, perSectionRejections);
+
+          // Strategy B: concatenate chunks and parse as one payload.
           const totalLen = actSections.reduce((sum, s) => sum + s.data.length, 0);
           const mergedData = new Uint8Array(totalLen);
           let writePos = 0;
@@ -693,13 +698,27 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
             data: mergedData,
           };
 
-          result.activities = parseActivitiesFromSections([mergedSection], result.warnings, result.activityRejections);
-          console.log(`[DDD] Activities from concatenated TLV payload (${mergedData.length} B): ${result.activities.length} days`);
+          const mergedWarnings: ParserWarning[] = [];
+          const mergedRejections: ActivityRejection[] = [];
+          const mergedActivities = parseActivitiesFromSections([mergedSection], mergedWarnings, mergedRejections);
 
-          // Fallback: if concatenated parse fails, try chunk-by-chunk parsing
-          if (result.activities.length === 0) {
-            result.activities = parseActivitiesFromSections(actSections, result.warnings, result.activityRejections);
-            console.log(`[DDD] Activities from per-section parsing: ${result.activities.length} days`);
+          const perSectionEntryScore = perSectionActivities.reduce((sum, d) => sum + d.entries.length, 0);
+          const mergedEntryScore = mergedActivities.reduce((sum, d) => sum + d.entries.length, 0);
+
+          const usePerSection =
+            perSectionActivities.length > mergedActivities.length ||
+            (perSectionActivities.length === mergedActivities.length && perSectionEntryScore > mergedEntryScore);
+
+          if (usePerSection) {
+            result.activities = perSectionActivities;
+            result.warnings.push(...perSectionWarnings);
+            result.activityRejections.push(...perSectionRejections);
+            console.log(`[DDD] Activities strategy=per-section: ${result.activities.length} days (entries=${perSectionEntryScore})`);
+          } else {
+            result.activities = mergedActivities;
+            result.warnings.push(...mergedWarnings);
+            result.activityRejections.push(...mergedRejections);
+            console.log(`[DDD] Activities strategy=concatenated: ${result.activities.length} days (entries=${mergedEntryScore}, payload=${mergedData.length} B)`);
           }
         }
 
@@ -1754,6 +1773,60 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
   return records;
 }
 
+// ─── Activities decode helpers ───────────────────────────────────────────────
+
+type RawActivityWord = {
+  slot: number;
+  cardInserted: boolean;
+  activity: number;
+  minutes: number;
+};
+
+function decodeActivityEntries(rawEntries: RawActivityWord[]): ActivityChangeEntry[] {
+  const statusMap: Record<number, ActivityChangeEntry['status']> = {
+    0: 'break',
+    1: 'availability',
+    2: 'work',
+    3: 'driving',
+  };
+
+  const entries: ActivityChangeEntry[] = [];
+
+  for (const slot of [0, 1] as const) {
+    // Annex 1C data can arrive newest→oldest in cyclic buffers.
+    // Normalize to chronological order per slot before computing durations.
+    const slotEntries = rawEntries
+      .filter((e) => e.slot === slot)
+      .sort((a, b) => a.minutes - b.minutes);
+
+    for (let i = 0; i < slotEntries.length; i++) {
+      const current = slotEntries[i];
+      const nextMinutes = slotEntries[i + 1]?.minutes ?? 1440;
+      if (current.minutes >= nextMinutes) continue;
+
+      const hFrom = Math.floor(current.minutes / 60);
+      const mFrom = current.minutes % 60;
+      const hTo = Math.floor(Math.min(nextMinutes, 1440) / 60);
+      const mTo = Math.min(nextMinutes, 1440) % 60;
+
+      entries.push({
+        slot: slot === 0 ? 'driver' : 'codriver',
+        status: statusMap[current.activity] || 'unknown',
+        cardInserted: current.cardInserted,
+        minutes: current.minutes,
+        timeFrom: `${hFrom.toString().padStart(2, '0')}:${mFrom.toString().padStart(2, '0')}`,
+        timeTo: `${hTo.toString().padStart(2, '0')}:${mTo.toString().padStart(2, '0')}`,
+      });
+    }
+  }
+
+  return entries.sort((a, b) => {
+    if (a.minutes !== b.minutes) return a.minutes - b.minutes;
+    if (a.slot === b.slot) return 0;
+    return a.slot === 'driver' ? -1 : 1;
+  });
+}
+
 // ─── Raw activities file parser ──────────────────────────────────────────────
 
 function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): ActivityRecord[] {
@@ -1802,39 +1875,7 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
         rawEntries.push({ slot, cardInserted, activity, minutes });
       }
 
-      const statusMap: Record<number, ActivityChangeEntry['status']> = {
-        0: 'break', 1: 'availability', 2: 'work', 3: 'driving',
-      };
-
-      // Second pass: compute timeTo per entry using next entry with SAME slot
-      const entries: ActivityChangeEntry[] = [];
-      for (let i = 0; i < rawEntries.length; i++) {
-        const e = rawEntries[i];
-        // Find next entry with same slot to determine end time
-        let nextMinutes = 1440;
-        for (let j = i + 1; j < rawEntries.length; j++) {
-          if (rawEntries[j].slot === e.slot) {
-            nextMinutes = rawEntries[j].minutes;
-            break;
-          }
-        }
-        // Skip entries where timeFrom >= timeTo (zero or negative duration)
-        if (e.minutes >= nextMinutes) continue;
-
-        const hFrom = Math.floor(e.minutes / 60);
-        const mFrom = e.minutes % 60;
-        const hTo = Math.floor(Math.min(nextMinutes, 1440) / 60);
-        const mTo = Math.min(nextMinutes, 1440) % 60;
-
-        entries.push({
-          slot: e.slot === 0 ? 'driver' : 'codriver',
-          status: statusMap[e.activity] || 'unknown',
-          cardInserted: e.cardInserted,
-          minutes: e.minutes,
-          timeFrom: `${hFrom.toString().padStart(2, '0')}:${mFrom.toString().padStart(2, '0')}`,
-          timeTo: `${hTo.toString().padStart(2, '0')}:${mTo.toString().padStart(2, '0')}`,
-        });
-      }
+      const entries = decodeActivityEntries(rawEntries);
 
       // Validate: total minutes per slot must not exceed 1440
       const slotTotals = { 0: 0, 1: 0 };
@@ -2180,37 +2221,7 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
         rawEntries.push({ slot, cardInserted, activity, minutes });
       }
 
-      const statusMap: Record<number, ActivityChangeEntry['status']> = {
-        0: 'break', 1: 'availability', 2: 'work', 3: 'driving',
-      };
-
-      // Second pass: compute timeTo per entry using next entry with SAME slot
-      const entries: ActivityChangeEntry[] = [];
-      for (let i = 0; i < rawEntries.length; i++) {
-        const e = rawEntries[i];
-        let nextMinutes = 1440;
-        for (let j = i + 1; j < rawEntries.length; j++) {
-          if (rawEntries[j].slot === e.slot) {
-            nextMinutes = rawEntries[j].minutes;
-            break;
-          }
-        }
-        if (e.minutes >= nextMinutes) continue;
-
-        const hFrom = Math.floor(e.minutes / 60);
-        const mFrom = e.minutes % 60;
-        const hTo = Math.floor(Math.min(nextMinutes, 1440) / 60);
-        const mTo = Math.min(nextMinutes, 1440) % 60;
-
-        entries.push({
-          slot: e.slot === 0 ? 'driver' : 'codriver',
-          status: statusMap[e.activity] || 'unknown',
-          cardInserted: e.cardInserted,
-          minutes: e.minutes,
-          timeFrom: `${hFrom.toString().padStart(2, '0')}:${mFrom.toString().padStart(2, '0')}`,
-          timeTo: `${hTo.toString().padStart(2, '0')}:${mTo.toString().padStart(2, '0')}`,
-        });
-      }
+      const entries = decodeActivityEntries(rawEntries);
 
       records.push({ date, dailyPresenceCounter, dayDistance, entries });
     } catch {
