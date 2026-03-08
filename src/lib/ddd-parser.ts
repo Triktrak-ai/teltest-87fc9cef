@@ -2252,7 +2252,8 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
   //   activityRecordDate    4B
   //   dailyPresenceCounter  2B   (BCD)
   //   activityDayDistance    2B
-  //   activityChangeInfo[N] N×2B  where N = (recordLength - 8) / 2
+   //   activityChangeInfo[N] N×2B  where N = (recordLength - 12) / 2
+   //   NOTE: recordLength INCLUDES the 4-byte header (prevLen + recLen)
 
   // Detect cyclic header: try common header offsets
   for (const headerOffset of [0, 5, 3, 8, 12]) {
@@ -2270,7 +2271,7 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
     const newestAbsPos = bodyStart + newestPtr;
     if (newestAbsPos + 12 > data.length) continue;
     const recLen = view.getUint16(newestAbsPos + 2, false);
-    if (recLen < 8 || recLen > 3000) continue;
+    if (recLen < 12 || recLen > 3000) continue;
     const ts = view.getUint32(newestAbsPos + 4, false);
     if (!isValidTimestamp(ts)) continue;
 
@@ -2299,27 +2300,30 @@ function parseCyclicActivities(
     const prevRecLen = (recBytes[0] << 8) | recBytes[1];
     const recLen = (recBytes[2] << 8) | recBytes[3];
 
-    if (recLen < 8 || recLen > 3000) break;
+    if (recLen < 12 || recLen > 3000) break;
     if (prevRecLen > 3000) break;
 
-    // Read full record body (recordLength bytes after the 4-byte prefix)
-    const body = readCyclicBytes(data, bodyStart, bodyLen, (pos + 4) % bodyLen, recLen);
+    // recordLength INCLUDES the 4-byte header (prevLen+recLen) per tachograph-go reference
+    // Read full record as recLen bytes from pos (header is inside)
+    const body = readCyclicBytes(data, bodyStart, bodyLen, pos, recLen);
     if (!body) break;
 
-    const tsValue = (body[0] << 24) | (body[1] << 16) | (body[2] << 8) | body[3];
+    // date at offset 4, counter at 8, distance at 10
+    const tsValue = (body[4] << 24) | (body[5] << 16) | (body[6] << 8) | body[7];
     if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) break;
     const date = new Date(tsValue * 1000);
 
     // DailyPresenceCounter — BCD encoded (2 bytes)
-    const dailyPresenceCounter = decodeBcd(body[4]) * 100 + decodeBcd(body[5]);
-    const dayDistance = (body[6] << 8) | body[7];
+    const dailyPresenceCounter = decodeBcd(body[8]) * 100 + decodeBcd(body[9]);
+    const dayDistance = (body[10] << 8) | body[11];
     if (dayDistance > 9999) break;
 
-    const activityChangeCount = Math.floor((recLen - 8) / 2);
+    // N = (totalLength - 4(header) - 4(date) - 2(counter) - 2(distance)) / 2
+    const activityChangeCount = Math.floor((recLen - 12) / 2);
     const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
 
     for (let i = 0; i < activityChangeCount; i++) {
-      const off = 8 + i * 2;
+      const off = 12 + i * 2;
       if (off + 1 >= body.length) break;
       const word = (body[off] << 8) | body[off + 1];
       // Skip padding/invalid entries per tachograph-go reference
@@ -2388,27 +2392,27 @@ function parseActivitiesForward(data: Uint8Array): ActivityRecord[] {
   for (let skip = 0; skip <= Math.min(40, data.length - 12); skip++) {
     const prevLen = view.getUint16(skip, false);
     const recLen = view.getUint16(skip + 2, false);
-    if (recLen < 8 || recLen > 3000) continue;
+    if (recLen < 12 || recLen > 3000) continue;
     if (prevLen > 3000) continue;
 
     const ts = view.getUint32(skip + 4, false);
     if (!isValidTimestamp(ts)) continue;
 
-    // Extra validation: check that recordLength makes sense
-    // (recordLength - 8) must be even (each ActivityChangeInfo is 2 bytes)
-    if ((recLen - 8) % 2 !== 0) continue;
+    // recordLength includes the 4-byte header; (recLen - 12) must be even
+    if ((recLen - 12) % 2 !== 0) continue;
 
     const dist = view.getUint16(skip + 10, false);
     if (dist > 9999) continue;
 
     // Verify the NEXT record also looks valid (to avoid false positives)
-    const nextRecordStart = skip + 4 + recLen;
+    // Next record starts at skip + recLen (recLen includes header)
+    const nextRecordStart = skip + recLen;
     if (nextRecordStart + 12 <= data.length) {
       const nextPrevLen = view.getUint16(nextRecordStart, false);
       const nextRecLen = view.getUint16(nextRecordStart + 2, false);
       const nextTs = view.getUint32(nextRecordStart + 4, false);
-      if (nextRecLen >= 8 && nextRecLen <= 3000 && nextPrevLen <= 3000 &&
-          isValidTimestamp(nextTs) && (nextRecLen - 8) % 2 === 0) {
+      if (nextRecLen >= 12 && nextRecLen <= 3000 && nextPrevLen <= 3000 &&
+          isValidTimestamp(nextTs) && (nextRecLen - 12) % 2 === 0) {
         startPos = skip;
         break;
       }
@@ -2426,9 +2430,9 @@ function parseActivitiesForward(data: Uint8Array): ActivityRecord[] {
       const recordStart = r.position;
       const previousRecordLength = r.readUint16();
       const recordLength = r.readUint16();
-      if (recordLength < 8 || recordLength > 3000) break;
+      if (recordLength < 12 || recordLength > 3000) break;
       if (previousRecordLength > 3000) break;
-      if ((recordLength - 8) % 2 !== 0) break;
+      if ((recordLength - 12) % 2 !== 0) break;
 
       const tsValue = r.readUint32();
       if (tsValue === 0 || tsValue === 0xFFFFFFFF || !isValidTimestamp(tsValue)) break;
@@ -2438,7 +2442,7 @@ function parseActivitiesForward(data: Uint8Array): ActivityRecord[] {
       const dayDistance = r.readUint16();
       if (dayDistance > 9999) break;
 
-      const activityChangeCount = Math.floor((recordLength - 8) / 2);
+      const activityChangeCount = Math.floor((recordLength - 12) / 2);
       if (activityChangeCount > 1440 || activityChangeCount < 0) break;
 
       const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
@@ -2453,7 +2457,8 @@ function parseActivitiesForward(data: Uint8Array): ActivityRecord[] {
         rawEntries.push({ slot, cardInserted, activity, minutes });
       }
 
-      r.position = recordStart + 4 + recordLength;
+      // recordLength includes the 4-byte header, so next record starts at recordStart + recordLength
+      r.position = recordStart + recordLength;
       const entries = decodeActivityEntries(rawEntries);
       records.push({ date, dailyPresenceCounter, dayDistance, entries });
     } catch {
