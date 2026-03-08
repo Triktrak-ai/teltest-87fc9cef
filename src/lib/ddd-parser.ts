@@ -927,6 +927,7 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
   // Length: 2 bytes big-endian
   const view = new DataView(toArrayBuffer(bytes));
   let pos = 0;
+  let sectionsFound = 0;
 
   while (pos < bytes.length - 5) {
     if (pos + 5 > bytes.length) break;
@@ -935,24 +936,18 @@ function parseDriverCardFile(bytes: Uint8Array, warnings: ParserWarning[]): Driv
     const tagType = bytes[pos + 2];              // 00=data1, 01=sig1, 02=data2, 03=sig2
     const len = view.getUint16(pos + 3, false);  // 2-byte length
 
-    if (len === 0 || pos + 5 + len > bytes.length) {
+    // Validate: type must be 0x00-0x03, length must fit, FID must be in card range
+    const tagHighByte = (tagHigh >> 8) & 0xFF;
+    const isValidType = tagType <= 0x03;
+    const isValidFid = tagHighByte <= 0x0C || tagHigh === 0xC100 || tagHigh === 0xC108 || tagHigh === 0xC109;
+
+    if (!isValidType || !isValidFid || len === 0 || pos + 5 + len > bytes.length) {
       pos++;
       continue;
     }
 
     // Only process data tags (00=Gen1, 02=Gen2), skip signatures (01, 03)
     const isData = tagType === 0x00 || tagType === 0x02;
-    if (!isData) {
-      pos += 5 + len;
-      continue;
-    }
-
-    // Validate tag is in expected range for driver cards
-    const tagHighByte = (tagHigh >> 8) & 0xFF;
-    if (tagHighByte > 0x0C && tagHigh !== 0xC100 && tagHigh !== 0xC108 && tagHigh !== 0xC109) {
-      pos++;
-      continue;
-    }
 
     const sectionData = bytes.slice(pos + 5, pos + 5 + len);
 
