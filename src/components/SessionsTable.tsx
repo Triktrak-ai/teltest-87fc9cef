@@ -271,7 +271,7 @@ export function SessionsTable({ adminFilter }: SessionsTableProps) {
       const after = s.started_at ?? s.created_at ?? "";
       const before = s.completed_at ?? s.last_activity ?? "";
       toast.info("Przygotowywanie archiwum ZIP…");
-      const buf = await apiDownloadDddZip(s.imei, after, before);
+      const buf = await downloadDddZip(s.imei, after, before);
       if (!buf || buf.byteLength === 0) { toast.error("Pobrano pusty plik"); return; }
       const blob = new Blob([buf], { type: "application/zip" });
       const url = URL.createObjectURL(blob);
