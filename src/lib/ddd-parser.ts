@@ -2338,9 +2338,39 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
       // 0x1C — VuPlaceDailyWorkPeriodRecordArray (places, TODO: parse)
       // 0x16 — VuGNSSADRecordArray (GNSS accumulated driving, TODO: parse)
       // 0x09 — VuSpecificConditionRecordArray (specific conditions, skip)
-      // 0x22 — VuBorderCrossingRecordArray (border crossings, TODO: parse)
-      // 0x23 — VuLoadUnloadRecordArray (load/unload operations, TODO: parse)
       // 0x08 — SignatureRecordArray (digital signature, skip)
+
+      case 0x22: // VuBorderCrossingRecordArray (55B per record)
+        for (let i = 0; i < noOfRecords; i++) {
+          const recOff = arrayStart + i * recordSize;
+          if (recOff + 17 > data.length) break; // minimum: 2B countries + 12B gnssPlace + 3B odo
+          const countryLeft = NATION_CODES[data[recOff]] || `0x${data[recOff].toString(16)}`;
+          const countryEntered = NATION_CODES[data[recOff + 1]] || `0x${data[recOff + 1].toString(16)}`;
+          const gnssPlace = parseGnssPlaceAuthRecord(data, recOff + 2, view);
+          const odoOff = recOff + 14;
+          const vehicleOdometerValue = (data[odoOff] << 16) | (data[odoOff + 1] << 8) | data[odoOff + 2];
+          // Skip records with no valid timestamp
+          if (!gnssPlace.timestamp) continue;
+          borderCrossings.push({ countryLeft, countryEntered, gnssPlace, vehicleOdometerValue });
+        }
+        break;
+
+      case 0x23: // VuLoadUnloadRecordArray (58B per record)
+        for (let i = 0; i < noOfRecords; i++) {
+          const recOff = arrayStart + i * recordSize;
+          if (recOff + 16 > data.length) break; // minimum: 1B type + 12B gnssPlace + 3B odo
+          const opByte = data[recOff];
+          const operationType: LoadUnloadRecord['operationType'] =
+            opByte === 0x01 ? 'loading' : opByte === 0x02 ? 'unloading' :
+            opByte === 0x03 ? 'simultaneous' : 'unknown';
+          const gnssPlace = parseGnssPlaceAuthRecord(data, recOff + 1, view);
+          const odoOff = recOff + 13;
+          const vehicleOdometerValue = (data[odoOff] << 16) | (data[odoOff + 1] << 8) | data[odoOff + 2];
+          if (!gnssPlace.timestamp) continue;
+          loadUnloadOperations.push({ operationType, gnssPlace, vehicleOdometerValue });
+        }
+        break;
+
       default:
         break;
     }
