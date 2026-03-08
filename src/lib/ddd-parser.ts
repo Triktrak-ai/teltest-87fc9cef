@@ -1762,21 +1762,21 @@ function classifyVuActivityChunk(data: Uint8Array): 'activity' | 'cardIW' {
  * Detects common prefix patterns and strips them.
  */
 function stripTrtpPrefix(data: Uint8Array, _isFirstChunk: boolean): Uint8Array {
-  if (data.length < 5) return data;
+  if (data.length < 3) return data;
 
-  // Gen2v2 TRTP header: 04 00 01 [4B ts] 05 00 03 00 01 05 (13 bytes)
-  // Check for the full 13-byte pattern first
-  if (data.length >= 13 &&
-      data[0] === 0x04 && data[1] === 0x00 && (data[2] === 0x01 || data[2] === 0x02) &&
-      data[7] === 0x05 && data[8] === 0x00 && data[9] === 0x03 &&
-      data[10] === 0x00 && data[11] === 0x01 && data[12] === 0x05) {
-    return data.slice(13);
-  }
-
-  // Fallback: 5-byte TRTP prefix: 04 00 {01|02} XX XX
+  // TRTP transport prefix is 3 bytes: 04 00 01 (or 04 00 02)
+  // It replaces the DateOfDayDownloaded RecordArray header (06 00 04 00 01).
+  // After stripping 3B, the data starts with raw 4B timestamp followed by
+  // remaining RecordArrays (type=0x05 odo, type=0x0d cardIW, type=0x01 activity).
+  // We reconstruct the full RA stream by prepending the date RA header.
   if (data[0] === 0x04 && data[1] === 0x00 &&
       (data[2] === 0x01 || data[2] === 0x02)) {
-    return data.slice(5);
+    const stripped = data.slice(3); // starts with 4B timestamp
+    const dateRaHeader = new Uint8Array([0x06, 0x00, 0x04, 0x00, 0x01]);
+    const result = new Uint8Array(dateRaHeader.length + stripped.length);
+    result.set(dateRaHeader, 0);
+    result.set(stripped, dateRaHeader.length);
+    return result;
   }
 
   return data;
