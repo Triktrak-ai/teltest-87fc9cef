@@ -2270,6 +2270,8 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
   const dates: Date[] = [];
   const odometers: number[] = [];
   const activityWords: RawActivityWord[] = [];
+  const borderCrossings: BorderCrossingRecord[] = [];
+  const loadUnloadOperations: LoadUnloadRecord[] = [];
   const recordArraysFound: string[] = [];
 
   // Parse sequential RecordArrays
