@@ -1,49 +1,57 @@
 
-# Kategoryzacja sesji "Unknown" na dashboardzie
 
-## Problem
-Kolumna "Tachograf" wyswietla "Unknown" dla wielu sesji, ktore tak naprawde maja rozne, rozpoznawalne przyczyny. Uzytkownik widzi monotonna liste "Unknown" bez zadnej informacji o tym co sie stalo.
+## Analysis
 
-## Analiza danych
-Z bazy wynika 5 jasnych kategorii sesji z "Unknown":
+The expert specification confirms a critical architectural mismatch in `parseVuActivitiesRecordArrays`. The current implementation collects ALL dates, ALL odometers, and ALL activity words into flat arrays, then attempts to split activities into day groups using slot-0 minute regression. 
 
-| Kategoria | Ilosc | Wzorzec | Znaczenie |
-|---|---|---|---|
-| Lockout (cert rejected) | 37 | APDU 0-3, error | Tachograf odrzucil certyfikat (blokada bezpieczenstwa) |
-| Brak odpowiedzi VU | 13 | APDU 0, error, oba Unknown | VU nie odpowiedzialo (stacyjka wylaczona / offline) |
-| Auth zaawansowany blad | 8 | APDU 20+, error | Autentykacja przeszla daleko ale ostatecznie odrzucona |
-| Wykrywanie | 10 | connecting, APDU 0 | Sesja w trakcie - generacja jeszcze nieznana |
-| Pominieto | 6 | skipped | Sesja pominieta przez harmonogram |
-
-## Rozwiazanie
-
-### 1. Nowa funkcja `classifyUnknownGeneration()` w `SessionsTable.tsx`
-
-Zamiast wyswietlac surowe "Unknown", dodac funkcje ktora na podstawie `status`, `apdu_exchanges`, `error_message` i kontekstu z `session_events` zwraca:
-
+The specification states that RecordArrays are transmitted **per-day sequentially**:
 ```text
-- "Lockout"       → ikona Lock, kolor destructive, tooltip "Tachograf odrzucil certyfikat"
-- "VU offline"    → ikona WifiOff, kolor muted, tooltip "Brak odpowiedzi VU (stacyjka wylaczona?)"  
-- "Auth blad"     → ikona ShieldX, kolor warning, tooltip "Autentykacja przerwana po N wymianach APDU"
-- "Wykrywanie..." → ikona Loader, kolor info, animacja pulse
-- "Unknown"       → fallback dla niepasujacych przypadkow
+Day 1: [0x06 date] [0x05 odometer] [0x0D cardIW] [0x01 activities] [0x08 signature]
+Day 2: [0x06 date] [0x05 odometer] [0x0D cardIW] [0x01 activities] [0x08 signature]
+...
 ```
 
-### 2. Zmiana wyswietlania w kolumnie "Tachograf"
+The flat-collection approach works coincidentally when data happens to be grouped by type, but fails when the structure is per-day interleaved — which is the canonical format per Annex 1C.
 
-Zamiast Badge "Unknown" wyswietlic nowy Badge z odpowiednia ikona, kolorem i tooltipem. Zastosowac to tylko gdy `generation === "Unknown"` — znane generacje (Gen1, Gen2, Gen2v2) pozostaja bez zmian.
+Additionally, current tests show 7-8 days parsed, suggesting the data in test files may be type-grouped. But for full spec compliance, the parser must handle per-day sequential layout.
 
-### 3. Zmiana wyswietlania w kolumnie "Status" dla bledow
+## Plan
 
-Dla sesji z `status === "error"` i rozpoznanym wzorcem, wzbogacic tooltip Badge "Blad" o szczegoly:
-- "Blokada bezpieczenstwa tachografu (lockout)" 
-- "VU nie odpowiada — mozliwe wylaczenie stacyjki"
-- "Certyfikat odrzucony po pelnej autentykacji"
+### 1. Rewrite `parseVuActivitiesRecordArrays` to per-day sequential parsing
 
-### Zmiany w plikach
+Replace flat collection with stateful per-day iteration:
+- Track `currentDate`, `currentOdometer`, `currentActivityWords` as the parser encounters RecordArrays
+- When a new `0x06` (DateOfDayDownloaded) is encountered and there's already a pending day, emit the completed day record
+- After the loop, emit the final pending day
+- This eliminates the minute-regression day-splitting logic entirely (lines 2485-2503)
 
-**`src/components/SessionsTable.tsx`** — jedyny plik:
-- Dodac funkcje `classifyUnknownGeneration(session)` zwracajaca `{ label, icon, color, tooltip }`
-- Zmodyfikowac renderowanie kolumny "Tachograf" (linia 169-188) aby uzywac klasyfikacji zamiast surowego "Unknown"
-- Dodac tooltips do kolumny "Status" dla rozpoznanych wzorcow bledow
-- Import dodatkowych ikon: `Lock`, `WifiOff`, `ShieldX`, `Loader`
+### 2. Maintain backward compatibility
+
+Keep the flat-collection as a fallback: if per-day sequential parsing yields 0 results (data is type-grouped), fall back to the current logic. This handles edge cases where VU firmware groups all dates together.
+
+### 3. No changes needed to other fixes
+
+The previous fixes (0x0000 valid, 100k limit, 400-day window, filterDistanceArtifacts, dur≤0 tolerance) remain correct and aligned with the spec.
+
+## Technical detail
+
+```text
+Current flow:
+  parseVuActivitiesRecordArrays()
+    → collect dates[], odometers[], activityWords[]
+    → split activityWords by slot-0 minute regression → dayGroups[]
+    → zip dates[i] + dayGroups[i]
+
+New flow:
+  parseVuActivitiesRecordArrays()
+    → iterate RecordArrays sequentially
+    → on 0x06: flush pending day, start new day with this date
+    → on 0x05: set odometer for current day
+    → on 0x01: append activity words to current day
+    → on 0x08/other: skip
+    → flush final pending day
+    → if no days found: fallback to flat-collection + minute-regression
+```
+
+Lines affected: ~2363-2543 in `src/lib/ddd-parser.ts` (the `parseVuActivitiesRecordArrays` function).
+
