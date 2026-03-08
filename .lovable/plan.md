@@ -1,51 +1,49 @@
 
+# Kategoryzacja sesji "Unknown" na dashboardzie
 
-## Analysis: Remaining 768 km artifacts from chunk boundary corruption
+## Problem
+Kolumna "Tachograf" wyswietla "Unknown" dla wielu sesji, ktore tak naprawde maja rozne, rozpoznawalne przyczyny. Uzytkownik widzi monotonna liste "Unknown" bez zadnej informacji o tym co sie stalo.
 
-### Root Cause
+## Analiza danych
+Z bazy wynika 5 jasnych kategorii sesji z "Unknown":
 
-The activities file contains multiple `0x76 0x32` TLV sections — each is a TRTP transport chunk of the card's single `CardDriverActivity` cyclic buffer. When a daily record straddles two chunks, both parsing strategies fail:
+| Kategoria | Ilosc | Wzorzec | Znaczenie |
+|---|---|---|---|
+| Lockout (cert rejected) | 37 | APDU 0-3, error | Tachograf odrzucil certyfikat (blokada bezpieczenstwa) |
+| Brak odpowiedzi VU | 13 | APDU 0, error, oba Unknown | VU nie odpowiedzialo (stacyjka wylaczona / offline) |
+| Auth zaawansowany blad | 8 | APDU 20+, error | Autentykacja przeszla daleko ale ostatecznie odrzucona |
+| Wykrywanie | 10 | connecting, APDU 0 | Sesja w trakcie - generacja jeszcze nieznana |
+| Pominieto | 6 | skipped | Sesja pominieta przez harmonogram |
 
-- **Strategy A (per-section)**: Parses each chunk independently. A record split across two chunks produces a truncated record in one chunk and garbage at the start of the next → 768 km artifacts from misaligned reads.
-- **Strategy B (concatenated)**: Strips TRTP prefixes and joins chunks. This is correct *in principle*, but the prefix detection (`04 00 01`) is fragile — if any chunk has a different prefix format or no prefix, the concatenated buffer has extra bytes at that boundary, corrupting records that span it.
+## Rozwiazanie
 
-### Evidence
+### 1. Nowa funkcja `classifyUnknownGeneration()` w `SessionsTable.tsx`
 
-The value 768 = `0x0300` is the `previousRecordLength` or `recordLength` field of a neighboring record being read as `dayDistance` — a classic 2-byte alignment error at a chunk seam.
-
-### Plan
-
-**File: `src/lib/ddd-parser.ts`**
-
-1. **Always prefer concatenated strategy for activities** — remove the per-section vs concatenated competition. Per-section parsing of a split cyclic buffer is fundamentally wrong (records can span chunk boundaries). Keep per-section only as a last-resort fallback if concatenated yields 0 results.
-
-2. **Improve TRTP prefix stripping with multi-pattern detection**:
-   - Pattern 1: `04 00 01 XX XX` (5 bytes) — current detection
-   - Pattern 2: `04 00 02 XX XX` (5 bytes) — variant seen in some VU firmware
-   - Pattern 3: No prefix (raw data continuation) — first chunk typically has no TRTP prefix since it starts with the cyclic buffer header (`oldestPtr + newestPtr`)
-   - Heuristic: For the **first chunk only**, check if bytes 0-3 look like a valid cyclic header (two uint16 pointers both < chunk length). If so, don't strip anything. For subsequent chunks, always strip TRTP prefix if detected.
-
-3. **Add chunk boundary validation**: After concatenation, verify the cyclic buffer header integrity — `oldestPtr` and `newestPtr` must be within bounds of the concatenated body. Log a warning if they're not.
-
-4. **Update test**: Assert that no record has `dayDistance === 768` (the known artifact value).
-
-### Technical Detail
+Zamiast wyswietlac surowe "Unknown", dodac funkcje ktora na podstawie `status`, `apdu_exchanges`, `error_message` i kontekstu z `session_events` zwraca:
 
 ```text
-DDD file layout for activities:
-┌─────────────────────────────────┐
-│ 0x76 0x32 [len] [chunk 1 data] │  ← may or may not have TRTP prefix
-│ 0x76 0x32 [len] [chunk 2 data] │  ← usually has 04 00 01 XX XX prefix  
-│ 0x76 0x32 [len] [chunk 3 data] │  ← same
-│ ...                             │
-└─────────────────────────────────┘
-
-After correct stripping & concatenation:
-┌──────────────────────────────────────┐
-│ oldestPtr(2B) newestPtr(2B)          │  ← cyclic header
-│ cyclicBody[0..N-1]                   │  ← seamless daily records
-└──────────────────────────────────────┘
+- "Lockout"       → ikona Lock, kolor destructive, tooltip "Tachograf odrzucil certyfikat"
+- "VU offline"    → ikona WifiOff, kolor muted, tooltip "Brak odpowiedzi VU (stacyjka wylaczona?)"  
+- "Auth blad"     → ikona ShieldX, kolor warning, tooltip "Autentykacja przerwana po N wymianach APDU"
+- "Wykrywanie..." → ikona Loader, kolor info, animacja pulse
+- "Unknown"       → fallback dla niepasujacych przypadkow
 ```
 
-The fix ensures chunk seams are invisible to the cyclic buffer parser, eliminating the 768 km boundary artifacts.
+### 2. Zmiana wyswietlania w kolumnie "Tachograf"
 
+Zamiast Badge "Unknown" wyswietlic nowy Badge z odpowiednia ikona, kolorem i tooltipem. Zastosowac to tylko gdy `generation === "Unknown"` — znane generacje (Gen1, Gen2, Gen2v2) pozostaja bez zmian.
+
+### 3. Zmiana wyswietlania w kolumnie "Status" dla bledow
+
+Dla sesji z `status === "error"` i rozpoznanym wzorcem, wzbogacic tooltip Badge "Blad" o szczegoly:
+- "Blokada bezpieczenstwa tachografu (lockout)" 
+- "VU nie odpowiada — mozliwe wylaczenie stacyjki"
+- "Certyfikat odrzucony po pelnej autentykacji"
+
+### Zmiany w plikach
+
+**`src/components/SessionsTable.tsx`** — jedyny plik:
+- Dodac funkcje `classifyUnknownGeneration(session)` zwracajaca `{ label, icon, color, tooltip }`
+- Zmodyfikowac renderowanie kolumny "Tachograf" (linia 169-188) aby uzywac klasyfikacji zamiast surowego "Unknown"
+- Dodac tooltips do kolumny "Status" dla rozpoznanych wzorcow bledow
+- Import dodatkowych ikon: `Lock`, `WifiOff`, `ShieldX`, `Loader`

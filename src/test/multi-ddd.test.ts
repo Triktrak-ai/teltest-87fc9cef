@@ -47,6 +47,21 @@ describe('Multi-file DDD merge with filename detection', () => {
   });
 
   it('merges all 5 files into one dataset', () => {
+    // First, let's examine the raw chunks of the activities file to understand TRTP prefix structure
+    const actBuf = loadFile('358480081630115_activities_20260227_030429.ddd');
+    const actBytes = new Uint8Array(actBuf);
+    // Find all 0x76 0x32 TLV sections manually
+    for (let i = 0; i < actBytes.length - 4; i++) {
+      if (actBytes[i] === 0x76 && actBytes[i+1] === 0x32) {
+        const secLen = (actBytes[i+2] << 8) | actBytes[i+3];
+        const dataStart = i + 4;
+        const first20 = Array.from(actBytes.slice(dataStart, dataStart + Math.min(20, secLen)))
+          .map(b => b.toString(16).padStart(2, '0')).join(' ');
+        console.log(`  TLV @${i}: tag=76 32, len=${secLen}, first20=[${first20}]`);
+        i += 3 + secLen; // skip past this section
+      }
+    }
+
     let merged = emptyDddData();
     for (const name of FILES) {
       const ab = loadFile(name);
@@ -73,6 +88,11 @@ describe('Multi-file DDD merge with filename detection', () => {
     console.log(`  Unique dayDistance values: ${uniqueDistances.size} out of ${distances.length}`);
     console.log(`  Sample distances: ${distances.slice(0, 10).join(', ')}`);
     expect(uniqueDistances.size).toBeGreaterThan(3);
+
+    // Regression: no record should have the known 768 km artifact from chunk boundary corruption
+    const artifact768 = distances.filter(d => d === 768);
+    console.log(`  Records with dayDistance=768: ${artifact768.length}`);
+    expect(artifact768.length).toBe(0);
 
     // Speed should now have many more records from individual file parsing
     expect(merged.speedRecords.length).toBeGreaterThan(1000);

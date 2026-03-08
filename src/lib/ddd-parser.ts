@@ -675,22 +675,15 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         console.log(`[DDD] Activities: ${sections.length} total sections, ${actSections.length} activity sections, tags: [${sections.map(s => '0x' + s.tag.toString(16)).join(', ')}]`);
 
         if (actSections.length > 0) {
-          // Strategy A (spec-aligned for segmented TRTP payloads):
-          // parse each 0x76 0x32/0x36 chunk independently and merge by day.
-          const perSectionWarnings: ParserWarning[] = [];
-          const perSectionRejections: ActivityRejection[] = [];
-          const perSectionActivities = parseActivitiesFromSections(actSections, perSectionWarnings, perSectionRejections);
-
-          // Strategy B: concatenate chunks, stripping TRTP prefix (04 00 01 XX XX) from each section.
-          // Each TLV section may carry a 5-byte TRTP sub-header before the actual card data.
+          // ── Concatenated strategy (primary) ──
+          // Records in a cyclic buffer can span chunk boundaries, so per-section
+          // parsing is fundamentally wrong. We concatenate all chunks, stripping
+          // TRTP transport prefixes, to reconstruct the original card EF payload.
           const strippedChunks: Uint8Array[] = [];
-          for (const s of actSections) {
-            // Detect TRTP prefix: 04 00 01 followed by 2 bytes
-            if (s.data.length > 5 && s.data[0] === 0x04 && s.data[1] === 0x00 && s.data[2] === 0x01) {
-              strippedChunks.push(s.data.slice(5));
-            } else {
-              strippedChunks.push(s.data);
-            }
+          for (let ci = 0; ci < actSections.length; ci++) {
+            const s = actSections[ci];
+            const stripped = stripTrtpPrefix(s.data, ci === 0);
+            strippedChunks.push(stripped);
           }
           const totalLen = strippedChunks.reduce((sum, c) => sum + c.length, 0);
           const mergedData = new Uint8Array(totalLen);
@@ -698,6 +691,17 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
           for (const chunk of strippedChunks) {
             mergedData.set(chunk, writePos);
             writePos += chunk.length;
+          }
+
+          // Validate cyclic header integrity after concatenation
+          if (mergedData.length >= 4) {
+            const mdView = new DataView(mergedData.buffer, mergedData.byteOffset, mergedData.byteLength);
+            const oldP = mdView.getUint16(0, false);
+            const newP = mdView.getUint16(2, false);
+            const bodyLen = mergedData.length - 4;
+            if (oldP >= bodyLen || newP >= bodyLen) {
+              console.warn(`[DDD] Cyclic header pointers out of bounds after concatenation: oldest=${oldP}, newest=${newP}, bodyLen=${bodyLen}`);
+            }
           }
 
           const mergedSection: DddSection = {
@@ -711,24 +715,26 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
           const mergedWarnings: ParserWarning[] = [];
           const mergedRejections: ActivityRejection[] = [];
           const mergedActivities = parseActivitiesFromSections([mergedSection], mergedWarnings, mergedRejections);
-
-          const perSectionEntryScore = perSectionActivities.reduce((sum, d) => sum + d.entries.length, 0);
           const mergedEntryScore = mergedActivities.reduce((sum, d) => sum + d.entries.length, 0);
 
-          const usePerSection =
-            perSectionActivities.length > mergedActivities.length ||
-            (perSectionActivities.length === mergedActivities.length && perSectionEntryScore > mergedEntryScore);
-
-          if (usePerSection) {
-            result.activities = perSectionActivities;
-            result.warnings.push(...perSectionWarnings);
-            result.activityRejections.push(...perSectionRejections);
-            console.log(`[DDD] Activities strategy=per-section: ${result.activities.length} days (entries=${perSectionEntryScore})`);
-          } else {
+          if (mergedActivities.length > 0) {
             result.activities = mergedActivities;
             result.warnings.push(...mergedWarnings);
             result.activityRejections.push(...mergedRejections);
             console.log(`[DDD] Activities strategy=concatenated: ${result.activities.length} days (entries=${mergedEntryScore}, payload=${mergedData.length} B)`);
+          } else {
+            // ── Per-section fallback (last resort) ──
+            // Only used if concatenated strategy yields 0 results
+            const perSectionWarnings: ParserWarning[] = [];
+            const perSectionRejections: ActivityRejection[] = [];
+            const perSectionActivities = parseActivitiesFromSections(actSections, perSectionWarnings, perSectionRejections);
+            if (perSectionActivities.length > 0) {
+              result.activities = perSectionActivities;
+              result.warnings.push(...perSectionWarnings);
+              result.activityRejections.push(...perSectionRejections);
+              const perSectionEntryScore = perSectionActivities.reduce((sum, d) => sum + d.entries.length, 0);
+              console.log(`[DDD] Activities strategy=per-section (fallback): ${result.activities.length} days (entries=${perSectionEntryScore})`);
+            }
           }
         }
 
@@ -1669,6 +1675,49 @@ function parseEventsStructured(bytes: Uint8Array, warnings: ParserWarning[]): { 
   return { events, faults };
 }
 
+// ─── TRTP prefix stripping for chunk concatenation ──────────────────────────
+
+/**
+ * Strip TRTP transport prefix from a TLV section's data payload.
+ * Detects common prefix patterns and strips them.
+ */
+function stripTrtpPrefix(data: Uint8Array, _isFirstChunk: boolean): Uint8Array {
+  if (data.length < 5) return data;
+
+  // Detect TRTP prefix: 04 00 {01|02} XX XX (5 bytes)
+  if (data[0] === 0x04 && data[1] === 0x00 &&
+      (data[2] === 0x01 || data[2] === 0x02)) {
+    return data.slice(5);
+  }
+
+  return data;
+}
+
+/**
+ * Remove runs of 3+ consecutive records with identical dayDistance.
+ * Such runs are artifacts from cyclic buffer boundary corruption (e.g. 768 km = 0x0300).
+ */
+function filterDistanceArtifacts(records: ActivityRecord[]): ActivityRecord[] {
+  if (records.length < 3) return records;
+  
+  const dominated = new Set<number>();
+  let runStart = 0;
+  
+  for (let i = 1; i <= records.length; i++) {
+    if (i < records.length && records[i].dayDistance === records[runStart].dayDistance) continue;
+    // End of run [runStart..i-1]
+    const runLen = i - runStart;
+    if (runLen >= 3) {
+      for (let j = runStart; j < i; j++) dominated.add(j);
+    }
+    runStart = i;
+  }
+  
+  if (dominated.size === 0) return records;
+  console.log(`[DDD] Filtered ${dominated.size} artifact records with repeated dayDistance`);
+  return records.filter((_, idx) => !dominated.has(idx));
+}
+
 // ─── TLV-section-based activities parser (Gen2/Gen2v2) ──────────────────────
 
 function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWarning[], rejections?: ActivityRejection[]): ActivityRecord[] {
@@ -2265,18 +2314,28 @@ function parseActivities(data: Uint8Array): ActivityRecord[] {
     const bodyLen = data.length - bodyStart;
 
     if (bodyLen < 12) continue;
-    if (oldestPtr >= bodyLen || newestPtr >= bodyLen) continue;
+    // Allow oldestPtr to be out of bounds (truncated download of a larger card EF).
+    // We only need newestPtr to be valid to traverse backward.
+    if (newestPtr >= bodyLen) continue;
 
     // Validate: there should be a valid record at newestPtr
     const newestAbsPos = bodyStart + newestPtr;
     if (newestAbsPos + 12 > data.length) continue;
     const recLen = view.getUint16(newestAbsPos + 2, false);
-    if (recLen < 12 || recLen > 3000) continue;
+    if (recLen < 12 || recLen > 3000) {
+      console.log(`[DDD] Cyclic probe off=${headerOffset}: newest=${newestPtr}, recLen=${recLen} FAIL(range)`);
+      continue;
+    }
     const ts = view.getUint32(newestAbsPos + 4, false);
-    if (!isValidTimestamp(ts)) continue;
+    if (!isValidTimestamp(ts)) {
+      console.log(`[DDD] Cyclic probe off=${headerOffset}: newest=${newestPtr}, recLen=${recLen}, ts=0x${ts.toString(16)} FAIL(ts)`);
+      continue;
+    }
 
     // Valid cyclic buffer found — traverse backward from newest
+    console.log(`[DDD] Cyclic header found: headerOffset=${headerOffset}, oldest=${oldestPtr}, newest=${newestPtr}, bodyLen=${bodyLen}, recLen=${recLen}, ts=${ts} (${new Date(ts*1000).toISOString()})`);
     const cyclicRecords = parseCyclicActivities(data, bodyStart, bodyLen, newestPtr);
+    console.log(`[DDD] Cyclic traversal result: ${cyclicRecords.length} records`);
     if (cyclicRecords.length > 0) return cyclicRecords;
   }
 
