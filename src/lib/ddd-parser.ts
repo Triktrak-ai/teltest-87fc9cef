@@ -2255,17 +2255,23 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
     prevMinutes = word.minutes;
   }
 
-  // If the number of day groups doesn't match dates, try to align.
-  // In most cases they should match, but edge cases exist.
+  // If more day groups than dates, the extra leading groups are tail-end
+  // activity data from previous days (already covered by other chunks).
+  // Align by taking the LAST N groups where N = dates.length.
   const records: ActivityRecord[] = [];
   const numDays = Math.min(dates.length, dayGroups.length);
+  const groupOffset = dayGroups.length - numDays; // skip leading overflow groups
+
+  if (dayGroups.length !== dates.length) {
+    console.log(`[DDD] VU RecordArrays: day groups (${dayGroups.length}) ≠ dates (${dates.length}), skipping ${groupOffset} leading overflow groups`);
+  }
 
   for (let i = 0; i < numDays; i++) {
     const date = dates[i];
     const dayDistance = (i < odometers.length - 1)
       ? Math.max(0, odometers[i + 1] - odometers[i])
       : 0;
-    const rawEntries = dayGroups[i];
+    const rawEntries = dayGroups[i + groupOffset];
     const entries = decodeActivityEntries(rawEntries);
 
     if (entries.length === 0) continue;
@@ -2282,13 +2288,7 @@ function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning
     }
     if (!valid || slotTotals.driver > 1440 || slotTotals.codriver > 1440) continue;
 
-    // BCD-decode dailyPresenceCounter if we had it (not in RecordArray format)
     records.push({ date, dailyPresenceCounter: 0, dayDistance, entries });
-  }
-
-  // If we got fewer days than expected, log it
-  if (dayGroups.length !== dates.length) {
-    console.log(`[DDD] VU RecordArrays: day groups (${dayGroups.length}) ≠ dates (${dates.length}), used min=${numDays}`);
   }
 
   console.log(`[DDD] VU RecordArrays: parsed ${records.length} activity days`);
