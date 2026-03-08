@@ -924,6 +924,12 @@ const DddReader = () => {
                               <TableHead>Kraj</TableHead>
                               <TableHead>Region</TableHead>
                               <TableHead>Przebieg</TableHead>
+                              {data.driverCard.places.some(p => p.gnssPlace) && (
+                                <>
+                                  <TableHead>Lat</TableHead>
+                                  <TableHead>Lon</TableHead>
+                                </>
+                              )}
                             </TableRow>
                           </TableHeader>
                           <TableBody>
@@ -933,6 +939,12 @@ const DddReader = () => {
                                 <TableCell className="text-xs">{p.dailyWorkPeriodCountry}</TableCell>
                                 <TableCell className="text-xs font-mono">{p.dailyWorkPeriodRegion}</TableCell>
                                 <TableCell className="text-xs">{p.vehicleOdometerValue > 0 ? `${p.vehicleOdometerValue} km` : "—"}</TableCell>
+                                {data.driverCard.places.some(pp => pp.gnssPlace) && (
+                                  <>
+                                    <TableCell className="text-xs font-mono">{p.gnssPlace && p.gnssPlace.latitude !== -90 ? p.gnssPlace.latitude.toFixed(5) : "—"}</TableCell>
+                                    <TableCell className="text-xs font-mono">{p.gnssPlace && p.gnssPlace.longitude !== -180 ? p.gnssPlace.longitude.toFixed(5) : "—"}</TableCell>
+                                  </>
+                                )}
                               </TableRow>
                             ))}
                           </TableBody>

@@ -1173,19 +1173,35 @@ function parseCardFaults(data: Uint8Array): FaultRecord[] {
   return faults;
 }
 
-function parseCardPlaces(data: Uint8Array): CardPlaceRecord[] {
+function parseCardPlaces(data: Uint8Array, isGen2v2: boolean): CardPlaceRecord[] {
   const places: CardPlaceRecord[] = [];
   const r = new BinaryReader(toArrayBuffer(data));
 
   // Skip pointer (2B)
   if (r.remaining >= 2) r.readUint16();
 
-  // CardPlaceDailyWorkPeriod record: entryTime(4B) + country(1B) + region(1B) + odometer(3B) = 9B
-  while (r.remaining >= 9) {
+  // Gen1: 9B, Gen2v2: 21B (9B base + 12B GnssPlaceAuthRecord)
+  const recordSize = isGen2v2 ? 21 : 9;
+
+  while (r.remaining >= recordSize) {
     const entryTime = r.readTimestamp();
     const countryByte = r.readUint8();
     const regionByte = r.readUint8();
     const vehicleOdometerValue = (r.readUint8() << 16) | r.readUint16();
+
+    let gnssPlace: GnssPlaceAuthRecord | undefined;
+    if (isGen2v2) {
+      // GnssPlaceAuthRecord: timestamp(4B) + accuracy(1B) + lat(3B) + lon(3B) + authStatus(1B)
+      const gnssTimestamp = r.readTimestamp();
+      const accuracy = r.readUint8();
+      const latRaw = (r.readUint8() << 16) | r.readUint16();
+      const lonRaw = (r.readUint8() << 16) | r.readUint16();
+      const authStatus = r.readUint8();
+      // Convert from 1/10 arc-seconds to decimal degrees
+      const latitude = (latRaw - 324000 * 10) / 36000;
+      const longitude = (lonRaw - 648000 * 10) / 36000;
+      gnssPlace = { timestamp: gnssTimestamp, accuracy, latitude, longitude, authStatus };
+    }
 
     if (!entryTime) continue;
 
@@ -1194,6 +1210,7 @@ function parseCardPlaces(data: Uint8Array): CardPlaceRecord[] {
       dailyWorkPeriodCountry: NATION_CODES[countryByte] || `0x${countryByte.toString(16)}`,
       dailyWorkPeriodRegion: `0x${regionByte.toString(16).padStart(2, '0')}`,
       vehicleOdometerValue,
+      gnssPlace,
     });
   }
 
