@@ -965,6 +965,7 @@ const DddReader = () => {
                             <TableHead className="w-12">#</TableHead>
                             <TableHead>Tag</TableHead>
                             <TableHead>Nazwa</TableHead>
+                            <TableHead>Plik źródłowy</TableHead>
                             <TableHead>Offset</TableHead>
                             <TableHead>Długość</TableHead>
                             <TableHead>Hex dump (32B)</TableHead>
@@ -976,6 +977,7 @@ const DddReader = () => {
                               <TableCell className="text-xs font-mono">{i + 1}</TableCell>
                               <TableCell className="text-xs font-mono">0x76 0x{s.tag.toString(16).padStart(2, '0')}</TableCell>
                               <TableCell className="text-xs">{TAG_NAMES[s.tag] || 'Nieznany'}</TableCell>
+                              <TableCell className="text-xs font-mono truncate max-w-[120px]" title={s.sourceFile || ''}>{(s.sourceFile || '').replace(/^.*[\\/]/, '').replace(/^\d+_/, '') || '—'}</TableCell>
                               <TableCell className="text-xs font-mono">{s.offset}</TableCell>
                               <TableCell className="text-xs font-mono">{s.length.toLocaleString()}</TableCell>
                               <TableCell className="text-xs font-mono break-all max-w-xs">{hexDump(s.data)}</TableCell>
