@@ -742,10 +742,26 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
             if (downloadDate) {
               const upperTs = Math.floor(downloadDate.getTime() / 1000);
               const lowerTs = upperTs - 90 * 86400;
+              const beforeCount = mergedActivities.length;
               mergedActivities = mergedActivities.filter(r => {
                 const ts = Math.floor(r.date.getTime() / 1000);
-                return ts >= lowerTs && ts <= upperTs;
+                const inRange = ts >= lowerTs && ts <= upperTs;
+                if (!inRange) {
+                  mergedRejections.push({
+                    offset: 0,
+                    date: r.date.toISOString().slice(0, 10),
+                    reason: ts < lowerTs
+                      ? `Poza oknem 90 dni (za stary, ${Math.round((lowerTs - ts) / 86400)}d przed oknem)`
+                      : `Poza oknem 90 dni (w przyszłości, ${Math.round((ts - upperTs) / 86400)}d po pobraniu)`,
+                    dayDistance: r.dayDistance,
+                    changeCount: r.entries.length,
+                  });
+                }
+                return inRange;
               });
+              if (beforeCount > mergedActivities.length) {
+                console.log(`[DDD] Date filter: ${beforeCount} → ${mergedActivities.length} days (${beforeCount - mergedActivities.length} rejected)`);
+              }
             }
 
             if (mergedActivities.length > 0) {
