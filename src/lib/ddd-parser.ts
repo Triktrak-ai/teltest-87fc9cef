@@ -1764,12 +1764,19 @@ function classifyVuActivityChunk(data: Uint8Array): 'activity' | 'cardIW' {
 function stripTrtpPrefix(data: Uint8Array, _isFirstChunk: boolean): Uint8Array {
   if (data.length < 3) return data;
 
-  // TRTP transport prefix is exactly 3 bytes: 04 00 01 (or 04 00 02)
-  // After stripping, the remaining data contains full RecordArray sequences
-  // (type=0x06 date, type=0x05 odo, type=0x0d cardIW, type=0x01 activity)
+  // TRTP transport prefix is 3 bytes: 04 00 01 (or 04 00 02)
+  // It replaces the DateOfDayDownloaded RecordArray header (06 00 04 00 01).
+  // After stripping 3B, the data starts with raw 4B timestamp followed by
+  // remaining RecordArrays (type=0x05 odo, type=0x0d cardIW, type=0x01 activity).
+  // We reconstruct the full RA stream by prepending the date RA header.
   if (data[0] === 0x04 && data[1] === 0x00 &&
       (data[2] === 0x01 || data[2] === 0x02)) {
-    return data.slice(3);
+    const stripped = data.slice(3); // starts with 4B timestamp
+    const dateRaHeader = new Uint8Array([0x06, 0x00, 0x04, 0x00, 0x01]);
+    const result = new Uint8Array(dateRaHeader.length + stripped.length);
+    result.set(dateRaHeader, 0);
+    result.set(stripped, dateRaHeader.length);
+    return result;
   }
 
   return data;
