@@ -2448,7 +2448,7 @@ function parseRawActivitiesFile(bytes: Uint8Array, warnings: ParserWarning[]): A
         r.position = pos + 10;
       }
 
-      const rawEntries: Array<{ slot: number; cardInserted: boolean; activity: number; minutes: number }> = [];
+      const rawEntries: RawActivityWord[] = [];
       for (let i = 0; i < count && r.remaining >= 2; i++) {
         const word = r.readUint16();
         if (word === 0x0000 || word === 0xFFFF) continue; // skip padding/invalid
