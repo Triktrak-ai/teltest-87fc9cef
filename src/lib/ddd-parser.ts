@@ -150,6 +150,7 @@ export interface DddSection {
   offset: number;
   length: number;
   data: Uint8Array;
+  sourceFile?: string;
 }
 
 export interface ParserWarning {
