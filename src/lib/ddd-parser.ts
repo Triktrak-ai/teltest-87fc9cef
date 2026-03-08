@@ -1876,27 +1876,50 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
   // Remove artifact records with repeated dayDistance (e.g. 768 km from chunk boundary corruption)
   records = filterDistanceArtifacts(records);
 
-  // Keep only recent window relative to the densest date cluster
-  // (more robust than anchoring to a single outlier max timestamp).
+  // Keep only records within a plausible date range
   if (records.length > 0) {
-    const timestamps = records.map(r => Math.floor(r.date.getTime() / 1000));
-    const anchorTs = selectDenseTimestampAnchor(timestamps, 90 * 86400);
-    const oneYearSecs = 366 * 86400;
+    // If we have a download date from the filename, use it as hard upper bound.
+    // VU stores max 56 days (Gen2v2) or 28 days (Gen1/Gen2).
+    // Use 90 days as generous lower bound.
+    if (downloadDate) {
+      const upperTs = Math.floor(downloadDate.getTime() / 1000);
+      const lowerTs = upperTs - 90 * 86400; // 90 days before download
+      console.log(`[DDD] Download date filter: ${downloadDate.toISOString().slice(0, 10)}, window ${new Date(lowerTs * 1000).toISOString().slice(0, 10)} – ${downloadDate.toISOString().slice(0, 10)}`);
+      records = records.filter(r => {
+        const ts = Math.floor(r.date.getTime() / 1000);
+        const keep = ts >= lowerTs && ts <= upperTs;
+        if (!keep) {
+          rejections?.push({
+            offset: 0,
+            date: r.date.toISOString().slice(0, 10),
+            reason: `Data poza oknem pobierania (${new Date(lowerTs * 1000).toISOString().slice(0, 10)} – ${downloadDate.toISOString().slice(0, 10)})`,
+            dayDistance: r.dayDistance,
+            changeCount: r.entries.length,
+          });
+        }
+        return keep;
+      });
+    } else {
+      // Fallback: use dense timestamp anchor with 1 year window
+      const timestamps = records.map(r => Math.floor(r.date.getTime() / 1000));
+      const anchorTs = selectDenseTimestampAnchor(timestamps, 90 * 86400);
+      const oneYearSecs = 366 * 86400;
 
-    records = records.filter(r => {
-      const ts = Math.floor(r.date.getTime() / 1000);
-      const keep = Math.abs(anchorTs - ts) <= oneYearSecs;
-      if (!keep) {
-        rejections?.push({
-          offset: 0,
-          date: r.date.toISOString().slice(0, 10),
-          reason: `Odrzucony przez filtr świeżości (> 1 rok od kotwicy ${new Date(anchorTs * 1000).toISOString().slice(0, 10)})`,
-          dayDistance: r.dayDistance,
-          changeCount: r.entries.length,
-        });
-      }
-      return keep;
-    });
+      records = records.filter(r => {
+        const ts = Math.floor(r.date.getTime() / 1000);
+        const keep = Math.abs(anchorTs - ts) <= oneYearSecs;
+        if (!keep) {
+          rejections?.push({
+            offset: 0,
+            date: r.date.toISOString().slice(0, 10),
+            reason: `Odrzucony przez filtr świeżości (> 1 rok od kotwicy ${new Date(anchorTs * 1000).toISOString().slice(0, 10)})`,
+            dayDistance: r.dayDistance,
+            changeCount: r.entries.length,
+          });
+        }
+        return keep;
+      });
+    }
   }
 
   if (records.length === 0) {
