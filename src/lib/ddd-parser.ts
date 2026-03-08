@@ -2421,7 +2421,7 @@ function parseCyclicActivities(
       unique.set(key, rec);
     }
   }
-  return Array.from(unique.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
+  return filterDistanceArtifacts(Array.from(unique.values()).sort((a, b) => a.date.getTime() - b.date.getTime()));
 }
 
 /** Read `len` bytes from a cyclic buffer with wrap-around. Returns null if len is too large. */
