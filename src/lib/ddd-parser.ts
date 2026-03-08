@@ -1028,19 +1028,34 @@ function readName(r: BinaryReader): string {
   return r.readString(35);
 }
 
+function readVehicleRegistration(r: BinaryReader): { nation: string; vrn: string } {
+  // VehicleRegistrationIdentification = nation(1B) + VehicleRegistrationNumber(codePage 1B + regNumber 13B) = 15B
+  if (r.remaining < 15) return { nation: '', vrn: '' };
+  const nationByte = r.readUint8();
+  r.skip(1); // codePage
+  const vrn = r.readString(13);
+  return {
+    nation: NATION_CODES[nationByte] || `0x${nationByte.toString(16)}`,
+    vrn,
+  };
+}
+
 function parseCardIdentification(data: Uint8Array): DriverCardIdentification {
   const r = new BinaryReader(toArrayBuffer(data));
 
-  // Per Annex 1C Appendix 7 §2.1:
-  // cardIssuingMemberState (1B) + cardNumber (16B) + cardIssuingAuthorityName (Name 36B)
-  // + cardStartOfValidityDate (4B) + cardExpiryDate (4B)
-  // + holderSurname (Name 36B) + holderFirstNames (Name 36B)
-  // + holderBirthDate (4B) + preferredLanguage (2B)
+  // Per Annex 1C Appendix 1 §2.24 + §2.62:
+  // CardIdentification:
+  //   cardIssuingMemberState (1B) + cardNumber (16B) + cardIssuingAuthorityName (Name 36B)
+  //   + cardIssueDate (4B) + cardValidityBegin (4B) + cardExpiryDate (4B)
+  // DriverCardHolderIdentification:
+  //   holderSurname (Name 36B) + holderFirstNames (Name 36B)
+  //   + cardHolderBirthDate (4B) + preferredLanguage (2B)
   const nationByte = r.remaining >= 1 ? r.readUint8() : 0;
   const cardIssuingMemberState = NATION_CODES[nationByte] || `0x${nationByte.toString(16)}`;
   const cardNumber = r.remaining >= 16 ? r.readString(16) : '';
   const _cardIssuingAuthorityName = readName(r);
   const cardIssueDate = r.remaining >= 4 ? r.readTimestamp() : null;
+  const cardValidityBegin = r.remaining >= 4 ? r.readTimestamp() : null;
   const cardExpiryDate = r.remaining >= 4 ? r.readTimestamp() : null;
   const surname = readName(r);
   const firstName = readName(r);
@@ -1049,7 +1064,7 @@ function parseCardIdentification(data: Uint8Array): DriverCardIdentification {
   return {
     cardNumber, cardIssuingMemberState,
     driverName: { surname, firstName },
-    cardIssueDate, cardExpiryDate,
+    cardIssueDate, cardValidityBegin, cardExpiryDate,
   };
 }
 
