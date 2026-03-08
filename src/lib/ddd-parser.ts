@@ -2352,8 +2352,12 @@ function decodeActivityEntries(rawEntries: RawActivityWord[]): ActivityChangeEnt
       const hTo = Math.floor(Math.min(nextMinutes, 1440) / 60);
       const mTo = Math.min(nextMinutes, 1440) % 60;
 
+      // Determine drivingStatus for this time segment: use the latest known value from this slot
+      const drivingStatusValue = current.drivingStatus === 1 ? 'crew' as const : 'single' as const;
+
       entries.push({
         slot: slot === 0 ? 'driver' : 'codriver',
+        drivingStatus: drivingStatusValue,
         status: statusMap[current.activity] || 'unknown',
         cardInserted: current.cardInserted,
         minutes: current.minutes,
