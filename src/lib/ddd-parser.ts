@@ -692,67 +692,97 @@ function parseIndividualFile(buffer: ArrayBuffer, fileType: IndividualFileType, 
         console.log(`[DDD] Activities: ${sections.length} total sections, ${actSections.length} activity sections, tags: [${sections.map(s => '0x' + s.tag.toString(16)).join(', ')}]`);
 
         if (actSections.length > 0) {
-          // ── Concatenated strategy (primary) ──
-          // VU Activities download (0x76 0x32) contains sequential RecordArrays
-          // per Annex 1C: DateOfDayDownloaded, OdometerValueMidnight,
-          // VuCardIWRecordArray, VuActivityDailyRecordArray, etc.
-          // We concatenate ALL chunks (stripping TRTP), then extract only
-          // VuActivityDailyRecordArray data using RecordArray-aware parsing.
-          const strippedChunks: Uint8Array[] = [];
+          // ── Per-chunk RecordArray strategy (primary) ──
+          // Each TLV chunk (and the pre-TLV header) contains its OWN set of
+          // RecordArrays for different days. Parse each independently and merge.
+          const firstTlvOffset = actSections[0].offset;
+          const preTlvData = firstTlvOffset > 0 ? bytes.slice(0, firstTlvOffset) : null;
+
+          const chunksToParse: Uint8Array[] = [];
+          if (preTlvData && preTlvData.length > 5) {
+            chunksToParse.push(preTlvData);
+            console.log(`[DDD] Activities: including ${preTlvData.length}B pre-TLV data`);
+          }
           for (let ci = 0; ci < actSections.length; ci++) {
             const s = actSections[ci];
             const stripped = stripTrtpPrefix(s.data, ci === 0);
-            strippedChunks.push(stripped);
-          }
-          const totalLen = strippedChunks.reduce((sum, c) => sum + c.length, 0);
-          const mergedData = new Uint8Array(totalLen);
-          let writePos = 0;
-          for (const chunk of strippedChunks) {
-            mergedData.set(chunk, writePos);
-            writePos += chunk.length;
+            chunksToParse.push(stripped);
           }
 
-          // Validate cyclic header integrity after concatenation
-          if (mergedData.length >= 4) {
-            const mdView = new DataView(mergedData.buffer, mergedData.byteOffset, mergedData.byteLength);
-            const oldP = mdView.getUint16(0, false);
-            const newP = mdView.getUint16(2, false);
-            const bodyLen = mergedData.length - 4;
-            if (oldP >= bodyLen || newP >= bodyLen) {
-              console.warn(`[DDD] Cyclic header pointers out of bounds after concatenation: oldest=${oldP}, newest=${newP}, bodyLen=${bodyLen}`);
+          // Parse each chunk through RecordArray parser independently
+          let allRecordArrayDays: ActivityRecord[] = [];
+          let raChunksWithData = 0;
+          for (const chunk of chunksToParse) {
+            const chunkWarnings: ParserWarning[] = [];
+            const parsed = parseVuActivitiesRecordArrays(chunk, chunkWarnings);
+            if (parsed.length > 0) {
+              allRecordArrayDays.push(...parsed);
+              raChunksWithData++;
             }
           }
 
-          const mergedSection: DddSection = {
-            tag: actSections[0].tag,
-            tagHigh: actSections[0].tagHigh,
-            offset: actSections[0].offset,
-            length: mergedData.length,
-            data: mergedData,
-          };
+          if (allRecordArrayDays.length > 0) {
+            // Deduplicate by day
+            const byDayLocal = new Map<string, ActivityRecord>();
+            for (const rec of allRecordArrayDays) {
+              const key = `${rec.date.getUTCFullYear()}-${rec.date.getUTCMonth()}-${rec.date.getUTCDate()}`;
+              const existing = byDayLocal.get(key);
+              if (!existing || rec.entries.length > existing.entries.length) {
+                byDayLocal.set(key, rec);
+              }
+            }
+            const mergedWarnings: ParserWarning[] = [];
+            const mergedRejections: ActivityRejection[] = [];
+            let mergedActivities = Array.from(byDayLocal.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
 
-          const mergedWarnings: ParserWarning[] = [];
-          const mergedRejections: ActivityRejection[] = [];
-          const mergedActivities = parseActivitiesFromSections([mergedSection], mergedWarnings, mergedRejections, downloadDate);
-          const mergedEntryScore = mergedActivities.reduce((sum, d) => sum + d.entries.length, 0);
+            // Apply download date filter
+            if (downloadDate) {
+              const upperTs = Math.floor(downloadDate.getTime() / 1000);
+              const lowerTs = upperTs - 90 * 86400;
+              mergedActivities = mergedActivities.filter(r => {
+                const ts = Math.floor(r.date.getTime() / 1000);
+                return ts >= lowerTs && ts <= upperTs;
+              });
+            }
 
-          if (mergedActivities.length > 0) {
-            result.activities = mergedActivities;
-            result.warnings.push(...mergedWarnings);
-            result.activityRejections.push(...mergedRejections);
-            console.log(`[DDD] Activities strategy=concatenated: ${result.activities.length} days (entries=${mergedEntryScore}, payload=${mergedData.length} B)`);
-          } else {
-            // ── Per-section fallback (last resort) ──
-            // Only used if concatenated strategy yields 0 results
-            const perSectionWarnings: ParserWarning[] = [];
-            const perSectionRejections: ActivityRejection[] = [];
-            const perSectionActivities = parseActivitiesFromSections(actSections, perSectionWarnings, perSectionRejections, downloadDate);
-            if (perSectionActivities.length > 0) {
-              result.activities = perSectionActivities;
-              result.warnings.push(...perSectionWarnings);
-              result.activityRejections.push(...perSectionRejections);
-              const perSectionEntryScore = perSectionActivities.reduce((sum, d) => sum + d.entries.length, 0);
-              console.log(`[DDD] Activities strategy=per-section (fallback): ${result.activities.length} days (entries=${perSectionEntryScore})`);
+            if (mergedActivities.length > 0) {
+              result.activities = mergedActivities;
+              result.warnings.push(...mergedWarnings);
+              result.activityRejections.push(...mergedRejections);
+              const entryScore = mergedActivities.reduce((sum, d) => sum + d.entries.length, 0);
+              console.log(`[DDD] Activities strategy=per-chunk-RecordArray: ${mergedActivities.length} days from ${raChunksWithData} chunks (entries=${entryScore})`);
+            }
+          }
+
+          // ── Concatenated fallback ──
+          if (result.activities.length === 0) {
+            const strippedChunks: Uint8Array[] = [];
+            for (let ci = 0; ci < actSections.length; ci++) {
+              const s = actSections[ci];
+              const stripped = stripTrtpPrefix(s.data, ci === 0);
+              strippedChunks.push(stripped);
+            }
+            const totalLen = strippedChunks.reduce((sum, c) => sum + c.length, 0);
+            const mergedData = new Uint8Array(totalLen);
+            let writePos = 0;
+            for (const chunk of strippedChunks) {
+              mergedData.set(chunk, writePos);
+              writePos += chunk.length;
+            }
+
+            const mergedSection: DddSection = {
+              tag: actSections[0].tag, tagHigh: actSections[0].tagHigh,
+              offset: actSections[0].offset, length: mergedData.length, data: mergedData,
+            };
+            const mergedWarnings: ParserWarning[] = [];
+            const mergedRejections: ActivityRejection[] = [];
+            const mergedActivities = parseActivitiesFromSections([mergedSection], mergedWarnings, mergedRejections, downloadDate);
+
+            if (mergedActivities.length > 0) {
+              result.activities = mergedActivities;
+              result.warnings.push(...mergedWarnings);
+              result.activityRejections.push(...mergedRejections);
+              console.log(`[DDD] Activities strategy=concatenated-fallback: ${result.activities.length} days`);
             }
           }
         }
@@ -1836,6 +1866,21 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
       continue;
     }
 
+    // Strategy 1.5: Gen1-style VU parser (generation locking — Gen1 card in Gen2v2 VU)
+    // Data inside 0x76 0x32 tag uses Gen1 flat format: TimeReal + Odo + CardIW + ActivityChanges
+    const gen1Parsed = parseVuActivitiesGen1Style(data, warnings, downloadDate);
+    if (gen1Parsed.length > 0) {
+      for (const rec of gen1Parsed) {
+        const key = dayKey(rec.date);
+        const existing = byDay.get(key);
+        if (!existing || rec.entries.length > existing.entries.length) {
+          byDay.set(key, rec);
+        }
+      }
+      console.log(`[DDD] Activities section @${section.offset}: Gen1-style VU parser found ${gen1Parsed.length} days`);
+      continue;
+    }
+
     // Strategy 2: Cyclic buffer / forward scan (Card data or fallback)
     const structuredParsed = parseActivities(data);
     let allParsed = structuredParsed;
@@ -1945,6 +1990,165 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
   return records;
 }
 
+// ─── VU Activities Gen1-style parser (generation locking) ───────────────────
+// When a Gen1 card is in a Gen2v2 VU, the data inside 0x76 0x32 TLV uses
+// Gen1 flat format per Annex 1C Appendix 7 §2.2.6.2:
+//   VuActivitiesFirstGen:
+//     TimeReal (4B)               — reference/download date
+//     OdometerValueMidnight (3B)  — reference odometer
+//     VuCardIWData:
+//       NoOfIWRecords (2B)
+//       VuCardIWRecordFirstGen[N] — each 129B
+//     VuActivityDailyData:
+//       NoOfActivityChanges (2B)
+//       ActivityChangeInfo[N]     — each 2B, FLAT across all days
+//     VuPlaceDailyWorkPeriodData  — skip
+//     VuSpecificConditionData     — skip
+//     SignatureFirstGen (128B)    — skip
+
+const VU_CARD_IW_RECORD_SIZE_GEN1 = 129;
+// HolderName(72) + FullCardNumber(18) + ExpiryDate(4) + InsertionTime(4)
+// + OdoInsertion(3) + SlotNumber(1) + WithdrawalTime(4) + OdoWithdrawal(3)
+// + PreviousVehicleInfoFirstGen(19) + ManualInputFlag(1) = 129
+
+function parseVuActivitiesGen1Style(
+  data: Uint8Array,
+  warnings: ParserWarning[],
+  downloadDate?: Date | null
+): ActivityRecord[] {
+  if (data.length < 12) return [];
+  const view = new DataView(toArrayBuffer(data));
+
+  // Read TimeReal (4B) — reference timestamp
+  const refTs = view.getUint32(0, false);
+  if (!isValidTimestamp(refTs)) return [];
+
+  // Read OdometerValueMidnight (3B)
+  const refOdo = (data[4] << 16) | (data[5] << 8) | data[6];
+
+  // VuCardIWData: NoOfIWRecords (2B)
+  if (data.length < 9) return [];
+  const noOfIWRecords = view.getUint16(7, false);
+  if (noOfIWRecords > 200) {
+    console.log(`[DDD] Gen1 VU: NoOfIWRecords=${noOfIWRecords} too high, aborting`);
+    return [];
+  }
+
+  const cardIWDataEnd = 9 + noOfIWRecords * VU_CARD_IW_RECORD_SIZE_GEN1;
+  if (cardIWDataEnd + 2 > data.length) {
+    console.log(`[DDD] Gen1 VU: CardIW data exceeds buffer (need ${cardIWDataEnd + 2}, have ${data.length})`);
+    return [];
+  }
+
+  // Extract per-day dates from CardIW insertion times for day-date assignment
+  const cardIWDates: Date[] = [];
+  for (let i = 0; i < noOfIWRecords; i++) {
+    const recStart = 9 + i * VU_CARD_IW_RECORD_SIZE_GEN1;
+    // CardInsertionTime is at offset 94 within record:
+    // HolderName(72) + FullCardNumber(18) + ExpiryDate(4) = 94
+    const insertionOffset = recStart + 72 + 18 + 4;
+    if (insertionOffset + 4 <= data.length) {
+      const insertTs = view.getUint32(insertionOffset, false);
+      if (isValidTimestamp(insertTs)) {
+        cardIWDates.push(new Date(insertTs * 1000));
+      }
+    }
+  }
+
+  console.log(`[DDD] Gen1 VU: refTs=${new Date(refTs * 1000).toISOString()}, refOdo=${refOdo}, noOfIWRecords=${noOfIWRecords}, cardIWDates=${cardIWDates.length}, cardIWDataEnd=${cardIWDataEnd}`);
+
+  // VuActivityDailyData: NoOfActivityChanges (2B)
+  const noOfChanges = view.getUint16(cardIWDataEnd, false);
+  if (noOfChanges === 0 || noOfChanges > 50000) {
+    console.log(`[DDD] Gen1 VU: NoOfActivityChanges=${noOfChanges} invalid`);
+    return [];
+  }
+
+  const changesStart = cardIWDataEnd + 2;
+  const changesEnd = changesStart + noOfChanges * 2;
+  if (changesEnd > data.length) {
+    console.log(`[DDD] Gen1 VU: activity changes exceed buffer (need ${changesEnd}, have ${data.length})`);
+    return [];
+  }
+
+  console.log(`[DDD] Gen1 VU: NoOfActivityChanges=${noOfChanges}, changesStart=${changesStart}, changesEnd=${changesEnd}`);
+
+  // Read all ActivityChangeInfo words
+  const rawWords: RawActivityWord[] = [];
+  for (let i = 0; i < noOfChanges; i++) {
+    const word = view.getUint16(changesStart + i * 2, false);
+    if (word === 0x0000 || word === 0xFFFF) continue;
+    const slot = (word >> 15) & 0x01;
+    const cardInserted = ((word >> 13) & 0x01) === 0;
+    const activity = (word >> 11) & 0x03;
+    const minutes = word & 0x07FF;
+    if (minutes >= 1440) continue;
+    rawWords.push({ slot, cardInserted, activity, minutes });
+  }
+
+  if (rawWords.length === 0) return [];
+
+  // Split into per-day groups by minute resets
+  const dayGroups: RawActivityWord[][] = [[]];
+  let prevMinutes = -1;
+  for (const word of rawWords) {
+    if (prevMinutes >= 0 && word.minutes < prevMinutes && dayGroups[dayGroups.length - 1].length > 0) {
+      dayGroups.push([]);
+    }
+    dayGroups[dayGroups.length - 1].push(word);
+    prevMinutes = word.minutes;
+  }
+
+  // Remove empty groups
+  const validGroups = dayGroups.filter(g => g.length > 0);
+  if (validGroups.length === 0) return [];
+
+  // Assign dates: use download date as the newest day, count backward.
+  // If no download date, use the reference TimeReal.
+  const newestDate = downloadDate || new Date(refTs * 1000);
+  const newestMidnight = new Date(Date.UTC(
+    newestDate.getUTCFullYear(),
+    newestDate.getUTCMonth(),
+    newestDate.getUTCDate()
+  ));
+
+  // Try to use CardIW dates for better day-date assignment
+  // Extract unique days from CardIW insertion times
+  const cardIWDaySet = new Set<string>();
+  for (const d of cardIWDates) {
+    cardIWDaySet.add(`${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`);
+  }
+  const cardIWUniqueDays = Array.from(cardIWDaySet).sort();
+  console.log(`[DDD] Gen1 VU: ${validGroups.length} day groups, ${cardIWUniqueDays.length} unique CardIW days`);
+
+  const records: ActivityRecord[] = [];
+  for (let i = 0; i < validGroups.length; i++) {
+    // Assign dates backward from newest
+    const dayOffset = validGroups.length - 1 - i;
+    const date = new Date(newestMidnight.getTime() - dayOffset * 86400000);
+    const entries = decodeActivityEntries(validGroups[i]);
+
+    if (entries.length === 0) continue;
+
+    // Validate slot totals
+    const slotTotals = { driver: 0, codriver: 0 };
+    let valid = true;
+    for (const e of entries) {
+      const [hF, mF] = e.timeFrom.split(':').map(Number);
+      const [hT, mT] = e.timeTo.split(':').map(Number);
+      const dur = (hT * 60 + mT) - (hF * 60 + mF);
+      if (dur <= 0 || dur > 1440) { valid = false; break; }
+      slotTotals[e.slot] += dur;
+    }
+    if (!valid || slotTotals.driver > 1440 || slotTotals.codriver > 1440) continue;
+
+    records.push({ date, dailyPresenceCounter: 0, dayDistance: 0, entries });
+  }
+
+  console.log(`[DDD] Gen1 VU parser: ${records.length} valid activity days from ${rawWords.length} activity words`);
+  return records;
+}
+
 // ─── VU Activities RecordArray parser (Gen2/Gen2v2) ─────────────────────────
 // Per Annex 1C Appendix 7, VuActivitiesSecondGen(V2) is a sequence of RecordArrays:
 //   DateOfDayDownloaded (type=0x06): N dates (4B each = TimeReal)
@@ -1953,49 +2157,13 @@ function parseActivitiesFromSections(sections: DddSection[], warnings: ParserWar
 //   ActivityChangeInfo (type=0x01): K activity words (2B each, FLAT for all days)
 //   VuPlaceDailyWorkPeriod (type=0x1c): place records (skip)
 //   VuGNSSADRecord (type=0x16): GNSS records (skip)
-//   VuSpecificCondition (type=0x09): condition records (skip)
-//   VuBorderCrossing (type=0x22): border crossing records (skip, Gen2v2)
-//   VuLoadUnload (type=0x23): load/unload records (skip, Gen2v2)
-//   Signature (type=0x08): digital signature (skip)
-// Each RecordArray: type(1B) + recordSize(2B) + noOfRecords(2B) + data(count×size)
+//   VuSpecificConditionRecord (type=0x09): specific condition records (skip)
+//   Signature (type=0x08): signature (skip)
 
 function parseVuActivitiesRecordArrays(data: Uint8Array, warnings: ParserWarning[]): ActivityRecord[] {
-  if (data.length < 10) return [];
-
   const view = new DataView(toArrayBuffer(data));
+  let pos = 0;
 
-  // Valid RecordTypes per Annex 1C: 0x01–0x24
-  const isValidRecordType = (b: number) => b >= 0x01 && b <= 0x24;
-
-  // Scan for the first valid RecordArray header.
-  // The data may start with a VuDownloadActivityData preamble (DownloadingTime 4B + FullCardNumber 18-20B)
-  // or other non-RecordArray data. We look for a sequence of at least 2 consecutive
-  // valid RecordArray headers to confirm we found the right offset.
-  let startPos = -1;
-  for (let scan = 0; scan < Math.min(data.length - 10, 200); scan++) {
-    const rt = data[scan];
-    if (!isValidRecordType(rt)) continue;
-    const rs = view.getUint16(scan + 1, false);
-    const nr = view.getUint16(scan + 3, false);
-    if (rs === 0 || rs > 1000 || nr > 50000) continue;
-    const totalSize = 5 + nr * rs;
-    if (scan + totalSize + 5 > data.length) continue;
-    // Check if next RecordArray also looks valid
-    const nextRt = data[scan + totalSize];
-    if (isValidRecordType(nextRt)) {
-      const nextRs = view.getUint16(scan + totalSize + 1, false);
-      const nextNr = view.getUint16(scan + totalSize + 3, false);
-      if (nextRs > 0 && nextRs <= 1000 && nextNr <= 50000) {
-        startPos = scan;
-        break;
-      }
-    }
-  }
-
-  if (startPos < 0) return [];
-  console.log(`[DDD] VU RecordArrays: found first header at offset ${startPos}`);
-
-  let pos = startPos;
   const dates: Date[] = [];
   const odometers: number[] = [];
   const activityWords: RawActivityWord[] = [];
