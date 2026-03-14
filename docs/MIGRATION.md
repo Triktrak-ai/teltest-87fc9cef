@@ -607,7 +607,37 @@ netsh advfirewall firewall add rule name="TachoDddServer TCP" dir=in action=allo
 # Port 5100 NIE otwieraj z zewnątrz — dostępny tylko przez reverse proxy
 ```
 
-Sprawdź też porty w panelu OVH VPS (firewall zewnętrzny).
+---
+
+## Krok 11a — Konfiguracja DNS
+
+### Domena
+
+Skieruj domenę na IP VPS (panel registrara lub Cloudflare):
+
+| Typ | Nazwa | Wartość | TTL |
+|-----|-------|---------|-----|
+| A | `tachoddd.twojadomena.pl` | `IP_TWOJEGO_VPS` | 300 (5 min) |
+
+> **Uwaga:** Ustaw niski TTL (300s) na czas konfiguracji, potem możesz zwiększyć do 3600.
+
+### Weryfikacja DNS
+
+```powershell
+# Z dowolnego komputera
+nslookup tachoddd.twojadomena.pl
+# Powinno zwrócić IP VPS
+
+# Lub
+Resolve-DnsName tachoddd.twojadomena.pl
+```
+
+### Cloudflare (opcjonalnie)
+
+Jeśli używasz Cloudflare jako proxy (pomarańczowa chmurka):
+- Porty 80/443 będą proxowane przez Cloudflare
+- Port 5200 (TCP) **NIE** jest proxowany — urządzenia Teltonika łączą się bezpośrednio na IP VPS
+- W DNS Cloudflare: ustaw `tachoddd` jako **Proxied**, ale dodaj osobny rekord `tcp.tachoddd` jako **DNS only** dla portu 5200
 
 ---
 
