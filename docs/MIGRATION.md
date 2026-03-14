@@ -829,6 +829,20 @@ O: Tak! Rozwijaj w Lovable, pushuj na GitHub, potem na serwerze: `git pull && np
 **P: Jak przenieść użytkowników z Lovable Cloud?**
 O: Nie ma bezpośredniej migracji auth. Utwórz użytkowników na nowo. Dane sesji/urządzeń można wyeksportować CSV i zaimportować do PostgreSQL.
 
+**P: Jak przenieść dane sesji z Lovable Cloud?**
+O: Eksportuj dane z bazy Lovable Cloud (Supabase):
+```sql
+-- W Supabase SQL Editor:
+COPY (SELECT * FROM sessions ORDER BY created_at) TO STDOUT WITH CSV HEADER;
+COPY (SELECT * FROM session_events ORDER BY created_at) TO STDOUT WITH CSV HEADER;
+COPY (SELECT * FROM download_schedule) TO STDOUT WITH CSV HEADER;
+COPY (SELECT * FROM user_devices) TO STDOUT WITH CSV HEADER;
+```
+Następnie zaimportuj do lokalnego PostgreSQL:
+```powershell
+& "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U tachoddd -d tachoddd -c "\copy sessions FROM 'sessions.csv' CSV HEADER"
+```
+
 **P: Czy mogę uruchomić na Linuxie?**
 O: Tak, .NET 8 jest cross-platform. Zamiast `sc.exe` użyj `systemd`, zamiast Caddy na Windows — Caddy na Linux (lub nginx).
 
@@ -837,3 +851,266 @@ O: W `appsettings.json` ustaw `Email:Enabled = true` i skonfiguruj SMTP (np. smt
 
 **P: Czy potrzebuję IIS lub Caddy?**
 O: Tak, do SSL (HTTPS) i obsługi portu 80/443. Kestrel sam serwuje frontend i API na :5100, ale reverse proxy zapewnia certyfikat SSL.
+
+**P: Co jeśli ngrok zmieni adres po restarcie?**
+O: Darmowy plan ngrok przydziela losowy adres. Opcje: (1) Płatny plan ze stałym adresem, (2) Skrypt PowerShell na laptopie, który po uruchomieniu ngrok automatycznie aktualizuje `appsettings.json` na VPS przez SSH/SCP, (3) Ręczna aktualizacja.
+
+**P: Jak sprawdzić czy CardBridge działa?**
+O: Na laptopie: `Invoke-WebRequest http://localhost:5201 -UseBasicParsing`. Na VPS: test WebSocket do adresu ngrok (patrz krok 8a.6).
+
+---
+
+## Struktura katalogów na serwerze
+
+```
+C:\TachoDDD\
+├── WebApi\                          ← TachoWebApi (opublikowany .NET 8)
+│   ├── TachoWebApi.exe              ← Główny plik wykonywalny
+│   ├── appsettings.json             ← Konfiguracja (connection string, JWT, API key)
+│   ├── wwwroot\                     ← Frontend React (skopiowany z dist/)
+│   │   ├── index.html
+│   │   ├── assets\
+│   │   └── ...
+│   └── *.dll                        ← Biblioteki .NET
+│
+├── DddServer\                       ← TachoDddServer (opublikowany .NET 8)
+│   ├── TachoDddServer.exe           ← TCP listener na porcie 5200
+│   ├── appsettings.json             ← Konfiguracja (port, CardBridge URL, WebReport)
+│   └── *.dll
+│
+├── Downloads\                       ← Pobrane pliki DDD (per IMEI)
+│   ├── 358480081630115\
+│   │   ├── 358480081630115_overview_20260305_164750.ddd
+│   │   ├── 358480081630115_activities_20260305_164810.ddd
+│   │   ├── 358480081630115_events_20260305_164830.ddd
+│   │   ├── 358480081630115_speed_20260305_164900.ddd
+│   │   ├── 358480081630115_technical_20260305_164920.ddd
+│   │   └── 358480081630115_driver1_20260305_165000.ddd
+│   └── 350424060855218\
+│       └── ...
+│
+├── SessionLogs\                     ← Logi diagnostyczne sesji (JSON)
+│   ├── 358480081630115_20260305_164750.json
+│   └── ...
+│
+├── Logs\                            ← Logi ruchu binarnego (hex dump)
+│   ├── 358480081630115_20260305_164750.log
+│   └── ...
+│
+├── Backups\                         ← Backupy PostgreSQL (pg_dump)
+│   ├── tachoddd_20260305_030000.backup
+│   └── ...
+│
+├── Caddyfile                        ← Konfiguracja reverse proxy
+├── backup.ps1                       ← Skrypt backupu
+└── update.ps1                       ← Skrypt aktualizacji (opcjonalny)
+```
+
+---
+
+## Przełączanie frontendu z Lovable Cloud na Self-hosted
+
+### Krok 1: Zmiana zmiennej środowiskowej
+
+Utwórz/edytuj plik `.env` w katalogu głównym repozytorium:
+
+```env
+# Tryb Lovable Cloud (domyślny — Supabase):
+# VITE_API_BASE_URL=  ← puste lub brak
+
+# Tryb Self-hosted (TachoWebApi):
+VITE_API_BASE_URL=https://tachoddd.twojadomena.pl
+```
+
+### Krok 2: Przebudowa frontendu
+
+```powershell
+npm run build
+Copy-Item -Recurse -Force dist\* C:\TachoDDD\WebApi\wwwroot\
+```
+
+### Krok 3: Weryfikacja
+
+Otwórz DevTools (F12) → Console. Powinno wyświetlić:
+```
+API mode: self-hosted (https://tachoddd.twojadomena.pl)
+```
+
+### Co się zmienia między trybami
+
+| Aspekt | Lovable Cloud | Self-hosted |
+|--------|---------------|-------------|
+| Autentykacja | Supabase Auth | JWT (AuthController) |
+| Realtime | Supabase Realtime | SignalR Hub |
+| Storage | Supabase Storage | VPS disk |
+| API calls | supabase.from().select() | fetch('/api/...') |
+| RLS | Polityki Supabase | JWT Claims + Middleware |
+
+---
+
+## Monitoring i diagnostyka
+
+### Sprawdzanie statusu serwisów
+
+```powershell
+# Status wszystkich serwisów TachoDDD
+Get-Service TachoWebApi, TachoDddServer, caddy | Format-Table Name, Status, StartType
+
+# Logi serwisu (Event Viewer)
+Get-EventLog -LogName Application -Source ".NET Runtime" -Newest 20
+
+# Porty nasłuchujące
+netstat -an | findstr "5100 5200 80 443"
+
+# Lub PowerShell 7
+Get-NetTCPConnection -LocalPort 5100,5200 | Format-Table LocalPort, State, OwningProcess
+```
+
+### Test połączenia z CardBridge (z VPS)
+
+```powershell
+# Test HTTP do ngrok
+Invoke-WebRequest -Uri "https://abc123.ngrok-free.app" -UseBasicParsing -TimeoutSec 5
+
+# Test portu TCP (urządzenia Teltonika)
+Test-NetConnection -ComputerName localhost -Port 5200
+```
+
+### Sprawdzanie logów TachoDddServer
+
+```powershell
+# Najnowsze logi sesji
+Get-ChildItem "C:\TachoDDD\Logs" | Sort-Object LastWriteTime -Descending | Select-Object -First 10
+
+# Szukanie błędów w logach
+Select-String -Path "C:\TachoDDD\Logs\*.log" -Pattern "ERROR|FAIL" | Select-Object -Last 20
+```
+
+### Sprawdzanie bazy danych
+
+```powershell
+# Aktywne sesje (z ostatnich 24h)
+& "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U tachoddd -d tachoddd -c "
+  SELECT id, imei, status, files_downloaded, total_files, created_at
+  FROM sessions
+  WHERE created_at > now() - interval '24 hours'
+  ORDER BY created_at DESC
+  LIMIT 20;
+"
+
+# Status harmonogramu pobierania
+& "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U tachoddd -d tachoddd -c "
+  SELECT imei, status, attempts_today, last_success_at, last_error
+  FROM download_schedule
+  ORDER BY updated_at DESC;
+"
+```
+
+### Logi w Event Viewer
+
+1. Otwórz: `eventvwr.msc`
+2. Przejdź do: **Windows Logs → Application**
+3. Filtruj po źródle: `.NET Runtime` lub `TachoWebApi`
+
+---
+
+## Troubleshooting
+
+### Problem: Zombie sessions (status "connecting" bez aktywności)
+
+**Przyczyna:** Tunel ngrok lub CardBridge nie działał — sesje TCP nawiązane ale bez dalszej komunikacji.
+
+**Rozwiązanie:**
+```sql
+-- Oznacz zombie sessions jako error
+UPDATE sessions
+SET status = 'error',
+    error_message = 'Connection timeout - tunnel offline',
+    completed_at = now()
+WHERE status = 'connecting'
+  AND last_activity < now() - interval '30 minutes';
+```
+
+### Problem: Stuck "downloading" (status downloading mimo completed_at)
+
+**Przyczyna:** Race condition — spóźniony raport "downloading" nadpisał status po "completed".
+
+**Rozwiązanie:**
+```sql
+-- Napraw sesje ze statusem downloading ale ustawionym completed_at
+UPDATE sessions
+SET status = CASE
+    WHEN files_downloaded >= total_files THEN 'completed'
+    WHEN files_downloaded > 0 THEN 'partial'
+    ELSE 'error'
+  END
+WHERE status = 'downloading'
+  AND completed_at IS NOT NULL;
+```
+
+**UI:** `getEffectiveStatus()` automatycznie koryguje wyświetlany status.
+
+### Problem: Sesje z IMEI "unknown"
+
+**Przyczyna:** Serwer TCP nie otrzymał pakietu IMEI (np. tunel offline, urządzenie rozłączone).
+
+**Rozwiązanie:**
+```sql
+-- Usuń sesje z unknown IMEI starsze niż 7 dni
+DELETE FROM session_events WHERE session_id IN (
+  SELECT id FROM sessions WHERE imei = 'unknown' AND created_at < now() - interval '7 days'
+);
+DELETE FROM sessions WHERE imei = 'unknown' AND created_at < now() - interval '7 days';
+```
+
+### Problem: "GenerationMismatchKeepGen1" w logach
+
+**Przyczyna:** VU jest Gen1, ale karta jest Gen2 — serwer próbuje Gen2 TRTP, dostaje błąd, fallback do Gen1.
+
+**Status:** To jest **normalne zachowanie** — fallback działa poprawnie. Pliki są pobierane z Gen1 TRTP.
+
+### Problem: CardBridge nie odpowiada
+
+**Checklist:**
+1. Czy CardBridgeService.exe jest uruchomiony na laptopie? (`Get-Process CardBridgeService`)
+2. Czy ngrok jest uruchomiony? (`Get-Process ngrok`)
+3. Czy czytnik kart jest podłączony? (Device Manager → Smart card readers)
+4. Czy karta jest włożona do czytnika?
+5. Czy adres ngrok w `appsettings.json` na VPS jest aktualny?
+
+```powershell
+# Test lokalny na laptopie
+Test-NetConnection -ComputerName localhost -Port 5201
+
+# Test z VPS
+Invoke-WebRequest -Uri "https://TWOJ_NGROK.ngrok-free.app" -UseBasicParsing -TimeoutSec 5
+```
+
+### Problem: Serwis nie startuje po restarcie VPS
+
+```powershell
+# Sprawdź status
+sc.exe query TachoWebApi
+sc.exe query TachoDddServer
+
+# Sprawdź logi błędów
+Get-EventLog -LogName System -Source "Service Control Manager" -Newest 10 |
+  Where-Object { $_.Message -like "*Tacho*" }
+
+# Ręczny restart
+sc.exe stop TachoWebApi; sc.exe start TachoWebApi
+sc.exe stop TachoDddServer; sc.exe start TachoDddServer
+```
+
+### Problem: SSL certyfikat wygasł
+
+```powershell
+# Caddy automatycznie odnawia certyfikaty
+# Sprawdź status Caddy
+sc.exe query caddy
+
+# Restart Caddy wymusi odnowienie
+sc.exe stop caddy; sc.exe start caddy
+
+# IIS + win-acme: sprawdź Task Scheduler → "win-acme renew"
+```
