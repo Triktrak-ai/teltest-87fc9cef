@@ -66,14 +66,83 @@ TachoWebApi serwuje **zarówno API jak i frontend React** z jednego procesu — 
 
 | Komponent | Wymaganie |
 |-----------|-----------|
-| **OS** | Windows Server 2019+ (testowane na 2025) |
+| **OS** | Windows Server 2025 (zalecany) lub 2019/2022 |
 | **.NET** | .NET 8 SDK (do kompilacji i migracji), Runtime na serwerze |
 | **PostgreSQL** | 15+ (zalecany 16) |
 | **Node.js** | 18+ (do budowania frontendu) |
 | **Git** | Do pobrania kodu z GitHub |
+| **PowerShell** | 7+ (preinstalowany na Windows Server 2025) |
 | **RAM** | min. 2 GB wolnego |
 | **Dysk** | min. 10 GB wolnego |
-| **Porty** | 5100 (API, wewnętrzny), 5200 (TCP urządzenia), 80/443 (web) |
+| **Porty** | 5100 (API, wewnętrzny), 5200 (TCP urządzenia), 80/443 (web), 3389 (RDP) |
+
+---
+
+## Krok 0 — Przygotowanie Windows Server 2025
+
+### 0.1. Połączenie RDP
+
+```powershell
+# Z lokalnego komputera
+mstsc /v:TWOJ_IP_VPS:3389
+```
+
+Zaloguj się kontem administratora OVH.
+
+### 0.2. Windows Update
+
+```powershell
+# Uruchom Windows Update
+Install-Module PSWindowsUpdate -Force
+Get-WindowsUpdate -Install -AcceptAll -AutoReboot
+```
+
+Poczekaj na restart i ponownie połącz się przez RDP.
+
+### 0.3. Instalacja PowerShell 7 (jeśli brak)
+
+Windows Server 2025 ma PowerShell 7 preinstalowany. Sprawdź:
+
+```powershell
+$PSVersionTable.PSVersion
+# Oczekiwane: 7.x
+```
+
+Jeśli brak:
+```powershell
+winget install Microsoft.PowerShell
+```
+
+### 0.4. Instalacja .NET 8
+
+```powershell
+# Pobierz instalator .NET 8 SDK
+Invoke-WebRequest -Uri "https://dot.net/v1/dotnet-install.ps1" -OutFile dotnet-install.ps1
+.\dotnet-install.ps1 -Channel 8.0
+
+# Lub zainstaluj przez winget
+winget install Microsoft.DotNet.SDK.8
+
+# Weryfikacja
+dotnet --version
+# Oczekiwane: 8.0.xxx
+```
+
+### 0.5. Instalacja Git
+
+```powershell
+winget install Git.Git
+# Restart terminala po instalacji
+git --version
+```
+
+### 0.6. Wyłączenie IE Enhanced Security (opcjonalne)
+
+```powershell
+# Ułatwia pobieranie plików przez przeglądarkę
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}" -Name "IsInstalled" -Value 0
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A8-37EF-4b3f-8CFC-4F3A74704073}" -Name "IsInstalled" -Value 0
+```
 
 ---
 
