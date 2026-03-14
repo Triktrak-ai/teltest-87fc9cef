@@ -871,6 +871,227 @@ graph TB
 
 ---
 
+## 10. Statusy sesji — nazewnictwo i logika przejść
+
+### Tabela statusów
+
+| Status DB | Label PL (UI) | Opis | Kiedy ustawiany |
+|-----------|---------------|------|-----------------|
+| `connecting` | Łączenie | Sesja TCP nawiązana, oczekiwanie na IMEI | Utworzenie sesji |
+| `auth_gen1` | Autentykacja Gen1 | Autentykacja APDU z kartą Gen1 | Po wykryciu karty Gen1 |
+| `auth_gen2v1` | Autentykacja Gen2v1 | Autentykacja APDU z kartą Gen2v1 | Po wykryciu karty Gen2v1 |
+| `auth_gen2v2` | Autentykacja Gen2v2 | Autentykacja APDU z kartą Gen2v2 | Po wykryciu karty Gen2v2 |
+| `downloading` | Pobieranie | Trwa pobieranie plików DDD z VU | Po AuthOK i rozpoczęciu pobierania |
+| `completed` | Ukończono | Wszystkie pliki pobrane pomyślnie | Wszystkie pliki VU + karty pobrane |
+| `partial` | Częściowe | Część plików pobrana (np. brak karty) | ≥1 plik pobrany, ale nie wszystkie |
+| `error` | Błąd | Sesja zakończona błędem | Błąd krytyczny (auth 3x, disconnect) |
+| `skipped` | Pominięto | Pobieranie pominięte (cooldown/blokada) | check-download zwrócił should_download=false |
+
+### Statusy specjalne w UI (nie zapisywane w DB)
+
+| Label PL | Warunek | Opis |
+|----------|---------|------|
+| Stacyjka OFF | `files_downloaded=0 AND apdu_exchanges=0 AND status=error` | Urządzenie zgłosiło błąd bez żadnej wymiany danych |
+| VU offline | `error_code zawiera "01:04" lub "01:01"` | Tachograf nie odpowiedział |
+| Lockout | `error_message zawiera "Lockout"` | Urządzenie zablokowane po zbyt wielu próbach |
+
+### Logika `getEffectiveStatus()` w UI
+
+```typescript
+// Priorytet: completed_at > status z DB
+if (session.completed_at && session.status === "downloading") {
+  return session.files_downloaded >= session.total_files ? "completed" : "partial";
+}
+```
+
+### Diagram przejść statusów
+
+```mermaid
+stateDiagram-v2
+    [*] --> connecting
+    connecting --> auth_gen1 : Karta Gen1 wykryta
+    connecting --> auth_gen2v1 : Karta Gen2v1 wykryta
+    connecting --> auth_gen2v2 : Karta Gen2v2 wykryta
+    connecting --> skipped : Download gate = false
+    connecting --> error : Ignition OFF / Timeout
+
+    auth_gen1 --> downloading : AuthOK
+    auth_gen2v1 --> downloading : AuthOK
+    auth_gen2v2 --> downloading : AuthOK
+    auth_gen1 --> error : Auth failed 3x
+    auth_gen2v1 --> error : Auth failed 3x
+    auth_gen2v2 --> error : Auth failed 3x
+
+    downloading --> completed : Wszystkie pliki pobrane
+    downloading --> partial : Część plików pobrana
+    downloading --> error : Błąd krytyczny
+
+    partial --> completed : Upgrade (5+ VU files + empty_slot)
+```
+
+---
+
+## 11. Race condition protection (report-session)
+
+Edge function `report-session` chroni statusy końcowe przed nadpisaniem przez spóźnione raporty:
+
+```
+FINAL_STATUSES = ["completed", "partial", "error", "skipped"]
+
+1. Pobierz obecny status i completed_at z DB
+2. Jeśli obecny status jest FINAL lub completed_at jest ustawiony:
+   - NIE pozwól na nadpisanie statusem nie-finalnym (np. "downloading")
+   - Loguj: "STATUS PROTECTION: keeping 'completed', ignoring 'downloading'"
+3. Jeśli nowy status jest FINAL — zapisz normalnie
+```
+
+### Znany problem: Stuck "downloading"
+
+Race condition występuje gdy:
+1. Serwer C# wysyła raport `status=completed` (szybko)
+2. Spóźniony raport `status=downloading` dociera po completed
+3. Bez ochrony — status wracał do "downloading" mimo completed_at
+
+**Rozwiązanie:** `getEffectiveStatus()` w UI sprawdza `completed_at` i nadpisuje surowy status z DB.
+
+---
+
+## 12. Partial → Completed upgrade
+
+Edge function automatycznie upgraduje status `partial` do `completed` gdy:
+
+```
+Warunki:
+  - incoming status = "partial"
+  - files_downloaded >= 5 (wszystkie pliki VU)
+  - Sprawdź session_events dla warning/error:
+    - Filtruj zdarzenia zawierające "Slot 1", "Slot 2", "card"
+    - Jeśli WSZYSTKIE takie zdarzenia to "empty_slot" / "Empty slot"
+      → UPGRADE do "completed"
+    - Jeśli brak zdarzeń card issues → UPGRADE do "completed"
+```
+
+**Uzasadnienie:** Brak karty w slocie (empty_slot) to normalna sytuacja — kierowca nie musi mieć karty włożonej. Jeśli wszystkie 5 plików VU zostało pobrane, sesja jest kompletna.
+
+---
+
+## 13. Download gate (check-download + schedule)
+
+### Przepływ
+
+```mermaid
+sequenceDiagram
+    participant DS as DddSession
+    participant WR as WebReporter
+    participant CD as check-download
+    participant DB as Database
+
+    DS->>WR: CheckDownloadScheduleAsync()
+    WR->>CD: GET /check-download?imei=X
+    CD->>DB: SELECT download_schedule WHERE imei=X
+    CD->>DB: SELECT app_settings WHERE key='download_block_disabled'
+
+    alt Blokada globalna włączona
+        CD-->>WR: should_download: false, reason: "global_block"
+    else Sukces w ostatnich 24h
+        CD-->>WR: should_download: false, reason: "recent_success"
+    else attempts_today >= 3
+        CD-->>WR: should_download: false, reason: "max_attempts"
+    else Brak danych lub stare
+        CD-->>WR: should_download: true
+    end
+
+    alt should_download = false
+        DS->>WR: ReportStatus("skipped")
+        DS->>DS: SendTerminate → Complete
+    else should_download = true
+        DS->>DS: Kontynuuj sesję normalnie
+    end
+```
+
+### Tabela download_schedule
+
+| Pole | Opis |
+|------|------|
+| `imei` | Unikalny identyfikator urządzenia |
+| `status` | ok / partial / error / skipped |
+| `attempts_today` | Licznik prób dzisiaj (resetowany codziennie o północy) |
+| `last_success_at` | Ostatni sukces (completed/partial) |
+| `last_attempt_at` | Ostatnia próba (dowolny status końcowy) |
+| `last_error` | Opis ostatniego błędu |
+
+---
+
+## 14. DDD Parser (Frontend)
+
+### Strategia parsowania Activities
+
+Parser czynności w `src/lib/ddd-parser.ts` wykorzystuje **sekwencyjną strategię per-dzień**:
+
+```
+Dla każdego dnia w bloku danych:
+  1. Szukaj Data marker (tag 0x06) → data dnia
+  2. Szukaj Odometer (tag 0x05) → stan licznika
+  3. Szukaj CardIW (tag 0x0D) → karta kierowcy (insert/withdraw)
+  4. Szukaj Activities (tag 0x01) → rekordy czynności
+```
+
+### Fallback: Flat-collection z regresją minut
+
+Jeśli parsowanie sekwencyjne nie zwróci wyników:
+1. Zbierz WSZYSTKIE rekordy tego samego typu (flat)
+2. Podziel na dni wg **regresji minut** — gdy minuty rosną, a potem nagle spadają → nowy dzień
+3. Grupuj po obliczonej dacie
+
+### Usuwanie warstwy TRTP
+
+Dane surowe zawierają nagłówki transportowe TRTP (3 bajty: `04 00 01` lub `04 00 02`), które mogą powodować artefakty (np. fałszywe wartości 768 km). Parser je usuwa przed analizą danych.
+
+### Limity
+
+- Limit rekordów: **100 000** (aby obsłużyć pełne 365 dni danych VU)
+- Obsługiwane typy plików: Overview, Activities, Events, Speed, Technical, DriverCard
+
+---
+
+## 15. Dual-mode Frontend
+
+Dashboard React działa w dwóch trybach:
+
+### Tryb A: Lovable Cloud (Supabase)
+
+```
+Frontend (React) → Supabase Client → Edge Functions → PostgreSQL
+                 → Supabase Realtime (WebSocket)
+```
+
+- Autentykacja: Supabase Auth
+- Realtime: Supabase Realtime (postgres_changes)
+- Storage: Supabase Storage (session-logs bucket)
+- RLS: Polityki na tabelach (has_role, is_approved, get_user_imeis)
+
+### Tryb B: Self-hosted (TachoWebApi)
+
+```
+Frontend (React) → TachoWebApi REST API → PostgreSQL
+                 → SignalR Hub (WebSocket)
+```
+
+- Autentykacja: JWT (własny AuthController)
+- Realtime: SignalR Hub (/hubs/dashboard)
+- Storage: System plików VPS (C:\TachoDDD\SessionLogs\)
+- Autoryzacja: Middleware ApiKeyAuth + JWT Claims
+
+### Przełączanie trybów
+
+Zmienna środowiskowa `VITE_API_BASE_URL`:
+- **Pusta/brak** → Tryb A (Lovable Cloud, domyślny)
+- **Ustawiona** (np. `https://tachoddd.example.com`) → Tryb B (Self-hosted)
+
+Warstwa `src/lib/api-client.ts` automatycznie przełącza między Supabase Client a fetch() w zależności od trybu.
+
+---
+
 ## Mapowanie TRTP
 
 | DddFileType | Gen1 | Gen2v1 | Gen2v2 | Uwagi |
