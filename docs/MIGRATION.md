@@ -396,6 +396,86 @@ Zaktualizuj `csharp/TachoDddServer/appsettings.json`:
 
 ---
 
+## Krok 8a — CardBridgeService + ngrok
+
+CardBridgeService działa na **laptopie lokalnym** (nie na VPS!) — tam podłączony jest czytnik kart PC/SC.
+
+### 8a.1. Wymagania na laptopie
+
+- Windows 10/11
+- .NET 8 Runtime
+- Czytnik kart smart card (USB)
+- Zainstalowany ngrok (`winget install ngrok`)
+- Uruchomienie **jako Administrator** (wymagane dla HttpListener na porcie 5201)
+
+### 8a.2. Kompilacja CardBridgeService
+
+```powershell
+cd csharp\CardBridgeService
+dotnet publish -c Release -o C:\CardBridge
+```
+
+### 8a.3. Uruchomienie CardBridgeService
+
+```powershell
+# WAŻNE: Uruchom PowerShell jako Administrator!
+cd C:\CardBridge
+.\CardBridgeService.exe
+# Powinno wyświetlić: Listening on ws://localhost:5201
+```
+
+### 8a.4. Uruchomienie tunelu ngrok
+
+W **osobnym oknie** PowerShell:
+
+```powershell
+ngrok http 5201
+# Wynik: Forwarding https://abc123.ngrok-free.app -> http://localhost:5201
+```
+
+### 8a.5. Konfiguracja VPS
+
+Skopiuj adres ngrok i zaktualizuj `appsettings.json` na VPS:
+
+```json
+{
+  "CardBridgeUrl": "wss://abc123.ngrok-free.app"
+}
+```
+
+> **UWAGA:** Adres ngrok zmienia się po każdym restarcie tunelu (darmowy plan). Rozważ płatny plan ngrok ze stałym adresem lub użyj `ngrok http 5201 --domain=twoja-subdomena.ngrok-free.app` (wymaga rejestracji).
+
+### 8a.6. Weryfikacja połączenia
+
+Z VPS sprawdź połączenie:
+
+```powershell
+# Test WebSocket (PowerShell)
+$ws = New-Object System.Net.WebSockets.ClientWebSocket
+$uri = [Uri]"wss://abc123.ngrok-free.app"
+$ws.ConnectAsync($uri, [Threading.CancellationToken]::None).Wait()
+Write-Host "Connected: $($ws.State)"
+$ws.Dispose()
+```
+
+### 8a.7. Autostart ngrok na laptopie
+
+Utwórz skrypt `C:\CardBridge\start.bat`:
+
+```batch
+@echo off
+start "CardBridge" /MIN "C:\CardBridge\CardBridgeService.exe"
+timeout /t 3
+start "ngrok" /MIN ngrok http 5201
+```
+
+Dodaj skrót do folderu Autostart:
+```
+shell:startup
+```
+
+---
+
 ## Krok 9 — Instalacja jako Windows Service
 
 ### 9.1. Publikacja TachoWebApi
