@@ -1,0 +1,169 @@
+================================================================================
+  TachoDDD — Schemat bazy danych (Supabase/PostgreSQL)
+  Wygenerowano: 2026-03-14
+================================================================================
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  ENUM TYPES                                                                ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+  app_role = 'admin' | 'user'
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  TABELE                                                                    ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  profiles                                                                    │
+├──────────────────┬──────────────────────┬──────────┬─────────────────────────┤
+│  Kolumna          │  Typ                 │  Nullable│  Default               │
+├──────────────────┼──────────────────────┼──────────┼─────────────────────────┤
+│  id               │  uuid (PK)           │  NO      │  -                     │
+│  full_name        │  text                │  NO      │  ''                    │
+│  phone            │  text                │  YES     │  NULL                  │
+│  approved         │  boolean             │  NO      │  false                 │
+│  created_at       │  timestamptz         │  NO      │  now()                 │
+│  updated_at       │  timestamptz         │  NO      │  now()                 │
+└──────────────────┴──────────────────────┴──────────┴─────────────────────────┘
+  RLS: Users read own profile (SELECT own id OR admin)
+       Users update own profile (UPDATE own id)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  user_roles                                                                  │
+├──────────────────┬──────────────────────┬──────────┬─────────────────────────┤
+│  Kolumna          │  Typ                 │  Nullable│  Default               │
+├──────────────────┼──────────────────────┼──────────┼─────────────────────────┤
+│  id               │  uuid (PK)           │  NO      │  gen_random_uuid()     │
+│  user_id          │  uuid                │  NO      │  -                     │
+│  role             │  app_role            │  NO      │  -                     │
+└──────────────────┴──────────────────────┴──────────┴─────────────────────────┘
+  UNIQUE: (user_id, role)
+  RLS: Admin manages roles (ALL for admin)
+       Users read own roles (SELECT own user_id)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  user_devices                                                                │
+├──────────────────┬──────────────────────┬──────────┬─────────────────────────┤
+│  Kolumna          │  Typ                 │  Nullable│  Default               │
+├──────────────────┼──────────────────────┼──────────┼─────────────────────────┤
+│  id               │  uuid (PK)           │  NO      │  gen_random_uuid()     │
+│  user_id          │  uuid                │  NO      │  -                     │
+│  imei             │  text                │  NO      │  -                     │
+│  label            │  text                │  YES     │  NULL                  │
+│  vehicle_plate    │  text                │  YES     │  NULL                  │
+│  sim_number       │  text                │  YES     │  NULL                  │
+│  comment          │  text                │  YES     │  NULL                  │
+│  created_at       │  timestamptz         │  NO      │  now()                 │
+└──────────────────┴──────────────────────┴──────────┴─────────────────────────┘
+  RLS: Admin manages all devices (ALL for admin)
+       Users read own devices (SELECT own user_id)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  sessions                                                                    │
+├──────────────────┬──────────────────────┬──────────┬─────────────────────────┤
+│  Kolumna          │  Typ                 │  Nullable│  Default               │
+├──────────────────┼──────────────────────┼──────────┼─────────────────────────┤
+│  id               │  uuid (PK)           │  NO      │  gen_random_uuid()     │
+│  imei             │  text                │  NO      │  -                     │
+│  status           │  text                │  NO      │  'connecting'          │
+│  generation       │  text                │  YES     │  'Unknown'             │
+│  card_generation  │  text                │  YES     │  'Unknown'             │
+│  vehicle_plate    │  text                │  YES     │  NULL                  │
+│  progress         │  integer             │  YES     │  0                     │
+│  current_file     │  text                │  YES     │  NULL                  │
+│  files_downloaded │  integer             │  YES     │  0                     │
+│  total_files      │  integer             │  YES     │  0                     │
+│  bytes_downloaded │  bigint              │  YES     │  0                     │
+│  apdu_exchanges   │  integer             │  YES     │  0                     │
+│  crc_errors       │  integer             │  YES     │  0                     │
+│  error_code       │  text                │  YES     │  NULL                  │
+│  error_message    │  text                │  YES     │  NULL                  │
+│  log_uploaded     │  boolean             │  YES     │  false                 │
+│  started_at       │  timestamptz         │  YES     │  now()                 │
+│  last_activity    │  timestamptz         │  YES     │  now()                 │
+│  completed_at     │  timestamptz         │  YES     │  NULL                  │
+│  created_at       │  timestamptz         │  YES     │  now()                 │
+└──────────────────┴──────────────────────┴──────────┴─────────────────────────┘
+  RLS: Authenticated read sessions (SELECT for admin OR approved+own IMEI)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  session_events                                                              │
+├──────────────────┬──────────────────────┬──────────┬─────────────────────────┤
+│  Kolumna          │  Typ                 │  Nullable│  Default               │
+├──────────────────┼──────────────────────┼──────────┼─────────────────────────┤
+│  id               │  uuid (PK)           │  NO      │  gen_random_uuid()     │
+│  session_id       │  uuid (FK→sessions)  │  YES     │  NULL                  │
+│  imei             │  text                │  NO      │  -                     │
+│  type             │  text                │  NO      │  'info'                │
+│  message          │  text                │  NO      │  -                     │
+│  context          │  text                │  YES     │  NULL                  │
+│  created_at       │  timestamptz         │  YES     │  now()                 │
+└──────────────────┴──────────────────────┴──────────┴─────────────────────────┘
+  FK: session_id → sessions.id
+  RLS: Authenticated read session_events (SELECT for admin OR approved+own IMEI)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  download_schedule                                                           │
+├──────────────────┬──────────────────────┬──────────┬─────────────────────────┤
+│  Kolumna          │  Typ                 │  Nullable│  Default               │
+├──────────────────┼──────────────────────┼──────────┼─────────────────────────┤
+│  id               │  uuid (PK)           │  NO      │  gen_random_uuid()     │
+│  imei             │  text (UNIQUE)       │  NO      │  -                     │
+│  status           │  text                │  NO      │  'pending'             │
+│  attempts_today   │  integer             │  YES     │  0                     │
+│  last_success_at  │  timestamptz         │  YES     │  NULL                  │
+│  last_attempt_at  │  timestamptz         │  YES     │  NULL                  │
+│  last_error       │  text                │  YES     │  NULL                  │
+│  created_at       │  timestamptz         │  YES     │  now()                 │
+│  updated_at       │  timestamptz         │  YES     │  now()                 │
+└──────────────────┴──────────────────────┴──────────┴─────────────────────────┘
+  UNIQUE: imei
+  RLS: Authenticated read download_schedule (SELECT for admin OR approved+own IMEI)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  app_settings                                                                │
+├──────────────────┬──────────────────────┬──────────┬─────────────────────────┤
+│  Kolumna          │  Typ                 │  Nullable│  Default               │
+├──────────────────┼──────────────────────┼──────────┼─────────────────────────┤
+│  key              │  text (PK)           │  NO      │  -                     │
+│  value            │  text                │  NO      │  ''                    │
+│  updated_at       │  timestamptz         │  YES     │  now()                 │
+└──────────────────┴──────────────────────┴──────────┴─────────────────────────┘
+  RLS: Allow anonymous read app_settings (SELECT for anon+authenticated)
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  FUNKCJE BAZODANOWE                                                        ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+  has_role(_user_id uuid, _role app_role) → boolean
+    SECURITY DEFINER | Sprawdza czy użytkownik ma daną rolę
+
+  is_approved(_user_id uuid) → boolean
+    SECURITY DEFINER | Sprawdza czy profil jest zatwierdzony
+
+  get_user_imeis(_user_id uuid) → SETOF text
+    SECURITY DEFINER | Zwraca listę IMEI przypisanych do użytkownika
+
+  increment_attempts_today(p_imei text) → void
+    SECURITY DEFINER | Inkrementuje licznik prób dziennych w download_schedule
+
+  handle_new_user() → trigger
+    SECURITY DEFINER | Trigger: tworzy profil przy rejestracji użytkownika
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  STORAGE BUCKETS                                                           ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+  session-logs  (public)  — Logi sesji uploady przez TachoDddServer
+  ddd-files     (private) — Pliki DDD pobrane z tachografów
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  RELACJE (ERD)                                                             ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+  auth.users (1) ──── (1) profiles        [profiles.id = auth.users.id]
+  profiles   (1) ──── (N) user_devices    [user_devices.user_id = profiles.id]
+  user_roles         ──── auth.users      [user_roles.user_id = auth.users.id]
+  sessions   (1) ──── (N) session_events  [session_events.session_id = sessions.id]
+  user_devices.imei  ···· sessions.imei   [logiczne powiązanie, brak FK]
+  user_devices.imei  ···· download_schedule.imei [logiczne, brak FK]
